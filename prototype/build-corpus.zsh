@@ -75,6 +75,20 @@ fi
 # then emit cmd->token pairs for every word after the command.
 #
 # awk rather than a zsh read-loop: this walks ~100k history lines.
+# clicue is about commands and their properties, not filesystem navigation.
+# For these, the "arguments" in history are paths — compsys does that far
+# better (slashes, continuation, trailing-slash semantics) and clicue must not
+# compete with it.
+typeset -A pathish
+local pc
+for pc in cd pushd popd ls ll la cat bat less more head tail wc sort diff \
+          vim nvim nano vi code subl emacs micro \
+          cp mv rm mkdir rmdir touch chmod chown chgrp ln stat file du df \
+          source . open xdg-open tar zip unzip gzip gunzip rsync scp \
+          mount umount dd shred realpath dirname basename tree; do
+  pathish[$pc]=1
+done
+
 typeset -A argrank argcount
 if [[ -r $histfile ]]; then
   local cmd tok cnt
@@ -102,6 +116,9 @@ if [[ -r $histfile ]]; then
     | sort | uniq -c | sort -rn \
     | while read -r cnt cmd tok; do
         [[ -z $tok ]] && continue
+        (( ${+pathish[$cmd]} )) && continue
+        # a token that looks like a path is data, not a reusable cue
+        [[ $tok == */* || $tok == '~'* || $tok == .* ]] && continue
         (( ${#${(s: :)argrank[$cmd]}} >= 40 )) && continue   # cap per command
         argrank[$cmd]="${argrank[$cmd]} $tok"
         argcount[${cmd}\|${tok}]=$cnt

@@ -107,6 +107,10 @@ _clicue_candidates() {
     fi
   done
 
+  # Tier boundary is explicit: tier 1 is what this operator actually invokes
+  # (has history frequency); tier 2 is everything else on the system. The
+  # renderer draws them as two groups with one selection flowing between.
+  typeset -g _clicue_tier1_n=${#freqd}
   reply=( ${${(o)freqd}#*|} ${(o)rest} )
 }
 
@@ -150,18 +154,59 @@ _clicue_gloss() {
 }
 
 # ── the card ─────────────────────────────────────────────────────────────────
-# Builds REPLY (card text) and reply (highlight specs, offsets relative to card).
+# Two groups, one selection. Tier 1 (nearest the prompt) is what this operator
+# actually invokes — it has history frequency. Tier 2 is everything else on the
+# system. Alt+Down flows out of the bottom of tier 1 straight into tier 2, so
+# there is no mode to switch and no second keybinding to learn.
+typeset -ga _clicue_lines=()
+typeset -g  _clicue_top1=1
+typeset -g  _clicue_top2=0
+
+# $1 lo  $2 hi  $3 window-top  $4 label  $5 maxrows  $6 namew  $7 glossw  $8 inner
+_clicue_emit_box() {
+  local -i lo=$1 hi=$2 top=$3 maxrows=$5 namew=$6 glossw=$7 inner=$8
+  local label=$4
+  (( top < lo )) && top=$lo
+  local -i bot=$(( top + maxrows - 1 ))
+  (( bot > hi )) && bot=$hi
+  (( top > bot )) && return 1
+
+  local -i rule=$(( inner - ${#label} ))
+  (( rule < 1 )) && rule=1
+  _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
+
+  local -i i
+  local ent name kind g nmcol gcol marker
+  for (( i = top; i <= bot; i++ )); do
+    ent=${_clicue_cands[i]}
+    name=$ent
+    kind=${_clicue_kind[$ent]:-system}
+    [[ $_clicue_mode == arg ]] && kind=arg
+    _clicue_gloss $name $kind; g=$_clicue_g
+    marker='  '
+    (( i == _clicue_sel )) && marker=' ▸'
+    nmcol=${(r:$namew:)${name[1,$namew]}}
+    (( ${#g} > glossw )) && g="${g[1,$(( glossw - 1 ))]}…"
+    gcol=${(r:$glossw:)g}
+    _clicue_lines+=( "│${marker} ${nmcol}  ${gcol}│" )
+  done
+  return 0
+}
+
 _clicue_render() {
   local pfx=$1
   local -a cands
-  local -a reply            # scratch for the candidate generators
+  local -a reply
+  typeset -g _clicue_tier1_n=0
+
   if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
-    reply=( $_clicue_cmd )
+    reply=( $_clicue_cmd ); _clicue_tier1_n=1
   elif [[ $_clicue_mode == arg ]]; then
     if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
-      [[ -n $pfx ]] && return 1        # partial, no match — hide; compsys owns it
+      [[ -n $pfx ]] && return 1
       _clicue_info=1; reply=( $_clicue_cmd )
     fi
+    _clicue_tier1_n=${#reply}      # argument cues are all history-derived
   else
     _clicue_candidates $pfx
   fi
@@ -171,91 +216,76 @@ _clicue_render() {
 
   local -i maxrows=8
   zstyle -s ':clicue:*' max-rows maxrows 2>/dev/null || maxrows=8
+  local -i total=${#cands}
+  local -i t1n=$_clicue_tier1_n
+  (( t1n > total )) && t1n=$total
+  (( t1n < 0 )) && t1n=0
 
   local -i width=${COLUMNS:-80}
   (( width > 120 )) && width=120
   (( width < 40 ))  && width=40
   local -i inner=$(( width - 2 ))
 
-  # name column: widest shown name, clamped
-  local -i namew=0 i=0
-  local -i _w0=$_clicue_top _w1=$(( _clicue_top + maxrows - 1 ))
-  (( _w1 > ${#cands} )) && _w1=${#cands}
-  (( _w0 < 1 )) && _w0=1
-  for i in {$_w0..$_w1}; do
-    local nm=${cands[i]}
-    (( ${#nm} > namew )) && namew=${#nm}
-  done
+  # clamp selection across the whole list, then slide whichever window holds it
+  (( _clicue_sel < 1 )) && _clicue_sel=1
+  (( _clicue_sel > total )) && _clicue_sel=$total
+  if (( _clicue_sel <= t1n )); then
+    (( _clicue_sel < _clicue_top1 )) && _clicue_top1=$_clicue_sel
+    (( _clicue_sel > _clicue_top1 + maxrows - 1 )) && _clicue_top1=$(( _clicue_sel - maxrows + 1 ))
+    (( _clicue_top1 < 1 )) && _clicue_top1=1
+  else
+    (( _clicue_top2 < t1n + 1 )) && _clicue_top2=$(( t1n + 1 ))
+    (( _clicue_sel < _clicue_top2 )) && _clicue_top2=$_clicue_sel
+    (( _clicue_sel > _clicue_top2 + maxrows - 1 )) && _clicue_top2=$(( _clicue_sel - maxrows + 1 ))
+  fi
+
+  # name column sized over both visible windows
+  local -i namew=0 i
+  local -a vis=()
+  (( t1n > 0 )) && for (( i = _clicue_top1; i <= t1n && i < _clicue_top1 + maxrows; i++ )) vis+=( ${cands[i]} )
+  if (( total > t1n )); then
+    local -i t2=$_clicue_top2
+    (( t2 < t1n + 1 )) && t2=$(( t1n + 1 ))
+    for (( i = t2; i <= total && i < t2 + maxrows; i++ )) vis+=( ${cands[i]} )
+  fi
+  for i in {1..${#vis}}; do (( ${#vis[i]} > namew )) && namew=${#vis[i]}; done
   (( namew > 28 )) && namew=28
   (( namew < 10 )) && namew=10
-
   local -i glossw=$(( inner - namew - 5 ))
   (( glossw < 10 )) && glossw=10
 
-  # clamp selection, then slide the window to keep it visible
-  (( _clicue_sel < 1 )) && _clicue_sel=1
-  (( _clicue_sel > ${#cands} )) && _clicue_sel=${#cands}
-  (( _clicue_sel < _clicue_top )) && _clicue_top=$_clicue_sel
-  (( _clicue_sel > _clicue_top + maxrows - 1 )) && _clicue_top=$(( _clicue_sel - maxrows + 1 ))
-  (( _clicue_top < 1 )) && _clicue_top=1
-
-  local -a lines specs
-  local total=${#cands}
-  local -i last=$(( _clicue_top + maxrows - 1 ))
-  (( last > total )) && last=$total
-  local label=" ${_clicue_sel}/${total} "
-  local -i rule=$(( inner - ${#label} ))
-  (( rule < 1 )) && rule=1
-  lines+=( "╭${label}${(l:$rule::─:):-}╮" )
-
-  local -i idx=$(( _clicue_top - 1 ))
-  local ent name kind g nmcol gcol extra
-  local -a wrapped
-  local -i issel=0
-  for ent in ${cands[$_clicue_top,$last]}; do
-    (( idx++ ))
-    issel=$(( idx == _clicue_sel ))
-    name=$ent; kind=${_clicue_kind[$ent]:-system}
-    [[ $_clicue_mode == arg ]] && kind=arg
-    _clicue_gloss $name $kind; g=$_clicue_g
-
-    local marker='  '
-    (( issel )) && marker=' ▸'
-
-    nmcol=${(r:$namew:)${name[1,$namew]}}
-
-    if (( issel )); then
-      # design value 4: density inversely proportional to attention.
-      # The focused row gets its full gloss, wrapped rather than truncated.
-      wrapped=( ${(f)"$(print -r -- $g | fold -s -w $glossw)"} )
-      gcol=${(r:$glossw:)${wrapped[1]}}
-      lines+=( "│${marker} ${nmcol}  ${gcol}│" )
-      for extra in ${wrapped[2,-1]}; do
-        lines+=( "│   ${(r:$namew:)}  ${(r:$glossw:)extra}│" )
-      done
-    else
-      (( ${#g} > glossw )) && g="${g[1,$(( glossw - 1 ))]}…"
-      gcol=${(r:$glossw:)g}
-      lines+=( "│${marker} ${nmcol}  ${gcol}│" )
-    fi
-  done
-
+  _clicue_lines=()
   local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
   (( _clicue_info )) && { local REPLY; local -a dv
     zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
     _clicue_keylabel ${dv[1]}; hint=" ${REPLY} dismiss " }
+
+  # tier 1 first — nearest the prompt
+  if (( t1n > 0 )); then
+    _clicue_emit_box 1 $t1n $_clicue_top1 " ${_clicue_sel}/${total} " \
+                     $maxrows $namew $glossw $inner
+  fi
+  if (( total > t1n )); then
+    local -i t2=$_clicue_top2
+    (( t2 < t1n + 1 )) && t2=$(( t1n + 1 ))
+    local lbl2=" all $(( total - t1n )) on system "
+    (( t1n == 0 )) && lbl2=" ${_clicue_sel}/${total} "
+    _clicue_emit_box $(( t1n + 1 )) $total $t2 "$lbl2" \
+                     $maxrows $namew $glossw $inner
+  fi
+
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 1 )) && brule=1
-  lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
+  _clicue_lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
 
-  _clicue_text=$'\n'${(F)lines}
+  _clicue_text=$'\n'${(F)_clicue_lines}
 
-  # ── highlight spans over the assembled card ────────────────────────────────
-  specs=()
-  local -i pos=1     # leading newline
+  # highlight spans over the assembled card
+  local -a specs=()
+  local -i pos=1 len
   local ln
-  for ln in $lines; do
-    local -i len=${#ln}
+  for ln in $_clicue_lines; do
+    len=${#ln}
     if [[ $ln == ('╭'|'╰')* ]]; then
       specs+=( "$pos $(( pos + len )) fg=${CLICUE_THEME[border]}" )
     else
@@ -268,14 +298,13 @@ _clicue_render() {
     fi
     (( pos += len + 1 ))
   done
-
   _clicue_spans=( $specs )
   return 0
 }
 
 # ── hook ─────────────────────────────────────────────────────────────────────
 _clicue_reset_sel() {
-  _clicue_sel=1; _clicue_top=1; _clicue_engaged=0
+  _clicue_sel=1; _clicue_top1=1; _clicue_top2=0; _clicue_engaged=0
 }
 
 # Strip only the CARD, deliberately leaving our ghost stem in place. The yield
@@ -341,6 +370,9 @@ _clicue_pre_redraw() {
     # ── argument position ───────────────────────────────────────────────────
     _clicue_mode=arg
     _clicue_cmd=${words[1]}
+    # Unambiguously filesystem — compsys owns this, stand down entirely so its
+    # coloured path picker works untouched.
+    [[ ${words[-1]} == */* || ${words[-1]} == '~'* ]] && return 0
     if (( trailing )); then
       _clicue_pfx=''
     else
