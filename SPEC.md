@@ -198,6 +198,47 @@ The boundary moves outward only when the candidate-source adapter (component 3)
 can drive compsys — at which point the card can present argument and flag
 candidates too, still rendered by clicue and still sourced from compsys.
 
+### Tier 2 is menuselect in our visual language **[decided in prototype]**
+
+The operator's own framing, and it settles what looked like a contradiction.
+
+Tier 2 renders as a **column grid** (column-major, as zsh's own listing does) with
+a one-line gloss bar beneath it for whatever is highlighted. Hundreds of
+candidates in a single scrolling column is poor UX; a grid shows an order of
+magnitude more at a glance, and the gloss bar keeps descriptions without
+spending a column on them.
+
+Inside the grid, **plain arrows navigate** — including Up/Down, which the
+plain-arrow invariant otherwise forbids. That is not an exception to the
+invariant; it is the same contract zsh's own `menuselect` has always had:
+
+- the grid is a **mode**, entered deliberately by scrolling past the end of tier 1
+- while in it, arrows address the grid
+- on leaving it, every arrow delegates untouched to whatever owned it before
+
+Focus is *derived* from the selection index rather than toggled, so there is
+nothing to enter and nothing to remember. `_clicue_install_arrows` captures the
+prior binding per key and delegates whenever the grid does not have focus — so
+`history-substring-search-up` still owns Up in every other situation.
+
+### POSTDISPLAY must be constant height **[MEASURED]**
+
+A second POSTDISPLAY defect, found via a visual bug: Alt+Down made the second
+card draw *on top of* the first rather than below it.
+
+Cause: the gloss bar was rendered only when the selection sat in the grid, so
+crossing the tier boundary grew the card by two lines mid-redraw. **ZLE mishandles
+a POSTDISPLAY that changes height**, painting the taller content over the shorter
+rather than reflowing.
+
+Fix: render the gloss bar unconditionally, keeping the card a constant height
+regardless of where the selection sits. Verified identical at 21 lines across the
+boundary.
+
+This is a genuine constraint on any POSTDISPLAY-based renderer — the card cannot
+grow or shrink in response to state — and it stacks with the single-tenancy
+finding below.
+
 ### POSTDISPLAY is single-tenant **[MEASURED]** — the strongest evidence yet
 
 The composability contract works for two of the three shared resources ZLE

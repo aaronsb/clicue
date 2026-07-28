@@ -161,6 +161,10 @@ _clicue_gloss() {
 typeset -ga _clicue_lines=()
 typeset -g  _clicue_top1=1
 typeset -g  _clicue_top2=0
+typeset -g  _clicue_focus=1        # 1 = tier 1 list, 2 = tier 2 grid (a MODE)
+typeset -g  _clicue_gridtop=0      # first index shown in the grid page
+typeset -g  _clicue_grid_rows=1    # rows in the current grid, for 2D nav
+typeset -g  _clicue_grid_cols=1
 
 # $1 lo  $2 hi  $3 window-top  $4 label  $5 maxrows  $6 namew  $7 glossw  $8 inner
 _clicue_emit_box() {
@@ -193,6 +197,68 @@ _clicue_emit_box() {
   return 0
 }
 
+# Tier 2 as a column grid (column-major, like zsh's own listing) plus a
+# one-line gloss bar for whatever is highlighted. Hundreds of candidates in a
+# single scrolling column is poor UX; a grid shows an order of magnitude more at
+# a glance and the gloss bar keeps the description without stealing a column.
+#   $1 lo  $2 hi  $3 maxrows  $4 inner
+_clicue_emit_grid() {
+  local -i lo=$1 hi=$2 maxrows=$3 inner=$4
+  local -i n=$(( hi - lo + 1 ))
+  (( n > 0 )) || return 1
+
+  local -i i w=0
+  for (( i = lo; i <= hi; i++ )); do
+    (( ${#_clicue_cands[i]} > w )) && w=${#_clicue_cands[i]}
+  done
+  (( w > 28 )) && w=28
+  local -i colw=$(( w + 2 ))
+  local -i ncols=$(( inner / colw ))
+  (( ncols < 1 )) && ncols=1
+  local -i rows=$(( (n + ncols - 1) / ncols ))
+  (( rows > maxrows )) && rows=$maxrows
+  (( rows < 1 )) && rows=1
+  local -i page=$(( rows * ncols ))
+
+  # keep the selection on the visible page
+  (( _clicue_gridtop < lo )) && _clicue_gridtop=$lo
+  if (( _clicue_sel >= lo && _clicue_sel <= hi )); then
+    while (( _clicue_sel >= _clicue_gridtop + page )); do (( _clicue_gridtop += page )); done
+    while (( _clicue_sel < _clicue_gridtop )); do (( _clicue_gridtop -= page )); done
+    (( _clicue_gridtop < lo )) && _clicue_gridtop=$lo
+  fi
+  _clicue_grid_rows=$rows
+  _clicue_grid_cols=$ncols
+
+  local -i shown=$(( hi - _clicue_gridtop + 1 ))
+  (( shown > page )) && shown=$page
+  local label=" all ${n} on system "
+  (( _clicue_focus == 2 )) && label=" browsing ${n} — $(( _clicue_sel - lo + 1 ))/${n} "
+  local -i rule=$(( inner - ${#label} ))
+  (( rule < 1 )) && rule=1
+  _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
+
+  local -i r c idx
+  local row nm cell
+  for (( r = 0; r < rows; r++ )); do
+    row=''
+    for (( c = 0; c < ncols; c++ )); do
+      idx=$(( _clicue_gridtop + c * rows + r ))
+      if (( idx > hi )) || (( idx - _clicue_gridtop >= page )); then
+        row+=${(r:$colw:)}
+        continue
+      fi
+      nm=${_clicue_cands[idx]}
+      cell=${(r:$colw:)${nm[1,$w]}}
+      # mark the selection with a leading glyph inside its own cell
+      (( idx == _clicue_sel )) && cell="▸${${(r:$(( colw - 1 )):)${nm[1,$w]}}}"
+      row+=$cell
+    done
+    _clicue_lines+=( "│${${(r:$inner:)row}}│" )
+  done
+  return 0
+}
+
 _clicue_render() {
   local pfx=$1
   local -a cands
@@ -220,6 +286,10 @@ _clicue_render() {
   local -i t1n=$_clicue_tier1_n
   (( t1n > total )) && t1n=$total
   (( t1n < 0 )) && t1n=0
+  typeset -g _clicue_t1n=$t1n
+  # Focus follows the selection rather than a toggle: scroll past the end of
+  # tier 1 and you are in the grid. Nothing to enter, nothing to remember.
+  if (( _clicue_sel > t1n )); then _clicue_focus=2; else _clicue_focus=1; fi
 
   local -i width=${COLUMNS:-80}
   (( width > 120 )) && width=120
@@ -266,17 +336,34 @@ _clicue_render() {
                      $maxrows $namew $glossw $inner
   fi
   if (( total > t1n )); then
-    local -i t2=$_clicue_top2
-    (( t2 < t1n + 1 )) && t2=$(( t1n + 1 ))
-    local lbl2=" all $(( total - t1n )) on system "
-    (( t1n == 0 )) && lbl2=" ${_clicue_sel}/${total} "
-    _clicue_emit_box $(( t1n + 1 )) $total $t2 "$lbl2" \
-                     $maxrows $namew $glossw $inner
+    _clicue_emit_grid $(( t1n + 1 )) $total $maxrows $inner
   fi
 
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 1 )) && brule=1
   _clicue_lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
+
+  # Gloss bar: the highlighted cue's description on its own line, so the grid
+  # can stay dense without dropping descriptions.
+  #
+  # Rendered UNCONDITIONALLY, even when the selection sits in tier 1 and the
+  # description is already visible there. It was previously gated on the
+  # selection being in the grid, which meant Alt+Down grew the card by two lines
+  # mid-redraw — and ZLE mishandles a POSTDISPLAY that changes height, drawing
+  # the taller card over the shorter one instead of below it. Constant height is
+  # the fix.
+  if (( ${#_clicue_cands} )); then
+    local gname=${_clicue_cands[_clicue_sel]}
+    local gkind=${_clicue_kind[$gname]:-system}
+    [[ $_clicue_mode == arg ]] && gkind=arg
+    _clicue_gloss $gname $gkind
+    local -i gw=$(( inner - namew - 3 ))
+    (( gw < 10 )) && gw=10
+    local gg=$_clicue_g
+    (( ${#gg} > gw )) && gg="${gg[1,$(( gw - 1 ))]}…"
+    _clicue_lines+=( "│${(r:$namew:)${gname[1,$namew]}}  ${(r:$gw:)gg} │" )
+    _clicue_lines+=( "╰${(l:$inner::─:):-}╯" )
+  fi
 
   _clicue_text=$'\n'${(F)_clicue_lines}
 
@@ -305,6 +392,7 @@ _clicue_render() {
 # ── hook ─────────────────────────────────────────────────────────────────────
 _clicue_reset_sel() {
   _clicue_sel=1; _clicue_top1=1; _clicue_top2=0; _clicue_engaged=0
+  _clicue_focus=1; _clicue_gridtop=0
 }
 
 # Strip only the CARD, deliberately leaving our ghost stem in place. The yield
@@ -625,6 +713,53 @@ typeset -ga _clicue_yield_widgets=(
   vi-forward-blank-word vi-forward-blank-word-end
 )
 
+# ── grid browse: arrows navigate tier 2 ──────────────────────────────────────
+# While the selection is inside the grid, arrows move within it. That is a MODE
+# in the same sense as zsh's own menuselect — entered deliberately by scrolling
+# past tier 1 — which is why it may take the arrows without violating the
+# plain-arrow invariant. Outside the grid every arrow delegates untouched.
+_clicue_grid_move() {
+  local dir=$1
+  local -i r=${_clicue_grid_rows:-1}
+  case $dir in
+    down)  (( _clicue_sel++ )) ;;
+    up)    (( _clicue_sel-- )) ;;
+    right) (( _clicue_sel += r )) ;;
+    left)  (( _clicue_sel -= r )) ;;
+  esac
+  (( _clicue_sel < _clicue_t1n + 1 )) && _clicue_sel=$(( _clicue_t1n + 1 ))
+  (( _clicue_sel > ${#_clicue_cands} )) && _clicue_sel=${#_clicue_cands}
+  zle -R
+}
+
+_clicue_in_grid() {
+  (( _clicue_visible && _clicue_engaged )) || return 1
+  (( _clicue_focus == 2 )) || return 1
+  return 0
+}
+
+for _cd in up:A down:B right:C left:D; do
+  eval "_clicue_arrow_${_cd%%:*}() {
+    if _clicue_in_grid; then _clicue_grid_move ${_cd%%:*}; return 0; fi
+    zle \${_clicue_arrow_orig[${_cd##*:}]:-.${_cd%%:*}-line-or-history}
+  }"
+  zle -N _clicue_arrow_${_cd%%:*}
+done
+unset _cd
+
+typeset -gA _clicue_arrow_orig=()
+
+_clicue_install_arrows() {
+  local -A want=( A up B down C right D left )
+  local k w
+  for k in A B C D; do
+    w=${${(z)$(bindkey "^[[$k")}[2]}
+    [[ -z $w || $w == _clicue_arrow_* ]] && continue
+    _clicue_arrow_orig[$k]=$w
+    bindkey "^[[$k" _clicue_arrow_${want[$k]}
+  done
+}
+
 _clicue_install_yields() {
   local w impl fn
   for w in $_clicue_yield_widgets; do
@@ -633,22 +768,23 @@ _clicue_install_yields() {
     fn=_clicue_yield_${w//-/_}
     [[ $impl == user:${fn} ]] && continue        # already wrapped
     case $impl in
-      user:*)      eval "${fn}_orig() { ${impl#user:} \"\$@\" }" ;;
+      user:*)       eval "${fn}_orig() { ${impl#user:} \"\$@\" }" ;;
       completion:*) continue ;;
-      *)           eval "${fn}_orig() { zle .$w -- \"\$@\" }" ;;
+      *)            eval "${fn}_orig() { zle .$w -- \"\$@\" }" ;;
     esac
     eval "$fn() { _clicue_clear_card; ${fn}_orig \"\$@\" }"
     zle -N $w $fn
   done
 }
 
-# Must run AFTER zsh-autosuggestions has done its own widget rebinding, which
-# it defers to its first precmd. Wrapping earlier captures the bare builtin and
+# Must run AFTER zsh-autosuggestions has done its own widget rebinding, which it
+# defers to its first precmd. Wrapping earlier captures the bare builtin and
 # leaves autosuggestions wrapping US — it would then read POSTDISPLAY before we
 # ever get to clear it. Registering our precmd after theirs makes us outermost.
 autoload -Uz add-zsh-hook
 _clicue_first_precmd() {
   _clicue_install_yields
+  _clicue_install_arrows
   add-zsh-hook -d precmd _clicue_first_precmd
   unfunction _clicue_first_precmd
 }
