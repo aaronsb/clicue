@@ -195,7 +195,7 @@ _clicue_render() {
     fi
   done
 
-  local hint=' ⇧↑↓ scroll · Tab accept · ^C dismiss '
+  local hint=' Alt+↑↓ scroll · Tab accept · ^C dismiss '
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 1 )) && brule=1
   lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
@@ -291,7 +291,7 @@ clicue-off() {
   add-zle-hook-widget -d line-pre-redraw _clicue_pre_redraw
   add-zle-hook-widget -d line-finish     _clicue_line_finish
   bindkey '^I' ${_clicue_orig_tab:-expand-or-complete}
-  bindkey -r '^[[1;2B' '^[[1;2A' 2>/dev/null
+  bindkey -r '^[[1;3B' '^[[1;3A' '^[^[[B' '^[^[[A' '^[[1;2B' '^[[1;2A' 2>/dev/null
   _clicue_clear
   print "clicue: unhooked (this shell only)"
 }
@@ -337,10 +337,16 @@ zle -N _clicue_accept
 _clicue_orig_tab=${${(z)$(bindkey '^I')}[2]:-expand-or-complete}
 [[ $_clicue_orig_tab == _clicue_accept ]] && _clicue_orig_tab=expand-or-complete
 
-bindkey '^[[1;2B' _clicue_scroll_down   # Shift+Down (xterm/CSI)
-bindkey '^[[1;2A' _clicue_scroll_up     # Shift+Up
-bindkey '^[[b'    _clicue_scroll_down   # some terminals
-bindkey '^[[a'    _clicue_scroll_up
+# Alt+Arrow is the primary binding. Shift+Arrow was the obvious choice but
+# konsole claims it for Scroll Line Up/Down at the terminal level, so those
+# keystrokes never reach the shell. Alt+Arrow is unclaimed by both konsole and
+# this config. Shift is kept bound anyway — harmless where it does arrive.
+bindkey '^[[1;3B' _clicue_scroll_down   # Alt+Down  (CSI modifier 3)
+bindkey '^[[1;3A' _clicue_scroll_up     # Alt+Up
+bindkey '^[^[[B'  _clicue_scroll_down   # Alt+Down  (ESC-prefixed form)
+bindkey '^[^[[A'  _clicue_scroll_up     # Alt+Up
+bindkey '^[[1;2B' _clicue_scroll_down   # Shift+Down — eaten by konsole
+bindkey '^[[1;2A' _clicue_scroll_up     # Shift+Up   — eaten by konsole
 bindkey '^I'      _clicue_accept
 
 add-zle-hook-widget line-pre-redraw _clicue_pre_redraw
