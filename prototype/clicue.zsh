@@ -129,15 +129,84 @@ _clicue_candidates() {
 _clicue_arg_candidates() {
   local cmd=$1 pfx=$2
   local -a toks=( ${(s: :)CLICUE_ARGS[$cmd]} )
-  (( ${#toks} )) || { reply=(); return 1 }
+  local -a hist=() rest=()
   if [[ -n $pfx ]]; then
-    reply=( ${(M)toks:#${pfx}*} )
+    hist=( ${(M)toks:#${pfx}*} )
   else
-    reply=( $toks )
+    hist=( $toks )
   fi
+  # compsys results, if Tab has fetched them for this buffer — these carry the
+  # authoritative descriptions and cover flags never yet used
+  local -A seen=()
+  local n
+  for n in $hist; do seen[$n]=1; done
+  for n in $_clicue_cs_words; do
+    (( ${+seen[$n]} )) && continue
+    [[ -n $pfx && $n != ${pfx}* ]] && continue
+    seen[$n]=1; rest+=( $n )
+  done
+  typeset -g _clicue_arg_t1=${#hist}
+  reply=( $hist ${(o)rest} )
   (( ${#reply} )) || return 1
   return 0
 }
+
+# ── candidate source adapter (SPEC component 3) ───────────────────────────────
+# Drives zsh's own completion system for DATA and renders it ourselves.
+#
+# Unlike zsh-autosuggestions, compsys AGREES to be driven — every mechanism here
+# is documented in zshcompwid(1):
+#   zle -C <w> list-choices <fn>   create a completion widget (its stated purpose)
+#   compstate[insert]=''           "the command line is not to be changed"
+#   compstate[list]=''             draw nothing
+#   compadd -O array               matches go to an array, not the match set
+#   compadd -D array               prunes a parallel array in lockstep, which is
+#                                  what keeps -d descriptions index-aligned
+#
+# compadd is shadowed only to APPEND those two options and hand everything else
+# to the builtin. Note what this deliberately does NOT do: zsh-autocomplete
+# rebuilt compadd by round-tripping its body through $functions[compadd] as text,
+# which failed to re-parse on '#' comments and broke every completion. Appending
+# options costs none of that fragility.
+typeset -ga _clicue_cs_words=()
+typeset -ga _clicue_cs_descs=()
+typeset -gA _clicue_cs_gloss=()
+typeset -g  _clicue_cs_for=$'\0'      # buffer the last harvest was for
+
+_clicue_capture_fn() {
+  compstate[insert]=''
+  compstate[list]=''
+  _clicue_cs_words=(); _clicue_cs_descs=()
+
+  compadd() {
+    local -a w dsp
+    local -i i
+    # find the -d array (given by name or as a literal list) so it can be pruned
+    # alongside the words and stay aligned
+    for (( i = 1; i <= $#; i++ )); do
+      if [[ ${@[i]} == -d ]]; then
+        local dv=${@[i+1]}
+        if [[ -n ${(P)dv+x} ]]; then dsp=( ${(P)dv} ); else dsp=( ${=dv} ); fi
+        break
+      fi
+    done
+    builtin compadd -O w -D dsp "$@" 2>/dev/null
+    (( ${#w} )) || return 1
+    _clicue_cs_words+=( $w )
+    if (( ${#dsp} == ${#w} )); then
+      _clicue_cs_descs+=( $dsp )
+    else
+      _clicue_cs_descs+=( ${(s: :)${(l:${#w}::@:):-}} )   # placeholders
+    fi
+    return 0
+  }
+
+  _main_complete
+  unfunction compadd 2>/dev/null
+  return 0
+}
+
+zle -C _clicue_capture list-choices _clicue_capture_fn
 
 # ── gloss lookup ─────────────────────────────────────────────────────────────
 _clicue_gloss() {
@@ -147,8 +216,12 @@ _clicue_gloss() {
       _clicue_g=${CLICUE_GLOSS[$name]:-'no recorded arguments'}
       return
     fi
-    # Honest placeholder. Real flag descriptions need compsys or a --help/man
-    # parse in the enrichment pipeline; usage count is at least true.
+    # compsys's own description when we have it (Tab fetches these), else the
+    # usage count as an honest fallback
+    if [[ -n ${_clicue_cs_gloss[$name]} ]]; then
+      _clicue_g=${_clicue_cs_gloss[$name]}
+      return
+    fi
     local c=${CLICUE_ARGN[${_clicue_cmd}\|${name}]:-}
     _clicue_g=${c:+used ${c}×}
     return
@@ -310,7 +383,8 @@ _clicue_render() {
       [[ -n $pfx ]] && return 1
       _clicue_info=1; reply=( $_clicue_cmd )
     fi
-    _clicue_tier1_n=${#reply}      # argument cues are all history-derived
+    # history-derived args are tier 1; compsys-derived fill the grid
+    _clicue_tier1_n=${_clicue_arg_t1:-${#reply}}
   else
     _clicue_candidates $pfx
   fi
@@ -570,6 +644,8 @@ _clicue_pre_redraw() {
 
   # a changed buffer invalidates any selection the operator had made
   [[ $buf != $_clicue_lastbuf ]] && { _clicue_lastbuf=$buf; _clicue_reset_sel }
+  # a different command means the harvest no longer applies
+  [[ $_clicue_mode == cmd ]] && { _clicue_cs_words=(); _clicue_cs_gloss=(); _clicue_cs_for=$'\0' }
 
   if ! _clicue_render "$_clicue_pfx"; then
     [[ -n $CLICUE_DEBUG ]] && print -r -- "  BAIL render-failed mode=$_clicue_mode pfx=[$_clicue_pfx] info=$_clicue_info" >> $CLICUE_DEBUG
@@ -754,6 +830,24 @@ _clicue_dismiss() {
 # rather than deterministic, and stabilises statistically as history accumulates.
 # Nothing is inserted; the proposal shows as ghost text.
 _clicue_accept() {
+  # In argument position, Tab is where the expensive engine earns its keep:
+  # compsys forks (git branch, docker ps) so it cannot run per keystroke, but on
+  # demand it yields the authoritative flag/subcommand set WITH real descriptions.
+  # Cached per buffer so repeated Tab presses do not re-fork.
+  if [[ $_clicue_mode == arg && $_clicue_cs_for != $LBUFFER ]]; then
+    _clicue_cs_for=$LBUFFER
+    zle _clicue_capture 2>/dev/null
+    _clicue_cs_gloss=()
+    local -i i
+    for (( i = 1; i <= ${#_clicue_cs_words}; i++ )); do
+      [[ ${_clicue_cs_descs[i]} == '@' ]] && continue
+      _clicue_cs_gloss[${_clicue_cs_words[i]}]=${_clicue_cs_descs[i]}
+    done
+    [[ -n $CLICUE_DEBUG ]] && print -r -- "  COMPSYS n=${#_clicue_cs_words} first=[${_clicue_cs_words[1]}] desc=[${_clicue_cs_descs[1]}]" >> $CLICUE_DEBUG
+    _clicue_reset_sel
+    zle -R
+    return 0
+  fi
   if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
     _clicue_engaged=1
     local -i lim=${_clicue_t1n:-0}
