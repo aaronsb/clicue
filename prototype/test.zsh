@@ -16,7 +16,7 @@ setopt extended_glob
 typeset -g SRC=${0:A:h}/clicue.zsh
 typeset -gi PASS=0 FAIL=0
 # Declared once, up front. Re-declaring a set `local` in zsh prints its value.
-typeset -g k w d c body want got word disp leak bad
+typeset -g k w d c body want got word disp leak bad harvest
 typeset -g SCRATCH=${TMPDIR:-/tmp}/clicue-test.$$
 mkdir -p $SCRATCH
 trap "rm -rf $SCRATCH" EXIT
@@ -234,6 +234,45 @@ if (( ${#oldph} == 1 )); then
   ok "the old space-split form is confirmed broken (1 blob, not 45)"
 else
   nope "the old space-split form is confirmed broken" "got ${#oldph} — regression premise changed"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "Tab costs one press"
+# The harvest must not consume the keystroke, and a stood-down clicue must
+# delegate before forking compsys for a card it will not draw. Structural
+# assertions only — no pty here can deliver a Tab into a live clicue shell
+# reliably, so the BEHAVIOUR is verified in a real terminal.
+
+# the whole function body, from its definition to the closing brace at column 1
+body=$(awk '/^_clicue_accept\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+# strip comments so prose cannot satisfy a code assertion
+body=${(F)${(f)body}:#[[:space:]]#\#*}
+
+# guard comes first, before the harvest
+if [[ $body == *'! _clicue_visible'*'_clicue_orig_tab'*'_clicue_cs_for != $LBUFFER'* ]]; then
+  ok "not-visible delegates to the original Tab BEFORE the harvest"
+else
+  nope "not-visible delegates to the original Tab BEFORE the harvest" \
+       "order matters: harvesting first is what cost the extra press"
+fi
+
+# The harvest block must fall through, not return. Checked by position: the
+# harvest's closing `fi` must come BEFORE the cycle branch, with no return
+# between the gloss build and that fi.
+harvest=${${body#*_clicue_cs_build_gloss}%%$'\n  fi'*}
+if [[ $harvest != *'return'* ]]; then
+  ok "the harvest block falls through instead of returning"
+else
+  nope "the harvest block falls through instead of returning" \
+       "a return here means press one fetches and press two moves"
+fi
+
+# after harvesting, the card must be rebuilt so the selection lands on the
+# enlarged candidate set rather than a stale one
+if [[ $body == *'_clicue_cs_build_gloss'*'_clicue_render'* ]]; then
+  ok "the card is re-rendered against the harvested candidates"
+else
+  nope "the card is re-rendered against the harvested candidates"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

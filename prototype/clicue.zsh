@@ -948,10 +948,30 @@ _clicue_dismiss() {
 # rather than deterministic, and stabilises statistically as history accumulates.
 # Nothing is inserted; the proposal shows as ghost text.
 _clicue_accept() {
+  # Stood down? Delegate IMMEDIATELY, before any harvest.
+  #
+  # This is what made `cd pro<Tab>` need a second Tab. _clicue_pre_redraw sets
+  # _clicue_mode=arg before it decides whether to show a card, so Tab reached the
+  # harvest branch below even for path-like input where clicue has no intention of
+  # rendering anything — the first press forked compsys for data that would never
+  # be displayed, consumed the keystroke, and left the operator to press Tab
+  # again for the completion they asked for the first time. Forking to populate a
+  # card that is not on screen is work with no reader.
+  if (( ! _clicue_visible )); then
+    zle ${_clicue_orig_tab:-expand-or-complete}
+    return 0
+  fi
+
   # In argument position, Tab is where the expensive engine earns its keep:
   # compsys forks (git branch, docker ps) so it cannot run per keystroke, but on
   # demand it yields the authoritative flag/subcommand set WITH real descriptions.
   # Cached per buffer so repeated Tab presses do not re-fork.
+  #
+  # The harvest does NOT consume the press. It used to `return 0` here, so the
+  # first Tab fetched and the second one moved: one press, no visible effect.
+  # Now it falls through into the cycle below, so a single Tab both fetches and
+  # lands on the first cue — which is what "Tab cycles the primary card" already
+  # promised.
   if [[ $_clicue_mode == arg && $_clicue_cs_for != $LBUFFER ]]; then
     _clicue_cs_for=$LBUFFER
     zle _clicue_capture 2>/dev/null
@@ -963,10 +983,12 @@ _clicue_accept() {
         print -r -- "    $_dn -> ${_clicue_cs_gloss[$_dn]}" >> $CLICUE_DEBUG
       done
     fi
+    # the harvest changes the candidate set, so any prior selection is stale
     _clicue_reset_sel
-    zle -R
-    return 0
+    # rebuild the card against the enlarged set before the selection lands on it
+    _clicue_render "$_clicue_pfx" 2>/dev/null
   fi
+
   if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
     _clicue_engaged=1
     local -i lim=${_clicue_t1n:-0}
