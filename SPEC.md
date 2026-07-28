@@ -34,19 +34,86 @@ pre-render what you were probably reaching for* — without leaving the line edi
 A theatrical prompter feeds an actor the line they are reaching for, before they
 falter. That is the product.
 
-## Working hypothesis
+## Design values
 
-There may be two separable layers, and existing tools each seem to get one right:
+These are *constraints on acceptable solutions*, derived from failure modes we
+observed directly. They are not assumptions about implementation, and they should
+survive whatever the experiments say about architecture.
 
-1. **Data** — what candidates exist here, and what do they mean
-2. **Render** — how they are presented
+### 1. Not a completion engine — a decorator over one
 
-**IRIS** owns its render surface but hand-authors ~600 command specs. **zsh** has a
-large distro-maintained data layer but a constrained line editor.
+Completion engines are hard. zsh's compsys represents many people iterating and
+fine-tuning over decades. clicue does not reimplement any of that; it consumes the
+output.
 
-The obvious move is *zsh's data + a richer render surface*. **[ASSUMED]** — it is
-the framing we arrived at, not a conclusion we tested. It may be wrong in an
-interesting way; the data/render split may not even be the right seam.
+Authority splits cleanly:
+
+| Question | Owner |
+|---|---|
+| Which candidates are valid *here*? | the completion engine |
+| What does a candidate *mean*? | the corpus |
+
+The completion engine is context-aware — it knows `cherry-pick` is a git
+subcommand, that this argument position wants a branch, that this flag takes a
+file. That is the part that took decades and must not be rebuilt.
+
+The corpus earns its keep even where compsys already carries a gloss: compsys
+descriptions are completion metadata, not documentation — terse and inconsistent
+by design — and they will never cover locally authored tools. **[MEASURED]** 43 of
+the 172 commands actually used on this machine have no gloss from any upstream
+source.
+
+### 2. Compose, don't capture
+
+Every tool in this space we examined captures something it did not need to:
+
+| Tool | What it captured | **[MEASURED]** |
+|---|---|---|
+| zsh-autocomplete | the `:completion:*` zstyles wholesale — `completer` and `matcher-list` replaced, not extended | ✓ |
+| oh-my-posh | bound `zle-line-init` directly instead of via `add-zle-hook-widget` | ✓ |
+| IRIS | the entire terminal, via a pty wrapper | ✓ |
+
+The contract clicue should hold itself to:
+
+- register through `add-zle-hook-widget`; never `zle -N` a hook someone else owns
+- tag `region_highlight` entries with `memo=clicue` so it coexists with
+  syntax-highlighting
+- configure through `zstyle ':clicue:*'` — the native idiom
+- **never touch `:completion:*`**
+
+The payoff is pluggable candidate sources. compsys, `$commands`, `$aliases`,
+history — and equally carapace, Fig specs, or anything emitting
+`name / gloss / source`. The renderer should be usable without our corpus, and the
+corpus without our renderer.
+
+### 3. Themes are legibility, not decoration
+
+The IRIS look is a starting point, not the goal. Different people need different
+visual encodings — contrast, density, color-blind-safe hues, or dropping color
+entirely in favour of weight and glyph. A theme system is an accessibility
+surface, and should be designed as one rather than as a skin.
+
+---
+
+## Lineage
+
+Worth stating plainly: this is **restoration, not invention**. Interactive systems
+did this well and the CLI regressed from them.
+
+- **TOPS-20 `COMND` JSYS** (mid-1970s) — system-level command parsing available to
+  every program, where `?` listed valid options *with descriptions* and ESC
+  completed. The actual ancestor of shell completion, with help text built in from
+  the start rather than bolted on.
+- **Genera / CLIM** on Lisp Machines — *presentation types*: displayed output
+  retained its semantic type and stayed live and directly actionable. The
+  hyperlink idea, decades early and more general.
+- **MULTICS**, **VMS DCL** — same family; structured command definitions with
+  integrated help.
+
+**[ASSUMED]** — these are recollections offered as design references to mine, not
+verified history. Specifics should be checked before any of it is repeated as
+fact. The value is directional: prior art exists, it was good, and it is worth
+reading before designing.
 
 ---
 
