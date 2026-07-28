@@ -112,11 +112,38 @@ Constraints that follow:
 
 - **Ranking beats completeness.** Six well-chosen cues beat forty exhaustive ones.
   The card's job is to make the top three right.
-- **Glosses stay short.** `cherry: find commits not merged upstream` is the right
-  length. A paragraph is a failure.
+- **Density is inversely proportional to attention.** Scanning six candidates →
+  terse. Narrowed to one → the selected row can afford much more, because
+  attention is already committed. This applies to *presentation*, not storage.
 - **Agent-written corpus entries will drift verbose.** Thoroughness is the default
-  failure mode of generated text and is precisely wrong here. The enrichment
-  prompt must fight it deliberately.
+  failure mode of generated text. The enrichment prompt must fight it — but toward
+  *the natural weight of a good gloss*, not toward an arbitrary word count.
+
+#### Gloss length: measured, not prescribed **[MEASURED]**
+
+| Corpus | n | mean | median | p90 | max |
+|---|---|---|---|---|---|
+| whatis / mandb | 31,788 | 35 | 35 | 53 | **57** |
+| compsys `_git` | 445 | 35 | 34 | 60 | **139** |
+
+Two independent corpora converge on **~35 characters** with no coordination. That
+is what a good gloss naturally weighs; it emerges rather than needing enforcement.
+
+The `max` column is the instructive part. whatis stops at 57 because mandb's
+format truncates there — a **storage artifact, not an editorial judgment**.
+compsys has no cap and reaches 139 when a command needs it. Given room, the richer
+corpus uses it.
+
+Therefore:
+
+- **No hard length cap in the corpus.** The tail is sometimes real.
+- **The corpus must not be shaped by any one head's column budget** — that is
+  exactly the coupling the component seams exist to prevent. Store what is useful;
+  let the presenter decide what to show.
+- **Wrap, don't truncate.** Vertical space is cheap and terminals are rarely narrow
+  for long. `Git extensions to provi…` is strictly worse than two lines.
+- Corpus entries may be **tiered** — a one-line gloss plus a fuller description —
+  so presenters can choose depth by available space and attention state.
 
 ---
 
