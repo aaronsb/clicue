@@ -10,19 +10,29 @@
 
 # ── behaviour ────────────────────────────────────────────────────────────────
 zstyle ':clicue:*' min-input 1        # chars before the card appears
-zstyle ':clicue:*' max-lines 14       # TOTAL card height, always. See note below.
+zstyle ':clicue:*' tier1-rows 10      # cues in the primary card; overflow -> grid
+zstyle ':clicue:*' tier2-rows 4       # grid rows in the secondary card
 zstyle ':clicue:*' enabled   yes
 
-# ── why max-lines and not max-rows ───────────────────────────────────────────
-# The card is a fixed number of lines regardless of how many candidates match.
+# ── why these are fixed counts ───────────────────────────────────────────────
+# The card is always the same number of lines: tier1-rows + tier2-rows + 5.
 # ZLE paints a taller POSTDISPLAY over a shorter one instead of reflowing, so a
-# card that grew or shrank while typing would mangle itself. Both boxes divide
-# this one budget and pad into it.
+# card that grew or shrank while typing would mangle itself. Both boxes pad to
+# their allocation, and when there is no overflow the primary card absorbs the
+# grid's border and rows so the total is identical either way.
 #
-#   both tiers:   border + tier1 rows + border + grid rows + hint + gloss + close
-#   tier 1 only:  border + tier1 rows + hint + gloss + close
-#
-# Raise it for more context, lower it to keep the terminal quieter. Minimum 8.
+# The primary card holds the top N ranked cues — history first, then everything
+# else alphabetically. Anything past N flows into the grid.
+
+# ── navigation ───────────────────────────────────────────────────────────────
+#   Tab          cycle the highlighted cue (wraps); the proposal shows as ghost
+#   Right Arrow  accept the ghost — the same gesture that accepts an
+#                autosuggestion, so there is nothing new to learn
+#   Arrows       navigate the grid, once Tab has carried the selection into it.
+#                This is menuselect in clicue's visual language: a mode entered
+#                deliberately, so arrows are on loan and are handed straight back
+#                on exit. Outside the grid, Up/Down are history as always.
+#   Esc          dismiss until the line is cleared
 
 # ── keys ─────────────────────────────────────────────────────────────────────
 # Every binding is configuration. Multiple sequences per action are fine —

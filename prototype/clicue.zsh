@@ -107,10 +107,11 @@ _clicue_candidates() {
     fi
   done
 
-  # Tier boundary is explicit: tier 1 is what this operator actually invokes
-  # (has history frequency); tier 2 is everything else on the system. The
-  # renderer draws them as two groups with one selection flowing between.
-  typeset -g _clicue_tier1_n=${#freqd}
+  # Ranked list: what this operator actually invokes first, then everything else
+  # alphabetically. The tier boundary is a COUNT applied by the renderer (the
+  # primary card holds a fixed number of cues), not a property of the data —
+  # otherwise the primary card's size swings with how much history happens to
+  # match, which is exactly the height instability POSTDISPLAY cannot tolerate.
   reply=( ${${(o)freqd}#*|} ${(o)rest} )
 }
 
@@ -305,9 +306,16 @@ _clicue_render() {
   zstyle -s ':clicue:*' max-lines maxlines 2>/dev/null || maxlines=14
   (( maxlines < 8 )) && maxlines=8
   local -i total=${#cands}
-  local -i t1n=$_clicue_tier1_n
+  # primary card holds a fixed number of cues; the overflow becomes the grid
+  local -i t1rows=10
+  zstyle -s ':clicue:*' tier1-rows t1rows 2>/dev/null || t1rows=10
+  (( t1rows < 1 )) && t1rows=1
+  local -i t2rows=4
+  zstyle -s ':clicue:*' tier2-rows t2rows 2>/dev/null || t2rows=4
+  (( t2rows < 1 )) && t2rows=1
+
+  local -i t1n=$t1rows
   (( t1n > total )) && t1n=$total
-  (( t1n < 0 )) && t1n=0
   typeset -g _clicue_t1n=$t1n
   # Focus follows the selection rather than a toggle: scroll past the end of
   # tier 1 and you are in the grid. Nothing to enter, nothing to remember.
@@ -318,18 +326,14 @@ _clicue_render() {
   (( width < 40 ))  && width=40
   local -i inner=$(( width - 2 ))
 
-  local -i r1=0 r2=0
-  if (( t1n > 0 && total > t1n )); then
-    local -i pool=$(( maxlines - 5 ))
-    (( pool < 2 )) && pool=2
-    r1=$t1n
-    (( r1 > pool - 1 )) && r1=$(( pool - 1 ))   # leave the grid at least a row
-    (( r1 < 1 )) && r1=1
-    r2=$(( pool - r1 ))
-  elif (( t1n > 0 )); then
-    r1=$(( maxlines - 4 )); r2=0
+  # Total = 1 + r1 + 1 + r2 + hint + gloss + close. With no overflow the grid
+  # box vanishes and tier 1 absorbs its border AND its rows, so the line count
+  # is identical either way.
+  local -i r1 r2
+  if (( total > t1n )); then
+    r1=$t1rows; r2=$t2rows
   else
-    r2=$(( maxlines - 4 )); r1=0
+    r1=$(( t1rows + t2rows + 1 )); r2=0
   fi
 
   # clamp selection across the whole list, then slide whichever window holds it
@@ -642,70 +646,16 @@ _clicue_bindall() {
   done
 }
 
-# Build the hint line once, from what is actually bound — bindings vary by
-# terminal, so advertising them is load-bearing rather than decorative.
+# Build the hint line once, from what is actually bound. Bindings vary by
+# terminal, so advertising the real ones is load-bearing rather than decorative.
 _clicue_build_hint() {
-  local -a d u
   local REPLY lbl
-  zstyle -a ':clicue:keys' scroll-down d || d=( '^[[1;2B' '^[[1;3B' )
-  zstyle -s ':clicue:keys' scroll-label lbl
-  if [[ -z $lbl ]]; then
-    # label the FIRST sequence that a real keypress can actually deliver here
-    _clicue_keylabel ${d[1]}; lbl="${REPLY}+↑↓"
-    [[ $CLICUE_TERM_EATS_SHIFT == 1 && ${REPLY} == Shift ]] && { _clicue_keylabel ${d[2]}; lbl="${REPLY}+↑↓" }
-  fi
-  local a dis
   local -a av dv
   zstyle -a ':clicue:keys' accept  av || av=( '^I' )
   zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
-  _clicue_keylabel ${av[1]}; a=$REPLY
-  _clicue_keylabel ${dv[1]}; dis=$REPLY
-  typeset -g _clicue_hint=" ${lbl} scroll · ${a} accept · ${dis} dismiss "
-}
-
-_clicue_scroll_down() {
-  (( _clicue_visible )) || return 0
-  (( _clicue_sel < ${#_clicue_cands} )) && (( _clicue_sel++ ))
-  _clicue_engaged=1
-  zle -R
-}
-
-_clicue_scroll_up() {
-  (( _clicue_visible )) || return 0
-  (( _clicue_sel > 1 )) && (( _clicue_sel-- ))
-  _clicue_engaged=1
-  zle -R
-}
-
-# ^C cannot be used for dismiss: the tty driver raises SIGINT before ZLE sees
-# the character, and TRAPINT can observe it but not stop ZLE aborting the line
-# (both verified).
-_clicue_dismiss() {
-  if (( _clicue_visible )); then
-    _clicue_suppressed=1
-    _clicue_clear
-    zle -R
-  fi
-  return 0
-}
-
-# While the card is up it OWNS command-position completion: Tab accepts the
-# highlighted cue. An informational card has nothing to accept, so Tab is handed
-# back to compsys — that is what makes `cd proj<Tab>` complete a real path.
-_clicue_accept() {
-  if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
-    local pick=${_clicue_cands[_clicue_sel]}
-    if [[ -n $_clicue_pfx ]]; then
-      LBUFFER="${LBUFFER%$_clicue_pfx}${pick} "
-    else
-      LBUFFER="${LBUFFER}${pick} "
-    fi
-    _clicue_reset_sel
-    _clicue_clear
-    zle -R
-    return 0
-  fi
-  zle ${_clicue_orig_tab:-expand-or-complete}
+  _clicue_keylabel ${av[1]}; local cyc=$REPLY
+  _clicue_keylabel ${dv[1]}; local dis=$REPLY
+  typeset -g _clicue_hint=" ${cyc} cycle · → accept · ↑↓ browse · ${dis} dismiss "
 }
 
 zle -N _clicue_scroll_down
