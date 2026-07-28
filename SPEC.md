@@ -137,7 +137,15 @@ The contract clicue should hold itself to:
 - tag `region_highlight` entries with `memo=clicue` so it coexists with
   syntax-highlighting
 - configure through `zstyle ':clicue:*'` — the native idiom
-- **never touch `:completion:*`**
+- **borrow from `:completion:*`, never keep.** This originally read "never touch",
+  which is no longer true and was corrected rather than quietly left standing.
+  clicue borrows exactly one style — `list-grouped`, for the duration of a single
+  capture, restored in an `always` block so an aborting completer cannot leave the
+  operator's own Tab menu regrouped. The distinction that matters is not whether a
+  style is touched but whether anything is **left changed**: zstyle is compsys's
+  own configuration API, and using it for the length of one call is composing.
+  Overwriting the operator's `completer` and `matcher-list` wholesale, as
+  zsh-autocomplete does, is capturing.
 
 The payoff is pluggable candidate sources. compsys, `$commands`, `$aliases`,
 history — and equally carapace, Fig specs, or anything emitting
