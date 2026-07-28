@@ -41,6 +41,8 @@ typeset -g  _clicue_orig_tab=''
 typeset -g  _clicue_mode=cmd       # cmd | arg
 typeset -g  _clicue_cmd=''         # in arg mode, the command being argued
 typeset -g  _clicue_pfx=''         # the partial word being completed
+typeset -g  _clicue_suppressed=0   # dismissed by the operator, stay down
+typeset -g  _clicue_info=0         # card is informational, not a candidate list
 
 # ── theme (Aura, from IRIS — see SPEC.md design language) ────────────────────
 typeset -gA CLICUE_THEME=(
@@ -127,6 +129,10 @@ _clicue_arg_candidates() {
 _clicue_gloss() {
   local name=$1 kind=$2
   if [[ $_clicue_mode == arg ]]; then
+    if (( _clicue_info )); then
+      _clicue_g=${CLICUE_GLOSS[$name]:-'no recorded arguments'}
+      return
+    fi
     # Honest placeholder. Real flag descriptions need compsys or a --help/man
     # parse in the enrichment pipeline; usage count is at least true.
     local c=${CLICUE_ARGN[${_clicue_cmd}\|${name}]:-}
@@ -147,8 +153,10 @@ _clicue_render() {
   local pfx=$1
   local -a cands
   local -a reply            # scratch for the candidate generators
-  if [[ $_clicue_mode == arg ]]; then
-    _clicue_arg_candidates $_clicue_cmd "$pfx" || return 1
+  if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
+    reply=( $_clicue_cmd )
+  elif [[ $_clicue_mode == arg ]]; then
+    _clicue_arg_candidates $_clicue_cmd "$pfx" || { _clicue_info=1; reply=( $_clicue_cmd ) }
   else
     _clicue_candidates $pfx
   fi
@@ -227,7 +235,8 @@ _clicue_render() {
     fi
   done
 
-  local hint=' Alt+↑↓ scroll · Tab accept · ^C dismiss '
+  local hint=' Alt+↑↓ scroll · Tab accept · Esc dismiss '
+  (( _clicue_info )) && hint=' Esc dismiss '
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 1 )) && brule=1
   lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
@@ -275,6 +284,9 @@ _clicue_clear() {
 _clicue_pre_redraw() {
   _clicue_clear
 
+  # dismissed by Esc — stay down until the line is emptied or finished
+  (( _clicue_suppressed )) && { [[ -n $LBUFFER ]] && return 0; _clicue_suppressed=0 }
+
   # While zsh's own completion menu owns the display, complist drives redisplay
   # and our region_highlight spans never land — the card would render as
   # colourless text stacked above a duplicate listing. Stand down instead.
@@ -316,7 +328,11 @@ _clicue_pre_redraw() {
     else
       _clicue_pfx=${words[-1]}
     fi
-    [[ -z ${CLICUE_ARGS[$_clicue_cmd]} ]] && return 0
+    # No recorded arguments for this command? Keep the card up as a "you are
+    # here" panel rather than vanishing the moment a space is typed. Losing the
+    # card on space was the single most jarring thing about the previous build.
+    _clicue_info=0
+    [[ -z ${CLICUE_ARGS[$_clicue_cmd]} ]] && _clicue_info=1
   fi
 
   # a changed buffer invalidates any selection the operator had made
@@ -341,13 +357,17 @@ _clicue_pre_redraw() {
   done
 }
 
-_clicue_line_finish() { _clicue_clear; _clicue_reset_sel; _clicue_lastbuf=$'\0' }
+_clicue_line_finish() {
+  _clicue_clear; _clicue_reset_sel
+  _clicue_suppressed=0; _clicue_info=0
+  _clicue_lastbuf=$'\0'
+}
 
 clicue-off() {
   add-zle-hook-widget -d line-pre-redraw _clicue_pre_redraw
   add-zle-hook-widget -d line-finish     _clicue_line_finish
   bindkey '^I' ${_clicue_orig_tab:-expand-or-complete}
-  bindkey -r '^[[1;3B' '^[[1;3A' '^[^[[B' '^[^[[A' '^[[1;2B' '^[[1;2A' 2>/dev/null
+  bindkey -r '^[[1;3B' '^[[1;3A' '^[^[[B' '^[^[[A' '^[[1;2B' '^[[1;2A' '^[' 2>/dev/null
   _clicue_clear
   print "clicue: unhooked (this shell only)"
 }
@@ -380,8 +400,23 @@ _clicue_scroll_up() {
 # Outside command position (arguments, paths, flags) the card is not shown and
 # Tab delegates untouched, because clicue has no candidate-source adapter yet
 # and compsys is authoritative there.
+# ^C cannot be used here: the tty driver raises SIGINT before ZLE sees the
+# character, and TRAPINT can observe it but not stop ZLE aborting the line
+# (both verified). Esc is unbound in this config and is the conventional
+# dismiss key for an overlay.
+_clicue_dismiss() {
+  if (( _clicue_visible )); then
+    _clicue_suppressed=1
+    _clicue_clear
+    zle -R
+    return 0
+  fi
+  return 0
+}
+
 _clicue_accept() {
-  if (( _clicue_visible )) && (( ${#_clicue_cands} )); then
+  # an informational card has nothing to accept — hand Tab back to compsys
+  if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
     local pick=${_clicue_cands[_clicue_sel]}
     if [[ -n $_clicue_pfx ]]; then
       LBUFFER="${LBUFFER%$_clicue_pfx}${pick} "   # replace just the partial word
@@ -399,6 +434,7 @@ _clicue_accept() {
 zle -N _clicue_scroll_down
 zle -N _clicue_scroll_up
 zle -N _clicue_accept
+zle -N _clicue_dismiss
 
 # remember what Tab did before we wrapped it, so we can delegate
 _clicue_orig_tab=${${(z)$(bindkey '^I')}[2]:-expand-or-complete}
@@ -415,6 +451,7 @@ bindkey '^[^[[A'  _clicue_scroll_up     # Alt+Up
 bindkey '^[[1;2B' _clicue_scroll_down   # Shift+Down — eaten by konsole
 bindkey '^[[1;2A' _clicue_scroll_up     # Shift+Up   — eaten by konsole
 bindkey '^I'      _clicue_accept
+bindkey '^['      _clicue_dismiss       # Esc — dismiss until the line is cleared
 
 add-zle-hook-widget line-pre-redraw _clicue_pre_redraw
 add-zle-hook-widget line-finish     _clicue_line_finish
