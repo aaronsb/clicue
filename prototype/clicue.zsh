@@ -43,6 +43,7 @@ typeset -g  _clicue_cmd=''         # in arg mode, the command being argued
 typeset -g  _clicue_pfx=''         # the partial word being completed
 typeset -g  _clicue_suppressed=0   # dismissed by the operator, stay down
 typeset -g  _clicue_info=0         # card is informational, not a candidate list
+typeset -g  _clicue_ghost=''       # stem of the highlighted cue, shown dim
 
 # ── theme (Aura, from IRIS — see SPEC.md design language) ────────────────────
 typeset -gA CLICUE_THEME=(
@@ -53,6 +54,7 @@ typeset -gA CLICUE_THEME=(
   selbg   '#3d375e'
   seltext '#ffffff'
   hint    '#6d6a7f'
+  ghost   '#6d6a7f'
 )
 
 # ── lazy corpus load: startup pays nothing; first card pays ~8ms once ────────
@@ -276,14 +278,25 @@ _clicue_reset_sel() {
   _clicue_sel=1; _clicue_top=1; _clicue_engaged=0
 }
 
-_clicue_clear() {
+# Strip only the CARD, deliberately leaving our ghost stem in place. The yield
+# wrappers use this: zsh-autosuggestions then accepts whatever precedes the
+# card, which is our stem — so Right Arrow accepts the highlighted cue.
+_clicue_clear_card() {
   _clicue_visible=0
   region_highlight=( ${region_highlight:#*memo=clicue*} )
-  # only strip OUR card — leave anything else (autosuggestions) intact
   if [[ -n $_clicue_card && $POSTDISPLAY == *"$_clicue_card" ]]; then
     POSTDISPLAY=${POSTDISPLAY%"$_clicue_card"}
   fi
   _clicue_card=''
+}
+
+# Strip card AND ghost — used before re-rendering, so stems do not accumulate.
+_clicue_clear() {
+  _clicue_clear_card
+  if [[ -n $_clicue_ghost && $POSTDISPLAY == *"$_clicue_ghost" ]]; then
+    POSTDISPLAY=${POSTDISPLAY%"$_clicue_ghost"}
+  fi
+  _clicue_ghost=''
 }
 
 _clicue_pre_redraw() {
@@ -355,10 +368,28 @@ _clicue_pre_redraw() {
   local -a specs=( $_clicue_spans )
   _clicue_visible=1
 
-  # compose: append after whatever is already in POSTDISPLAY
-  local -i base=$(( ${#BUFFER} + ${#POSTDISPLAY} ))
-  POSTDISPLAY="${POSTDISPLAY}${card}"
+  # Once the operator scrolls the card, the highlighted cue owns the ghost text:
+  # the typed prefix stays real, the STEM renders dim — the same convention
+  # zsh-autosuggestions uses, so the command line updates live from the card.
+  local ghost=''
+  if (( _clicue_engaged )) && (( ${#_clicue_cands} )) && (( ! _clicue_info )); then
+    local pick=${_clicue_cands[_clicue_sel]}
+    if [[ -n $_clicue_pfx && $pick == ${_clicue_pfx}* ]]; then
+      ghost=${pick#$_clicue_pfx}
+    elif [[ -z $_clicue_pfx ]]; then
+      ghost=$pick
+    fi
+    (( ${#ghost} )) && POSTDISPLAY=''   # our cue supersedes the autosuggestion
+  fi
+
+  local -i gbase=$(( ${#BUFFER} + ${#POSTDISPLAY} ))
+  local -i base=$(( gbase + ${#ghost} ))
+  POSTDISPLAY="${POSTDISPLAY}${ghost}${card}"
+  _clicue_ghost=$ghost
   _clicue_card=$card
+
+  (( ${#ghost} )) && region_highlight+=(
+    "$gbase $(( gbase + ${#ghost} )) fg=${CLICUE_THEME[ghost]},memo=clicue" )
 
   local s a b style rest
   for s in $specs; do
@@ -369,7 +400,7 @@ _clicue_pre_redraw() {
 }
 
 _clicue_line_finish() {
-  _clicue_clear; _clicue_reset_sel
+  _clicue_clear; _clicue_reset_sel; _clicue_ghost=''
   _clicue_suppressed=0; _clicue_info=0
   _clicue_lastbuf=$'\0'
 }
@@ -574,7 +605,7 @@ _clicue_install_yields() {
       completion:*) continue ;;
       *)           eval "${fn}_orig() { zle .$w -- \"\$@\" }" ;;
     esac
-    eval "$fn() { _clicue_clear; ${fn}_orig \"\$@\" }"
+    eval "$fn() { _clicue_clear_card; ${fn}_orig \"\$@\" }"
     zle -N $w $fn
   done
 }
