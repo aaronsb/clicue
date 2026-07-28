@@ -14,6 +14,13 @@
 #     below it rather than overwriting
 #   - never touches :completion:* zstyles
 #
+# Debugging:
+#   CLICUE_DEBUG=/path/to/log zsh -i
+# logs one block per line-pre-redraw: buffer, POSTDISPLAY length, our card
+# length, and any early return. Written because a display bug turned out to be
+# invisible in the state — the state was right on every keystroke while the
+# screen was wrong on alternating ones.
+#
 # Config:
 #   zstyle ':clicue:*' min-input 1      # chars before the card appears
 #   zstyle ':clicue:*' max-rows   8
@@ -497,10 +504,12 @@ _clicue_clear() {
 }
 
 _clicue_pre_redraw() {
+  [[ -n $CLICUE_DEBUG ]] && print -r -- "ENTER buf=[$LBUFFER] pd=${#POSTDISPLAY} card=${#_clicue_card} ghost=[$_clicue_ghost] sup=$_clicue_suppressed vis=$_clicue_visible" >> $CLICUE_DEBUG
   _clicue_clear
+  [[ -n $CLICUE_DEBUG ]] && print -r -- "  AFTERCLEAR pd=${#POSTDISPLAY}" >> $CLICUE_DEBUG
 
   # dismissed by Esc — stay down until the line is emptied or finished
-  (( _clicue_suppressed )) && { [[ -n $LBUFFER ]] && return 0; _clicue_suppressed=0 }
+  (( _clicue_suppressed )) && { [[ -n $LBUFFER ]] && { [[ -n $CLICUE_DEBUG ]] && print -r -- "  BAIL suppressed" >> $CLICUE_DEBUG; return 0 }; _clicue_suppressed=0 }
 
   # While zsh's own completion menu owns the display, complist drives redisplay
   # and our region_highlight spans never land — the card would render as
@@ -562,7 +571,10 @@ _clicue_pre_redraw() {
   # a changed buffer invalidates any selection the operator had made
   [[ $buf != $_clicue_lastbuf ]] && { _clicue_lastbuf=$buf; _clicue_reset_sel }
 
-  _clicue_render "$_clicue_pfx" || return 0
+  if ! _clicue_render "$_clicue_pfx"; then
+    [[ -n $CLICUE_DEBUG ]] && print -r -- "  BAIL render-failed mode=$_clicue_mode pfx=[$_clicue_pfx] info=$_clicue_info" >> $CLICUE_DEBUG
+    return 0
+  fi
 
   local card=$_clicue_text
   local -a specs=( $_clicue_spans )
@@ -590,6 +602,7 @@ _clicue_pre_redraw() {
 
   (( ${#ghost} )) && region_highlight+=(
     "$gbase $(( gbase + ${#ghost} )) fg=${CLICUE_THEME[ghost]},memo=clicue" )
+  [[ -n $CLICUE_DEBUG ]] && print -r -- "  DREW card=${#card} pd=${#POSTDISPLAY} lines=${#_clicue_lines}" >> $CLICUE_DEBUG
 
   local s a b style rest
   for s in $specs; do
