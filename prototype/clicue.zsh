@@ -213,9 +213,21 @@ _clicue_arg_candidates() {
 
   # Everything else compsys offered: subcommands, values, anything that is not a
   # documented option and therefore has no spellings to group.
+  #
+  # Filtered against the prefix COMPSYS was matching, not the operator's whole
+  # token. compadd -O already stores only matches, so this filter exists purely to
+  # catch a harvest that has gone stale as the operator keeps typing — and it must
+  # subtract whatever compsys consumed, or a dash-consuming completer loses every
+  # candidate it offered.
+  local rel=$pfx
+  if [[ -n $_clicue_cs_iprefix && $pfx == ${_clicue_cs_iprefix}* ]]; then
+    rel=${pfx#$_clicue_cs_iprefix}
+  fi
   for n in $_clicue_cs_words; do
+    # filter on what compsys matched, THEN normalise
+    [[ -n $rel && $n != ${rel}* ]] && continue
+    [[ $n != -* && $_clicue_cs_iprefix == -* ]] && n="${_clicue_cs_iprefix}${n}"
     (( ${+seen[$n]} )) && continue
-    [[ -n $pfx && $n != ${pfx}* ]] && continue
     seen[$n]=1; rest+=( $n )
   done
   typeset -g _clicue_arg_t1=${#hist}
@@ -245,6 +257,7 @@ typeset -ga _clicue_cs_words=()
 typeset -ga _clicue_cs_descs=()
 typeset -gA _clicue_cs_gloss=()
 typeset -g  _clicue_cs_for=$'\0'      # buffer the last harvest was for
+typeset -g  _clicue_cs_iprefix=''     # what compsys had already consumed
 
 _clicue_capture_fn() {
   compstate[insert]=''
@@ -252,6 +265,13 @@ _clicue_capture_fn() {
   _clicue_cs_words=(); _clicue_cs_descs=()
 
   compadd() {
+    # What compsys treats as ALREADY on the line. Candidates are relative to this:
+    # `_tar` consumes the leading dash into IPREFIX and completes bare letters
+    # (`A`, `c`, `x`), while `_man` leaves the dash in PREFIX and completes whole
+    # tokens (`-a`, `--all`). Without recording it, tar's 14 candidates were all
+    # discarded for not starting with a dash — and Tab fell through to zsh, which
+    # inserted `A` and opened its own menu. [MEASURED]
+    _clicue_cs_iprefix=$IPREFIX
     local -a w dsp
     local -i i
     local a dv probe=''
@@ -524,11 +544,19 @@ _clicue_harvest_flags() {
 
   local -A byd=()
   local -i i
-  local w d
+  local w d raw
   for (( i = 1; i <= ${#_clicue_cs_words}; i++ )); do
-    w=${_clicue_cs_words[i]}
+    raw=${_clicue_cs_words[i]}
+    w=$raw
+    # Put back whatever compsys consumed, so a bare `A` from `tar -` is stored as
+    # the flag it actually is. Without this, tar's cache stayed permanently empty
+    # and the card never got past "press Tab to load".
+    [[ $w != -* && $_clicue_cs_iprefix == -* ]] && w="${_clicue_cs_iprefix}${w}"
     [[ $w == -* ]] || continue
-    _clicue_unpack_desc $w "${_clicue_cs_descs[i]}"
+    # unpacked against the ORIGINAL word: compdescribe packed the display string
+    # around `A`, not around `-A`, so stripping by the normalised name left the
+    # whole `A  -- append to an archive` sitting in the gloss column
+    _clicue_unpack_desc $raw "${_clicue_cs_descs[i]}"
     d=$_clicue_ud
     [[ -z $d || $d == '@' ]] && continue
     _clicue_fkey $cmd $w
