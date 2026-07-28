@@ -156,7 +156,10 @@ _clicue_render() {
   if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
     reply=( $_clicue_cmd )
   elif [[ $_clicue_mode == arg ]]; then
-    _clicue_arg_candidates $_clicue_cmd "$pfx" || { _clicue_info=1; reply=( $_clicue_cmd ) }
+    if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
+      [[ -n $pfx ]] && return 1        # partial, no match — hide; compsys owns it
+      _clicue_info=1; reply=( $_clicue_cmd )
+    fi
   else
     _clicue_candidates $pfx
   fi
@@ -334,7 +337,13 @@ _clicue_pre_redraw() {
     # here" panel rather than vanishing the moment a space is typed. Losing the
     # card on space was the single most jarring thing about the previous build.
     _clicue_info=0
-    [[ -z ${CLICUE_ARGS[$_clicue_cmd]} ]] && _clicue_info=1
+    if [[ -z ${CLICUE_ARGS[$_clicue_cmd]} ]]; then
+      # Mid-word with nothing to offer: get out of the way entirely so compsys
+      # can do path/file completion. An informational card here would swallow
+      # Tab and block `cd proj<Tab>`.
+      [[ -n $_clicue_pfx ]] && return 0
+      _clicue_info=1
+    fi
   fi
 
   # a changed buffer invalidates any selection the operator had made
@@ -456,6 +465,51 @@ _clicue_build_hint() {
   _clicue_keylabel ${av[1]}; a=$REPLY
   _clicue_keylabel ${dv[1]}; dis=$REPLY
   typeset -g _clicue_hint=" ${lbl} scroll · ${a} accept · ${dis} dismiss "
+}
+
+_clicue_scroll_down() {
+  (( _clicue_visible )) || return 0
+  (( _clicue_sel < ${#_clicue_cands} )) && (( _clicue_sel++ ))
+  _clicue_engaged=1
+  zle -R
+}
+
+_clicue_scroll_up() {
+  (( _clicue_visible )) || return 0
+  (( _clicue_sel > 1 )) && (( _clicue_sel-- ))
+  _clicue_engaged=1
+  zle -R
+}
+
+# ^C cannot be used for dismiss: the tty driver raises SIGINT before ZLE sees
+# the character, and TRAPINT can observe it but not stop ZLE aborting the line
+# (both verified).
+_clicue_dismiss() {
+  if (( _clicue_visible )); then
+    _clicue_suppressed=1
+    _clicue_clear
+    zle -R
+  fi
+  return 0
+}
+
+# While the card is up it OWNS command-position completion: Tab accepts the
+# highlighted cue. An informational card has nothing to accept, so Tab is handed
+# back to compsys — that is what makes `cd proj<Tab>` complete a real path.
+_clicue_accept() {
+  if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
+    local pick=${_clicue_cands[_clicue_sel]}
+    if [[ -n $_clicue_pfx ]]; then
+      LBUFFER="${LBUFFER%$_clicue_pfx}${pick} "
+    else
+      LBUFFER="${LBUFFER}${pick} "
+    fi
+    _clicue_reset_sel
+    _clicue_clear
+    zle -R
+    return 0
+  fi
+  zle ${_clicue_orig_tab:-expand-or-complete}
 }
 
 zle -N _clicue_scroll_down
