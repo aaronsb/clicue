@@ -220,7 +220,12 @@ _clicue_emit_grid() {
   done
   (( w > 28 )) && w=28
   local -i colw=$(( w + 2 ))
-  local -i ncols=$(( inner / colw ))
+  # tier 1 rows put names 3 columns in (│ + 2-char marker + space); match it so
+  # the grid's first column lines up with the primary card's names
+  local -i gutter=3
+  local -i avail=$(( inner - gutter ))
+  (( avail < colw )) && avail=$colw
+  local -i ncols=$(( avail / colw ))
   (( ncols < 1 )) && ncols=1
   # LAYOUT rows come from the content (so few items spread across columns rather
   # than stacking in one); the box is then PADDED to the full allocation so the
@@ -264,7 +269,7 @@ _clicue_emit_grid() {
       (( idx == _clicue_sel )) && cell="▸${${(r:$(( colw - 1 )):)${nm[1,$w]}}}"
       row+=$cell
     done
-    _clicue_lines+=( "│${${(r:$inner:)row}}│" )
+    _clicue_lines+=( "│${(r:$gutter:)}${${(r:$avail:)row}}│" )
   done
   # pad to the allocation
   local -i pad=$rows
@@ -397,11 +402,11 @@ _clicue_render() {
     local gkind=${_clicue_kind[$gname]:-system}
     [[ $_clicue_mode == arg ]] && gkind=arg
     _clicue_gloss $gname $gkind
-    local -i gw=$(( inner - namew - 3 ))
+    local -i gw=$(( inner - namew - 5 ))
     (( gw < 10 )) && gw=10
     local gg=$_clicue_g
     (( ${#gg} > gw )) && gg="${gg[1,$(( gw - 1 ))]}…"
-    _clicue_lines+=( "│${(r:$namew:)${gname[1,$namew]}}  ${(r:$gw:)gg} │" )
+    _clicue_lines+=( "│   ${(r:$namew:)${gname[1,$namew]}}  ${(r:$gw:)gg}│" )
     _clicue_lines+=( "╰${(l:$inner::─:):-}╯" )
   fi
 
