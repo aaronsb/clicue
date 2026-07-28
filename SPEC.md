@@ -221,7 +221,24 @@ nothing to enter and nothing to remember. `_clicue_install_arrows` captures the
 prior binding per key and delegates whenever the grid does not have focus — so
 `history-substring-search-up` still owns Up in every other situation.
 
-### POSTDISPLAY must be constant height **[MEASURED]**
+### POSTDISPLAY height: constraint or not? **[ASSUMED — being re-tested]**
+
+**Status changed 2026-07-28.** The padding that enforced constant height has been
+removed at the operator's request, so the card now sizes to its content. This
+deliberately re-tests the claim below, which was never isolated.
+
+The honest account: a visual bug was reported (the second card drawing over the
+first), constant height was *inferred* as the cause, and making the height
+constant appeared to resolve it. That is correlation, not diagnosis — the same fix
+also stabilised several other things at once.
+
+If display mangling returns while typing narrows the candidate set, the inference
+was right and padding must come back. If it does not, the constraint was imaginary
+and cost real UX (blank filler rows in every small card).
+
+The claim as originally recorded follows.
+
+### POSTDISPLAY must be constant height **[ASSUMED]**
 
 A second POSTDISPLAY defect, found via a visual bug: Alt+Down made the second
 card draw *on top of* the first rather than below it.

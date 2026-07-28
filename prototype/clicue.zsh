@@ -197,10 +197,12 @@ _clicue_emit_box() {
     gcol=${(r:$glossw:)g}
     _clicue_lines+=( "│${marker} ${nmcol}  ${gcol}│" )
   done
-  # pad to the allocation — a card that changes height gets painted over itself
-  while (( emitted < maxrows )); do
-    _clicue_lines+=( "│${(r:$inner:)}│" ); (( emitted++ ))
-  done
+  # Deliberately NOT padded to the allocation. The card shows as many cues as
+  # exist and no blank filler. This makes the card's height vary with the
+  # candidate count, which re-tests an earlier inference (that ZLE paints a
+  # taller POSTDISPLAY over a shorter one rather than reflowing) — that was
+  # never isolated, only worked around. If display mangling returns while
+  # typing, the inference was right and padding must come back.
   return 0
 }
 
@@ -271,11 +273,7 @@ _clicue_emit_grid() {
     done
     _clicue_lines+=( "│${(r:$gutter:)}${${(r:$avail:)row}}│" )
   done
-  # pad to the allocation
-  local -i pad=$rows
-  while (( pad < maxrows )); do
-    _clicue_lines+=( "│${(r:$inner:)}│" ); (( pad++ ))
-  done
+  # not padded either — see the note in _clicue_emit_box
   return 0
 }
 
