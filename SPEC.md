@@ -503,6 +503,51 @@ cherry:'find commits not merged upstream'
 cherry-pick:'apply changes introduced by some existing commits'
 ```
 
+### Driving compsys for descriptions: four defects **[MEASURED]**
+
+The adapter harvested candidates correctly from the first day and yet the cards
+showed bare names. Four separate defects, found by logging every `compadd` call
+rather than by reading the rendered output — a description gap is only visible at
+the call site, because by render time "compsys described nothing" and "we dropped
+what it described" look identical.
+
+| # | Defect | Why it was invisible |
+|---|---|---|
+| 1 | `-d` arrives **clustered** as `-ld` (compdescribe emits it that way); an exact `== -d` test never matched | no error — the array simply stayed empty |
+| 2 | placeholder padding built one `@@@@…` blob instead of N elements, so every group after an undescribed one was **misaligned** | wrong glosses on the right names reads as bad data, not as a bug |
+| 3 | prepending `-O` **steals the caller's own array** — with two `-O`, the *first* wins | `_git` derives its description column width from exactly such an array, so this corrupted the layout of the descriptions being read |
+| 4 | `list-grouped` (on by default) routes long options through a grouped path that moves the description out of `-d` **and emits every option twice** | looked like compsys just has no flag descriptions |
+
+Defect 4 is the interesting one. The descriptions were never missing — `_arguments`
+hands `_describe` an array of `--all:stage all modified and deleted paths` pairs.
+With `list-grouped` on, each option becomes its own single-match group and the
+description leaves the display array entirely.
+
+| Buffer | before | after |
+|---|---|---|
+| `curl -` | 664 words, **0** described | 332 words, **331** described |
+| `git commit -` | 118, 0 | 74, **59** |
+| `git ` | 306, 0 | 153, **152** |
+| `docker ` | 120, 0 | 60, **60** |
+| `systemctl ` | 154, 0 | 77, **77** |
+
+The word counts halve because the duplicate emission goes away too.
+
+Three candidate explanations were tested and **ruled out** before this one: our own
+`compstate[list]=''` (no effect at either clear point), the `verbose` /
+`descriptions` styles (no effect), and `compadd -X` group explanations (never
+present). Recording the disproofs because the same shape — plausible mechanism,
+a fix that works, no isolation step — is what produced two wrong `[MEASURED]`
+tags earlier in this project.
+
+`list-grouped` is **borrowed, not kept**: set for the duration of one capture and
+restored in an `always` block, so a completer that aborts cannot leave the
+operator's normal Tab menu quietly regrouped (design value 1). It cannot be
+scoped by context instead — during capture `curcontext` is `:complete:<cmd>:<tag>`
+with an empty widget field, so no pattern selects clicue's call and not the
+operator's. Configuring compsys by zstyle is using its own API; this is not the
+kind of reaching-in that design value 0 forbids.
+
 ### Coverage against installed commands **[MEASURED]**
 
 | Tier | Count | % of installed |

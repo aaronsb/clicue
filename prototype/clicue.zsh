@@ -182,32 +182,133 @@ _clicue_capture_fn() {
   compadd() {
     local -a w dsp
     local -i i
-    # find the -d array (given by name or as a literal list) so it can be pruned
-    # alongside the words and stay aligned
+    local a dv probe=''
+    # Scan the options for two things: the -d display array, and whether the
+    # CALLER already supplied -O/-A of its own.
     for (( i = 1; i <= $#; i++ )); do
-      if [[ ${@[i]} == -d ]]; then
-        local dv=${@[i+1]}
-        if [[ -n ${(P)dv+x} ]]; then dsp=( ${(P)dv} ); else dsp=( ${=dv} ); fi
-        break
-      fi
+      a=${@[i]}
+      # words follow the separator; stop before a candidate that merely LOOKS
+      # like an option (completing `-ld` would otherwise read as `-d`)
+      [[ $a == - || $a == -- ]] && break
+      [[ $a == -?* && $a != --* ]] || continue
+      case ${a[-1]} in
+        # -d takes the next word as its argument, so it is necessarily last in
+        # its cluster. It arrives clustered in practice: compdescribe emits
+        # `-ld`, which an exact `== -d` test silently never matches. [MEASURED]
+        (d) if [[ -z $dv ]]; then
+              dv=${@[i+1]}
+              if [[ -n ${(P)dv+x} ]]; then
+                dsp=( "${(@P)dv}" )
+              else
+                dsp=( ${=${${dv#\(}%\)}} )   # literal (a b c) form
+              fi
+            fi ;;
+        # A caller-supplied -O/-A means this call is the completer talking to
+        # ITSELF — a "does anything match / how wide is the longest" probe, not
+        # a presentation. Two -O arrays do not both fill: the FIRST wins
+        # [MEASURED], so passing ours would silently steal theirs. _git computes
+        # its description column width from exactly such an array, so stealing
+        # it corrupts the layout of the descriptions we are trying to read.
+        # Leave the call untouched and harvest nothing; the same words come back
+        # described in the grouped calls that follow.
+        (O|A) probe=1 ;;
+      esac
     done
+
+    if [[ -n $probe ]]; then
+      [[ -n $CLICUE_DEBUG ]] && print -r -- "    compadd PROBE (caller -O/-A) skipped" >> $CLICUE_DEBUG
+      builtin compadd "$@" 2>/dev/null
+      return $?
+    fi
+
+    local -i pre=${#dsp}
     builtin compadd -O w -D dsp "$@" 2>/dev/null
+    # Per-call, because a description gap is only ever visible HERE: by the time
+    # the card renders, an unaligned group is indistinguishable from one the
+    # completer simply never described.
+    [[ -n $CLICUE_DEBUG ]] && \
+      print -r -- "    compadd d=${dv:-none} dsp:${pre}->${#dsp} words=${#w}" >> $CLICUE_DEBUG
     (( ${#w} )) || return 1
     _clicue_cs_words+=( $w )
     if (( ${#dsp} == ${#w} )); then
       _clicue_cs_descs+=( $dsp )
     else
-      _clicue_cs_descs+=( ${(s: :)${(l:${#w}::@:):-}} )   # placeholders
+      # one placeholder PER WORD. Padding to width N yields a single N-char
+      # string, so this must split on the empty separator, not on spaces —
+      # splitting on spaces returned one blob and misaligned every group after
+      # an undescribed one. [MEASURED]
+      _clicue_cs_descs+=( ${(s::)${(l:${#w}::@:):-}} )
     fi
     return 0
   }
 
-  _main_complete
+  # list-grouped is what decides whether a description survives to compadd.
+  #
+  # With it ON (compsys's default), `_describe -O option` routes long options
+  # through compdescribe's grouped path: each option becomes its own single-match
+  # group, its description moves out of the -d display array, and every option is
+  # emitted TWICE — once bare in the pre-pass, once per group. `curl -` measured
+  # 664 words and ZERO descriptions that way. With it off: 332 words, 331
+  # described. `docker ` goes from 120 words / 60 described to 60 / 60.
+  # [MEASURED]
+  #
+  # Set for the duration of THIS call only and restored in an `always` block, so
+  # a completer that errors out cannot leave the operator's normal Tab menu
+  # quietly regrouped — an invisible change to a live surface is exactly what
+  # design value 1 forbids. zstyle is compsys's own configuration API, so this
+  # is configuring a willing mechanism, not reaching into one.
+  #
+  # It cannot be scoped by context instead: during capture curcontext is
+  # `:complete:<cmd>:<tag>` — the widget field is empty, so there is no pattern
+  # that selects clicue's call and not the operator's. [MEASURED]
+  local -a _clicue_lg
+  local -i _clicue_lg_had=0
+  zstyle -g _clicue_lg ':completion:*' list-grouped 2>/dev/null && _clicue_lg_had=1
+  zstyle ':completion:*' list-grouped false
+  {
+    _main_complete
+  } always {
+    if (( _clicue_lg_had )); then
+      zstyle ':completion:*' list-grouped "${_clicue_lg[@]}"
+    else
+      zstyle -d ':completion:*' list-grouped
+    fi
+  }
   unfunction compadd 2>/dev/null
   return 0
 }
 
 zle -C _clicue_capture list-choices _clicue_capture_fn
+
+# Build the name -> description map from the aligned harvest.
+#
+# compdescribe packs each display string as "<word><padding>-- <description>" so
+# the list lines up in COMPSYS's layout — one column, name and gloss in the same
+# string. clicue renders name and gloss as separate columns, so that prefix has
+# to come back off or every row shows its name twice. Done here rather than in
+# the compadd shadow: alignment is guaranteed by -D, and this is our own code
+# where the shell options are ours to set.
+_clicue_cs_build_gloss() {
+  setopt localoptions extended_glob
+  _clicue_cs_gloss=()
+  local sep w d
+  zstyle -s ':completion:*:*' list-separator sep || sep='--'
+  local -i i
+  for (( i = 1; i <= ${#_clicue_cs_words}; i++ )); do
+    d=${_clicue_cs_descs[i]}
+    [[ $d == '@' || -z $d ]] && continue      # placeholder: no description given
+    w=${_clicue_cs_words[i]}
+    if [[ $d == ${w}* ]]; then
+      d=${d#$w}
+      d=${d##[[:space:]]#}
+      [[ $d == ${sep}(|[[:space:]]*) ]] && d=${d#$sep}
+      d=${d##[[:space:]]#}
+    fi
+    d=${d%%[[:space:]]#}
+    [[ -z $d ]] && continue
+    _clicue_cs_gloss[$w]=$d
+  done
+}
 
 # ── gloss lookup ─────────────────────────────────────────────────────────────
 _clicue_gloss() {
@@ -854,13 +955,14 @@ _clicue_accept() {
   if [[ $_clicue_mode == arg && $_clicue_cs_for != $LBUFFER ]]; then
     _clicue_cs_for=$LBUFFER
     zle _clicue_capture 2>/dev/null
-    _clicue_cs_gloss=()
-    local -i i
-    for (( i = 1; i <= ${#_clicue_cs_words}; i++ )); do
-      [[ ${_clicue_cs_descs[i]} == '@' ]] && continue
-      _clicue_cs_gloss[${_clicue_cs_words[i]}]=${_clicue_cs_descs[i]}
-    done
-    [[ -n $CLICUE_DEBUG ]] && print -r -- "  COMPSYS n=${#_clicue_cs_words} first=[${_clicue_cs_words[1]}] desc=[${_clicue_cs_descs[1]}]" >> $CLICUE_DEBUG
+    _clicue_cs_build_gloss
+    if [[ -n $CLICUE_DEBUG ]]; then
+      print -r -- "  COMPSYS words=${#_clicue_cs_words} descs=${#_clicue_cs_descs} glossed=${#_clicue_cs_gloss}" >> $CLICUE_DEBUG
+      local _dn
+      for _dn in ${${(k)_clicue_cs_gloss}[1,3]}; do
+        print -r -- "    $_dn -> ${_clicue_cs_gloss[$_dn]}" >> $CLICUE_DEBUG
+      done
+    fi
     _clicue_reset_sel
     zle -R
     return 0
