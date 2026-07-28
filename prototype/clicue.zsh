@@ -51,6 +51,7 @@ typeset -g  _clicue_engaged=0      # has the operator actually used the card?
 typeset -g  _clicue_visible=0
 typeset -g  _clicue_standdown=1   # clicue deliberately yielded this position
 typeset -g  _clicue_optctx=0      # the line already carries an option token
+typeset -g  _clicue_coldflags=0   # option typed, flag set not harvested yet
 typeset -g  _clicue_lastbuf=$'\0'
 typeset -ga _clicue_cands=()
 # Candidate -> what to SHOW for it. The candidate stays the exact token that gets
@@ -160,20 +161,23 @@ _clicue_arg_candidates() {
   local -A seen=()
   local n
   for n in $hist; do seen[$n]=1; done
-  for n in $_clicue_cs_words; do
-    (( ${+seen[$n]} )) && continue
-    [[ -n $pfx && $n != ${pfx}* ]] && continue
-    seen[$n]=1; rest+=( $n )
-  done
+  # NOTE: the grouped flag set is resolved BEFORE the raw compsys words below.
+  # Order matters. A fresh harvest fills both, and whichever runs first claims the
+  # row — with compsys first, `man -` showed 74 ungrouped rows on the first Tab and
+  # 39 grouped ones in every later shell, for identical input. Same data, two
+  # different cards, decided by cache warmth.
 
-  # The cached flag set, when the operator is typing an option. This is what lets
+  # The flag set, when the operator is typing an option. This is what lets
   # the card have content in flag position WITHOUT a fork: reading the cache is
   # cheap enough for a keystroke, and the first Tab for a command is what fills it.
   # Without this the card would be empty until Tab, and an empty card is how
   # zsh's raw listing got on screen in the first place.
   if [[ $pfx == -* ]] || (( _clicue_optctx )); then
     _clicue_flag_load $cmd 2>/dev/null
-    local fk alt
+    # ALL declared here, outside the loop. Re-declaring a set `local` inside a loop
+    # body prints its value — `sp=--help` and friends leaked straight onto the
+    # terminal. Third time this exact gotcha has bitten this file.
+    local fk alt canon sp
     # Sorted so the SHORT spelling of a pair is met first and becomes the row.
     for fk in ${(ko)_clicue_flag_desc}; do
       [[ $fk == ${cmd}\|* ]] || continue
@@ -194,19 +198,26 @@ _clicue_arg_candidates() {
       # inserted, and every other spelling is marked seen so it cannot also appear
       # on its own row.
       _clicue_flag_canon $cmd $n
-      local canon=$_clicue_fc
+      canon=$_clicue_fc
       # when a prefix is being typed, honour it over the canonical short form —
       # typing `--rec` must not silently insert `-r`
       [[ -n $pfx && $canon != ${pfx}* ]] && canon=$n
       (( ${+seen[$canon]} )) && continue
       seen[$n]=1; seen[$canon]=1
-      local sp
       for sp in ${=alt}; do seen[$sp]=1; done
       _clicue_flag_label $cmd $n
       _clicue_disp[$canon]=$_clicue_fl
       rest+=( $canon )
     done
   fi
+
+  # Everything else compsys offered: subcommands, values, anything that is not a
+  # documented option and therefore has no spellings to group.
+  for n in $_clicue_cs_words; do
+    (( ${+seen[$n]} )) && continue
+    [[ -n $pfx && $n != ${pfx}* ]] && continue
+    seen[$n]=1; rest+=( $n )
+  done
   typeset -g _clicue_arg_t1=${#hist}
   reply=( $hist ${(o)rest} )
   (( ${#reply} )) || return 1
@@ -640,7 +651,11 @@ _clicue_gloss() {
   local name=$1 kind=$2
   if [[ $_clicue_mode == arg ]]; then
     if (( _clicue_info )); then
-      _clicue_g=${CLICUE_GLOSS[$name]:-'no recorded arguments'}
+      if (( _clicue_coldflags )); then
+        _clicue_g='press Tab to load this command'"'"'s options'
+      else
+        _clicue_g=${CLICUE_GLOSS[$name]:-'no recorded arguments'}
+      fi
       return
     fi
     # What the flag MEANS leads; how often it was used trails.
@@ -909,6 +924,7 @@ _clicue_render() {
   typeset -g _clicue_tier1_n=0
   # cleared per render, or a label from the previous command would outlive it
   _clicue_disp=()
+  _clicue_coldflags=0
 
   # ── what is already on the line, explained ────────────────────────────────
   # Built before the empty-candidate bail, because a COMPLETE invocation is
@@ -949,7 +965,15 @@ _clicue_render() {
     reply=( $_clicue_cmd ); _clicue_tier1_n=1
   elif [[ $_clicue_mode == arg ]]; then
     if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
-      if (( ${#_clicue_explain_rows} )); then
+      # Typing an option with no flag data yet. Rendering nothing here is what
+      # reads as "this command cannot be completed" — the operator has no way to
+      # know one Tab would fill the card. Say it instead.
+      if [[ $pfx == -* ]] && ! _clicue_flag_load $_clicue_cmd 2>/dev/null; then
+        _clicue_info=1; _clicue_coldflags=1; reply=( $_clicue_cmd )
+        _clicue_tier1_n=1
+        cands=( $reply )
+        _clicue_cands=( $cands )
+      elif (( ${#_clicue_explain_rows} )); then
         # A COMPLETE invocation is exactly the case with nothing left to propose.
         # `rm -rf` matches no further candidate, so the card used to vanish at the
         # moment the operator had typed something worth explaining.
@@ -1493,6 +1517,12 @@ _clicue_dismiss() {
 # rather than deterministic, and stabilises statistically as history accumulates.
 # Nothing is inserted; the proposal shows as ghost text.
 _clicue_accept() {
+  # Did THIS press do the harvesting? If so it must not also advance the
+  # selection: the harvest already lands on cue 1, and incrementing on top of that
+  # made the first Tab skip the top-ranked cue. Pre-zeroing the selection instead
+  # does not work — _clicue_render clamps it back to 1 on the way past.
+  local -i just_harvested=0
+
   # Stood down? Delegate IMMEDIATELY, before any harvest.
   #
   # This is what made `cd pro<Tab>` need a second Tab. _clicue_pre_redraw sets
@@ -1532,8 +1562,9 @@ _clicue_accept() {
         print -r -- "    $_dn -> ${_clicue_cs_gloss[$_dn]}" >> $CLICUE_DEBUG
       done
     fi
-    # the harvest changes the candidate set, so any prior selection is stale
+    # The harvest changes the candidate set, so any prior selection is stale.
     _clicue_reset_sel
+    just_harvested=1
     # A harvest that found something turns an informational card into a real one.
     # Leaving _clicue_info set would skip the cycle branch below and fall through
     # to native completion — which is exactly the raw listing this is replacing.
@@ -1548,7 +1579,7 @@ _clicue_accept() {
     _clicue_engaged=1
     local -i lim=${_clicue_t1n:-0}
     (( lim < 1 || lim > ${#_clicue_cands} )) && lim=${#_clicue_cands}
-    (( _clicue_sel++ ))
+    (( just_harvested )) || (( _clicue_sel++ ))
     (( _clicue_sel > lim )) && _clicue_sel=1
     zle -R
     return 0

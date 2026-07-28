@@ -399,6 +399,21 @@ else
   nope "no print -r writes a literal \\t where a tab is meant" "${badtab[1]}"
 fi
 
+# 3. Re-declaring an already-set `local` inside a loop body PRINTS its value
+#    straight to the terminal. It has happened three times in this file (gcol, w,
+#    and sp/canon in the flag loop), so declarations belong outside the loop.
+typeset -a loopdecl
+loopdecl=( ${(f)"$(awk '
+  /^[[:space:]]*(for|while|repeat) .*(do|\{)[[:space:]]*$/ { depth++; next }
+  /^[[:space:]]*(done|\})[[:space:]]*$/ { if (depth > 0) depth-- ; next }
+  depth > 0 && /^[[:space:]]*local [a-zA-Z_]/ && !/^[[:space:]]*#/ { print FILENAME ":" NR ": " $0 }
+' $SRC || true)"} )
+if (( ${#loopdecl} == 0 )); then
+  ok "no local declaration sits inside a loop body"
+else
+  nope "no local declaration sits inside a loop body" "${loopdecl[1]}"
+fi
+
 # 3. Glob operators that need EXTENDED_GLOB match LITERALLY when it is off, so a
 #    shape test silently rejects everything. _clicue_decompose runs without it.
 body=$(awk '/^_clicue_decompose\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
