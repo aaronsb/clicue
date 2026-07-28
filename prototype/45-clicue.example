@@ -22,10 +22,14 @@ zstyle ':clicue:*' enabled   yes
 #
 # Plain Up/Down are never bound by clicue — they stay on history-substring-search.
 
-zstyle ':clicue:keys' scroll-down '^[[1;2B' '^[[1;3B' '^[^[[B'   # Shift, then Alt
-zstyle ':clicue:keys' scroll-up   '^[[1;2A' '^[[1;3A' '^[^[[A'
+#   Shift+Arrow  — preferred, but konsole eats it (see below)
+#   Alt+Arrow    — works today
+#   Alt+J / Alt+K — home row, no reach; works today
+zstyle ':clicue:keys' scroll-down '^[[1;2B' '^[[1;3B' '^[^[[B' '^[j'
+zstyle ':clicue:keys' scroll-up   '^[[1;2A' '^[[1;3A' '^[^[[A' '^[k'
 zstyle ':clicue:keys' accept      '^I'                           # Tab
-zstyle ':clicue:keys' dismiss     '^['                           # Esc
+zstyle ':clicue:keys' dismiss     '^['                           # Esc (long reach —
+                                                                 # change freely)
 
 # Optional: force the hint-line label instead of deriving it.
 # zstyle ':clicue:keys' scroll-label 'Shift+↑↓'
@@ -36,11 +40,21 @@ zstyle ':clicue:keys' dismiss     '^['                           # Esc
 # $KONSOLE_DBUS_SESSION) and advertises Alt+Arrow in the hint line instead.
 # Both are bound, so the card works either way.
 #
-# To get Shift+Arrow — the better ergonomics — back:
-#   Settings → Configure Keyboard Shortcuts → search "Scroll Line"
-#   clear Scroll Line Up and Scroll Line Down, then uncomment:
+# The binding is NOT in Configure Keyboard Shortcuts. It lives in the profile's
+# keyboard translator, compiled into libkonsoleprivate.so as:
 #
-# CLICUE_TERM_EATS_SHIFT=0
+#     key Up +Shift : scrollLineUp
+#
+# To free it:
+#   Settings → Edit Current Profile → Keyboard tab
+#   → Edit... (copies the built-in "default" translator)
+#   → find the Shift+Up / Shift+Down entries bound to scrollLineUp/Down
+#   → remove them, save under a new name, select it
+#
+# Set below. NOTE: while konsole still holds Shift+Arrow, this makes the card's
+# hint line advertise Shift+↑↓ — a key that will not arrive. Alt+Arrow and
+# Alt+J/K still work regardless.
+CLICUE_TERM_EATS_SHIFT=0
 
 _clicue_src=$HOME/Projects/app/clicue/prototype/clicue.zsh
 [[ -r $_clicue_src ]] && source $_clicue_src
