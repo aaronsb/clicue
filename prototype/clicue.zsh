@@ -583,8 +583,12 @@ _clicue_pre_redraw() {
   # Once the operator scrolls the card, the highlighted cue owns the ghost text:
   # the typed prefix stays real, the STEM renders dim — the same convention
   # zsh-autosuggestions uses, so the command line updates live from the card.
+  # Shown unprompted, not only after Tab: clicue is now the ONLY ghost-text
+  # engine. zsh-autosuggestions was writing the same string for the same purpose,
+  # and whichever landed last won — visible as the ghost turning grey and the
+  # card's rendering breaking.
   local ghost=''
-  if (( _clicue_engaged )) && (( ${#_clicue_cands} )) && (( ! _clicue_info )); then
+  if (( ${#_clicue_cands} )) && (( ! _clicue_info )); then
     local pick=${_clicue_cands[_clicue_sel]}
     if [[ -n $_clicue_pfx && $pick == ${_clicue_pfx}* ]]; then
       ghost=${pick#$_clicue_pfx}
@@ -714,7 +718,7 @@ _clicue_build_hint() {
   zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
   _clicue_keylabel ${av[1]}; local cyc=$REPLY
   _clicue_keylabel ${dv[1]}; local dis=$REPLY
-  typeset -g _clicue_hint=" ${cyc} cycle · ↑↓ browse · ⏎ insert · ${dis} dismiss "
+  typeset -g _clicue_hint=" ${cyc} cycle · ↑↓ browse · → accept · ⏎ insert · ${dis} dismiss "
 }
 
 # ── movement primitive ───────────────────────────────────────────────────────
@@ -855,9 +859,30 @@ _clicue_in_grid() {
 # Left/Right jump a grid column and are meaningful ONLY in the grid, so Right
 # keeps working as autosuggestions' accept everywhere else.
 # Each delegates to whatever owned the key when the card is not being navigated.
+# Accept the proposal. Previously this rode on zsh-autosuggestions' widgets;
+# clicue owns the ghost now, so it owns the accept gesture too. Same keys as
+# before — Right Arrow at end of line, and End — so nothing is relearned.
+_clicue_accept_ghost() {
+  (( _clicue_visible )) || return 1
+  [[ -n $_clicue_ghost ]] || return 1
+  (( CURSOR == ${#BUFFER} )) || return 1
+  LBUFFER="${LBUFFER}${_clicue_ghost}"
+  _clicue_reset_sel
+  _clicue_clear
+  zle -R
+  return 0
+}
+
+_clicue_end_of_line() { _clicue_accept_ghost || zle ${_clicue_orig_eol:-.end-of-line} }
+zle -N _clicue_end_of_line
+
 _clicue_arrow_down()  { _clicue_move  1     || zle ${_clicue_arrow_orig[B]:-.down-line-or-history} }
 _clicue_arrow_up()    { _clicue_move -1     || zle ${_clicue_arrow_orig[A]:-.up-line-or-history} }
-_clicue_arrow_right() { _clicue_grid_move right || zle ${_clicue_arrow_orig[C]:-.forward-char} }
+_clicue_arrow_right() {
+  _clicue_grid_move right && return          # inside the grid: jump a column
+  _clicue_accept_ghost    && return          # at end of line: take the proposal
+  zle ${_clicue_arrow_orig[C]:-.forward-char}
+}
 _clicue_arrow_left()  { _clicue_grid_move left  || zle ${_clicue_arrow_orig[D]:-.backward-char} }
 
 zle -N _clicue_arrow_down
@@ -903,6 +928,15 @@ _clicue_install_arrows() {
   w=${${(z)$(bindkey '^M')}[2]}
   [[ -n $w && $w != _clicue_insert ]] && typeset -g _clicue_orig_enter=$w
   bindkey '^M' _clicue_insert
+
+  # End also accepts the proposal, matching the gesture autosuggestions used
+  local e
+  for e in '^[[F' '^[[4~' '^[OF' '^E'; do
+    w=${${(z)$(bindkey $e)}[2]}
+    [[ -z $w || $w == _clicue_end_of_line ]] && continue
+    [[ -z $_clicue_orig_eol ]] && typeset -g _clicue_orig_eol=$w
+    bindkey $e _clicue_end_of_line
+  done
 }
 
 _clicue_install_yields() {

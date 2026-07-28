@@ -63,6 +63,38 @@ by design — and they will never cover locally authored tools. **[MEASURED]** 4
 the 172 commands actually used on this machine have no gloss from any upstream
 source.
 
+### 0. Do not integrate with a mechanism that never agreed to be integrated with
+
+The most expensive lesson of the prototype, and it comes before the others.
+
+clicue spent a long session co-tenanting `POSTDISPLAY` with zsh-autosuggestions.
+Both write that string for the same purpose — proposing what the operator probably
+wants. autosuggestions has no notion of a second writer, so every interaction cost
+a new dependency on its private internals:
+
+| Mitigation | What it required knowing |
+|---|---|
+| yield before accept widgets | its `ACCEPT_WIDGETS` / `PARTIAL_ACCEPT_WIDGETS` lists |
+| install at first `precmd` | that it defers its own widget rebinding |
+| re-compose after the async writer | that it computes suggestions via `zle -F`, and that its `USE_ASYNC` flag is tested for existence rather than value |
+
+Three reverse-engineered surfaces, each able to change without warning, and the
+symptom the operator actually saw — grey ghost text and broken card rendering —
+never stopped recurring in a new form.
+
+The fix was not a fourth mitigation. It was to **stop integrating**: disable
+autosuggestions and let clicue own ghost text outright, which it was already
+half-doing. All three mitigations became dead code in one move.
+
+The generalisable rule: *integrating someone else's complex mechanism into your own,
+where the first party never agreed to the integration, ends in complexity and wasted
+time.* Duplicated purpose is the tell — two components doing the same job for the
+same reason will fight, and no amount of care at the seam fixes that. Pick one.
+
+This is also the sharpest available argument about the render surface. Borrowing
+`POSTDISPLAY` from ZLE is a milder instance of the same mistake: ZLE never agreed
+to share it either.
+
 ### 2. Compose, don't capture
 
 Every tool in this space we examined captures something it did not need to:
