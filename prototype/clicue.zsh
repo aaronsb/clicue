@@ -31,6 +31,13 @@ typeset -g _clicue_card=''
 typeset -g _clicue_text=''
 typeset -g _clicue_g=''
 typeset -ga _clicue_spans=()
+typeset -g  _clicue_sel=1          # 1-based selection within the candidate list
+typeset -g  _clicue_top=1          # first visible row (window start)
+typeset -g  _clicue_engaged=0      # has the operator actually used the card?
+typeset -g  _clicue_visible=0
+typeset -g  _clicue_lastbuf=$'\0'
+typeset -ga _clicue_cands=()
+typeset -g  _clicue_orig_tab=''
 
 # ── theme (Aura, from IRIS — see SPEC.md design language) ────────────────────
 typeset -gA CLICUE_THEME=(
@@ -116,6 +123,7 @@ _clicue_render() {
   _clicue_candidates $pfx
   cands=( $reply )
   (( ${#cands} )) || return 1
+  _clicue_cands=( $cands )
 
   local -i maxrows=8
   zstyle -s ':clicue:*' max-rows maxrows 2>/dev/null || maxrows=8
@@ -127,7 +135,10 @@ _clicue_render() {
 
   # name column: widest shown name, clamped
   local -i namew=0 i=0
-  for i in {1..$(( ${#cands} < maxrows ? ${#cands} : maxrows ))}; do
+  local -i _w0=$_clicue_top _w1=$(( _clicue_top + maxrows - 1 ))
+  (( _w1 > ${#cands} )) && _w1=${#cands}
+  (( _w0 < 1 )) && _w0=1
+  for i in {$_w0..$_w1}; do
     local nm=${cands[i]}
     (( ${#nm} > namew )) && namew=${#nm}
   done
@@ -137,28 +148,38 @@ _clicue_render() {
   local -i glossw=$(( inner - namew - 5 ))
   (( glossw < 10 )) && glossw=10
 
+  # clamp selection, then slide the window to keep it visible
+  (( _clicue_sel < 1 )) && _clicue_sel=1
+  (( _clicue_sel > ${#cands} )) && _clicue_sel=${#cands}
+  (( _clicue_sel < _clicue_top )) && _clicue_top=$_clicue_sel
+  (( _clicue_sel > _clicue_top + maxrows - 1 )) && _clicue_top=$(( _clicue_sel - maxrows + 1 ))
+  (( _clicue_top < 1 )) && _clicue_top=1
+
   local -a lines specs
   local total=${#cands}
-  local shown=$(( total < maxrows ? total : maxrows ))
-  local label=" 1/${total} "
+  local -i last=$(( _clicue_top + maxrows - 1 ))
+  (( last > total )) && last=$total
+  local label=" ${_clicue_sel}/${total} "
   local -i rule=$(( inner - ${#label} ))
   (( rule < 1 )) && rule=1
   lines+=( "╭${label}${(l:$rule::─:):-}╮" )
 
-  local -i idx=0
+  local -i idx=$(( _clicue_top - 1 ))
   local ent name kind g nmcol gcol extra
   local -a wrapped
-  for ent in ${cands[1,$shown]}; do
+  local -i issel=0
+  for ent in ${cands[$_clicue_top,$last]}; do
     (( idx++ ))
+    issel=$(( idx == _clicue_sel ))
     name=$ent; kind=${_clicue_kind[$ent]:-system}
     _clicue_gloss $name $kind; g=$_clicue_g
 
     local marker='  '
-    (( idx == 1 )) && marker=' ▸'
+    (( issel )) && marker=' ▸'
 
     nmcol=${(r:$namew:)${name[1,$namew]}}
 
-    if (( idx == 1 )); then
+    if (( issel )); then
       # design value 4: density inversely proportional to attention.
       # The focused row gets its full gloss, wrapped rather than truncated.
       wrapped=( ${(f)"$(print -r -- $g | fold -s -w $glossw)"} )
@@ -174,7 +195,7 @@ _clicue_render() {
     fi
   done
 
-  local hint=' <Tab> accept · <^C> dismiss '
+  local hint=' ⇧↑↓ scroll · Tab accept · ^C dismiss '
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 1 )) && brule=1
   lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
@@ -205,7 +226,12 @@ _clicue_render() {
 }
 
 # ── hook ─────────────────────────────────────────────────────────────────────
+_clicue_reset_sel() {
+  _clicue_sel=1; _clicue_top=1; _clicue_engaged=0
+}
+
 _clicue_clear() {
+  _clicue_visible=0
   region_highlight=( ${region_highlight:#*memo=clicue*} )
   # only strip OUR card — leave anything else (autosuggestions) intact
   if [[ -n $_clicue_card && $POSTDISPLAY == *"$_clicue_card" ]]; then
@@ -216,6 +242,11 @@ _clicue_clear() {
 
 _clicue_pre_redraw() {
   _clicue_clear
+
+  # While zsh's own completion menu owns the display, complist drives redisplay
+  # and our region_highlight spans never land — the card would render as
+  # colourless text stacked above a duplicate listing. Stand down instead.
+  [[ $KEYMAP == menuselect ]] && return 0
 
   local on=yes
   zstyle -s ':clicue:*' enabled on 2>/dev/null || on=yes
@@ -230,12 +261,16 @@ _clicue_pre_redraw() {
   (( ${#buf} < mininput )) && return 0
   [[ $buf == [-./]* ]] && return 0
 
+  # a changed buffer invalidates any selection the operator had made
+  [[ $buf != $_clicue_lastbuf ]] && { _clicue_lastbuf=$buf; _clicue_reset_sel }
+
   _clicue_load
 
   _clicue_render "$buf" || return 0
 
   local card=$_clicue_text
   local -a specs=( $_clicue_spans )
+  _clicue_visible=1
 
   # compose: append after whatever is already in POSTDISPLAY
   local -i base=$(( ${#BUFFER} + ${#POSTDISPLAY} ))
@@ -250,14 +285,63 @@ _clicue_pre_redraw() {
   done
 }
 
-_clicue_line_finish() { _clicue_clear }
+_clicue_line_finish() { _clicue_clear; _clicue_reset_sel; _clicue_lastbuf=$'\0' }
 
 clicue-off() {
   add-zle-hook-widget -d line-pre-redraw _clicue_pre_redraw
   add-zle-hook-widget -d line-finish     _clicue_line_finish
+  bindkey '^I' ${_clicue_orig_tab:-expand-or-complete}
+  bindkey -r '^[[1;2B' '^[[1;2A' 2>/dev/null
   _clicue_clear
   print "clicue: unhooked (this shell only)"
 }
+
+# ── keys ─────────────────────────────────────────────────────────────────────
+# Deliberately additive. Plain Up/Down keep doing whatever they already did
+# (history-substring-search here) — they are load-bearing muscle memory and
+# stealing them would be exactly the capture this project argues against.
+# Scrolling the card lives on Shift+Arrow, which nothing binds by default.
+
+_clicue_scroll_down() {
+  (( _clicue_visible )) || return 0
+  (( _clicue_sel < ${#_clicue_cands} )) && (( _clicue_sel++ ))
+  _clicue_engaged=1
+  zle -R
+}
+
+_clicue_scroll_up() {
+  (( _clicue_visible )) || return 0
+  (( _clicue_sel > 1 )) && (( _clicue_sel-- ))
+  _clicue_engaged=1
+  zle -R
+}
+
+# Tab only hijacks once the operator has actually engaged with the card.
+# Untouched Tab behaves exactly as it always did.
+_clicue_accept() {
+  if (( _clicue_visible && _clicue_engaged )) && (( ${#_clicue_cands} )); then
+    LBUFFER="${_clicue_cands[_clicue_sel]} "
+    _clicue_reset_sel
+    _clicue_clear
+    zle -R
+    return 0
+  fi
+  zle ${_clicue_orig_tab:-expand-or-complete}
+}
+
+zle -N _clicue_scroll_down
+zle -N _clicue_scroll_up
+zle -N _clicue_accept
+
+# remember what Tab did before we wrapped it, so we can delegate
+_clicue_orig_tab=${${(z)$(bindkey '^I')}[2]:-expand-or-complete}
+[[ $_clicue_orig_tab == _clicue_accept ]] && _clicue_orig_tab=expand-or-complete
+
+bindkey '^[[1;2B' _clicue_scroll_down   # Shift+Down (xterm/CSI)
+bindkey '^[[1;2A' _clicue_scroll_up     # Shift+Up
+bindkey '^[[b'    _clicue_scroll_down   # some terminals
+bindkey '^[[a'    _clicue_scroll_up
+bindkey '^I'      _clicue_accept
 
 add-zle-hook-widget line-pre-redraw _clicue_pre_redraw
 add-zle-hook-widget line-finish     _clicue_line_finish
