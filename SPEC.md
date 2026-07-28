@@ -245,6 +245,29 @@ stays inspectable with `grep`.
 A tool that watches your terminal and writes its own usage database must be
 trusted. One that reads a file you already curate need not be.
 
+#### But history frequency ≠ usage frequency **[MEASURED]**
+
+This operator's `10-history` sets `HIST_IGNORE_ALL_DUPS` (and `HIST_SAVE_NO_DUPS`).
+Every unique command line therefore appears in history **exactly once**, no matter
+how many times it was run. `ls -lat` scores 1 despite being habitual.
+
+What history counting actually measures is **the number of distinct command lines
+containing a token** — a proxy that systematically under-weights the commands run
+most identically, which are precisely the most habitual ones. It still works
+directionally (`git` outranks everything because it appears with many different
+argument strings; `git clone` scores 28 across 28 distinct lines) but the
+distortion is real and in the worst possible direction.
+
+**Recency is the undistorted signal.** De-duplication keeps the *newest*
+occurrence, so history order survives intact even where counts do not. Under
+these options recency is strictly more reliable than frequency, and the operator's
+own instinct — *"the last -property I used is proposed"* — is a recency rule, not
+a frequency one.
+
+Open: whether ranking should be recency-weighted, frequency-weighted, or a decay
+blend. Not yet decided; the prototype currently ranks on raw frequency and is
+therefore known-wrong for habitual commands.
+
 ---
 
 ## Lineage

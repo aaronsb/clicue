@@ -38,6 +38,9 @@ typeset -g  _clicue_visible=0
 typeset -g  _clicue_lastbuf=$'\0'
 typeset -ga _clicue_cands=()
 typeset -g  _clicue_orig_tab=''
+typeset -g  _clicue_mode=cmd       # cmd | arg
+typeset -g  _clicue_cmd=''         # in arg mode, the command being argued
+typeset -g  _clicue_pfx=''         # the partial word being completed
 
 # ── theme (Aura, from IRIS — see SPEC.md design language) ────────────────────
 typeset -gA CLICUE_THEME=(
@@ -103,9 +106,33 @@ _clicue_candidates() {
   reply=( ${${(o)freqd}#*|} ${(o)rest} )
 }
 
+# ── argument candidates: what YOU have actually passed this command ──────────
+# Sourced from history, already frequency-ranked at build time. No compsys and
+# no forks — compsys would give the authoritative flag set with real
+# descriptions, but needs the candidate-source adapter (component 3).
+_clicue_arg_candidates() {
+  local cmd=$1 pfx=$2
+  local -a toks=( ${(s: :)CLICUE_ARGS[$cmd]} )
+  (( ${#toks} )) || { reply=(); return 1 }
+  if [[ -n $pfx ]]; then
+    reply=( ${(M)toks:#${pfx}*} )
+  else
+    reply=( $toks )
+  fi
+  (( ${#reply} )) || return 1
+  return 0
+}
+
 # ── gloss lookup ─────────────────────────────────────────────────────────────
 _clicue_gloss() {
   local name=$1 kind=$2
+  if [[ $_clicue_mode == arg ]]; then
+    # Honest placeholder. Real flag descriptions need compsys or a --help/man
+    # parse in the enrichment pipeline; usage count is at least true.
+    local c=${CLICUE_ARGN[${_clicue_cmd}\|${name}]:-}
+    _clicue_g=${c:+used ${c}×}
+    return
+  fi
   case $kind in
     alias)    _clicue_g=${aliases[$name]} ;;
     function) _clicue_g=${CLICUE_GLOSS[$name]:-'shell function'} ;;
@@ -119,8 +146,12 @@ _clicue_gloss() {
 _clicue_render() {
   local pfx=$1
   local -a cands
-  local -a reply            # scratch for _clicue_candidates
-  _clicue_candidates $pfx
+  local -a reply            # scratch for the candidate generators
+  if [[ $_clicue_mode == arg ]]; then
+    _clicue_arg_candidates $_clicue_cmd "$pfx" || return 1
+  else
+    _clicue_candidates $pfx
+  fi
   cands=( $reply )
   (( ${#cands} )) || return 1
   _clicue_cands=( $cands )
@@ -172,6 +203,7 @@ _clicue_render() {
     (( idx++ ))
     issel=$(( idx == _clicue_sel ))
     name=$ent; kind=${_clicue_kind[$ent]:-system}
+    [[ $_clicue_mode == arg ]] && kind=arg
     _clicue_gloss $name $kind; g=$_clicue_g
 
     local marker='  '
@@ -255,18 +287,42 @@ _clicue_pre_redraw() {
   local -i mininput=1
   zstyle -s ':clicue:*' min-input mininput 2>/dev/null || mininput=1
 
-  # v1: command position only — bail once there's a word separator
+  _clicue_load
+
+  # ── where are we? position is decided PER SEGMENT ──────────────────────────
+  # A pipe or separator starts a fresh command position, which is why the
+  # buffer is split before anything else is decided.
   local buf=$LBUFFER
-  [[ $buf == *[[:space:]]* ]] && return 0
-  (( ${#buf} < mininput )) && return 0
-  [[ $buf == [-./]* ]] && return 0
+  local seg=${buf##*(\||\|\||;|&&)}      # last segment
+  seg=${seg##[[:space:]]#}                 # strip leading blanks
+
+  local -a words=( ${(z)seg} )
+  local trailing=0
+  [[ $seg == *[[:space:]] ]] && trailing=1
+
+  if (( ${#words} == 0 )) || (( ${#words} == 1 && !trailing )); then
+    # ── command position ────────────────────────────────────────────────────
+    _clicue_mode=cmd
+    _clicue_cmd=''
+    _clicue_pfx=$seg
+    (( ${#seg} < mininput )) && return 0
+    [[ $seg == [-./]* ]] && return 0
+  else
+    # ── argument position ───────────────────────────────────────────────────
+    _clicue_mode=arg
+    _clicue_cmd=${words[1]}
+    if (( trailing )); then
+      _clicue_pfx=''
+    else
+      _clicue_pfx=${words[-1]}
+    fi
+    [[ -z ${CLICUE_ARGS[$_clicue_cmd]} ]] && return 0
+  fi
 
   # a changed buffer invalidates any selection the operator had made
   [[ $buf != $_clicue_lastbuf ]] && { _clicue_lastbuf=$buf; _clicue_reset_sel }
 
-  _clicue_load
-
-  _clicue_render "$buf" || return 0
+  _clicue_render "$_clicue_pfx" || return 0
 
   local card=$_clicue_text
   local -a specs=( $_clicue_spans )
@@ -326,7 +382,12 @@ _clicue_scroll_up() {
 # and compsys is authoritative there.
 _clicue_accept() {
   if (( _clicue_visible )) && (( ${#_clicue_cands} )); then
-    LBUFFER="${_clicue_cands[_clicue_sel]} "
+    local pick=${_clicue_cands[_clicue_sel]}
+    if [[ -n $_clicue_pfx ]]; then
+      LBUFFER="${LBUFFER%$_clicue_pfx}${pick} "   # replace just the partial word
+    else
+      LBUFFER="${LBUFFER}${pick} "
+    fi
     _clicue_reset_sel
     _clicue_clear
     zle -R
