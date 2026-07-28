@@ -51,10 +51,11 @@ zstyle ':clicue:keys' dismiss     '^['                           # Esc (long rea
 #   → find the Shift+Up / Shift+Down entries bound to scrollLineUp/Down
 #   → remove them, save under a new name, select it
 #
-# Set below. NOTE: while konsole still holds Shift+Arrow, this makes the card's
-# hint line advertise Shift+↑↓ — a key that will not arrive. Alt+Arrow and
-# Alt+J/K still work regardless.
-CLICUE_TERM_EATS_SHIFT=0
+# Until that is done, leave this alone: clicue auto-detects konsole and
+# advertises Alt+↑↓ instead, which actually arrives. Uncomment only AFTER the
+# translator is edited, or the card will advertise a key that cannot work.
+#
+# CLICUE_TERM_EATS_SHIFT=0
 
 _clicue_src=$HOME/Projects/app/clicue/prototype/clicue.zsh
 [[ -r $_clicue_src ]] && source $_clicue_src

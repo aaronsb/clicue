@@ -440,6 +440,15 @@ _clicue_bindall() {
       esac
     fi
     for k in $seqs; do
+      # INVARIANT: clicue never binds an unmodified arrow. Up/Down always move
+      # through command history — that is the operator's muscle memory and it
+      # predates this tool. Enforced here rather than merely intended, because
+      # a stray config line is all it would take to break it silently.
+      case $k in
+        '^[[A'|'^[[B'|'^[OA'|'^[OB'|$'\e[A'|$'\e[B')
+          print -u2 "clicue: refusing to bind ${k} — plain arrows belong to history"
+          continue ;;
+      esac
       bindkey $k $widget
       _clicue_bound+=( $k )
     done
