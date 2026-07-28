@@ -50,6 +50,7 @@ typeset -g  _clicue_top=1          # first visible row (window start)
 typeset -g  _clicue_engaged=0      # has the operator actually used the card?
 typeset -g  _clicue_visible=0
 typeset -g  _clicue_standdown=1   # clicue deliberately yielded this position
+typeset -g  _clicue_optctx=0      # the line already carries an option token
 typeset -g  _clicue_lastbuf=$'\0'
 typeset -ga _clicue_cands=()
 # Candidate -> what to SHOW for it. The candidate stays the exact token that gets
@@ -170,7 +171,7 @@ _clicue_arg_candidates() {
   # cheap enough for a keystroke, and the first Tab for a command is what fills it.
   # Without this the card would be empty until Tab, and an empty card is how
   # zsh's raw listing got on screen in the first place.
-  if [[ $pfx == -* ]]; then
+  if [[ $pfx == -* ]] || (( _clicue_optctx )); then
     _clicue_flag_load $cmd 2>/dev/null
     local fk alt
     # Sorted so the SHORT spelling of a pair is met first and becomes the row.
@@ -178,25 +179,32 @@ _clicue_arg_candidates() {
       [[ $fk == ${cmd}\|* ]] || continue
       n=${fk#*\|}
       (( ${+seen[$n]} )) && continue
-      [[ $n != ${pfx}* ]] && continue
       # One row per FLAG, not per spelling. `-d` and `--dir` describing the same
       # thing were two rows saying the same sentence twice, which is what the
       # description-pairing was for in the first place. The short form is the
       # candidate — it is what the operator is typing — and the long form rides
       # along in the label.
+      [[ -n $pfx && $n != ${pfx}* ]] && continue
       _clicue_fkey $cmd $n
       alt=${_clicue_flag_alt[$_clicue_fk]}
-      if [[ -n $alt && $n == --* ]]; then
-        # long form met first only when the short one does not match the prefix
-        [[ $alt == ${pfx}* ]] && continue
+      if [[ -z $alt ]]; then
+        seen[$n]=1; rest+=( $n ); continue
       fi
-      seen[$n]=1
-      if [[ -n $alt ]]; then
-        seen[$alt]=1
-        _clicue_flag_label $cmd $n
-        _clicue_disp[$n]=$_clicue_fl
-      fi
-      rest+=( $n )
+      # One row for the whole group. The row is keyed on the spelling that gets
+      # inserted, and every other spelling is marked seen so it cannot also appear
+      # on its own row.
+      _clicue_flag_canon $cmd $n
+      local canon=$_clicue_fc
+      # when a prefix is being typed, honour it over the canonical short form —
+      # typing `--rec` must not silently insert `-r`
+      [[ -n $pfx && $canon != ${pfx}* ]] && canon=$n
+      (( ${+seen[$canon]} )) && continue
+      seen[$n]=1; seen[$canon]=1
+      local sp
+      for sp in ${=alt}; do seen[$sp]=1; done
+      _clicue_flag_label $cmd $n
+      _clicue_disp[$canon]=$_clicue_fl
+      rest+=( $canon )
     done
   fi
   typeset -g _clicue_arg_t1=${#hist}
@@ -517,15 +525,22 @@ _clicue_harvest_flags() {
     byd[$d]+="$w "
   done
 
-  # exactly two spellings sharing a description is a short/long pair; three or
-  # more means the description is generic ("display help information") and pairing
-  # it would be a guess
+  # Spellings sharing a description are the same option. Not restricted to pairs:
+  # `-r`, `-R` and `--recursive` all mean one thing in rm, and showing three rows
+  # of the same sentence is worse than showing one row naming all three. Options
+  # are not consistent across commands, so take whatever spellings exist.
+  #
+  # Capped at three, which is the difference between "variant spellings" and "a
+  # generic description". `display help information` is shared by unrelated flags
+  # in some completers, and grouping those WOULD be a guess.
   local -a names
   for d in ${(k)byd}; do
     names=( ${=byd[$d]} )
-    (( ${#names} == 2 )) || continue
-    _clicue_fkey $cmd ${names[1]}; _clicue_flag_alt[$_clicue_fk]=${names[2]}
-    _clicue_fkey $cmd ${names[2]}; _clicue_flag_alt[$_clicue_fk]=${names[1]}
+    (( ${#names} >= 2 && ${#names} <= 3 )) || continue
+    for n in $names; do
+      _clicue_fkey $cmd $n
+      _clicue_flag_alt[$_clicue_fk]=${(j: :)${names:#$n}}
+    done
   done
 
   _clicue_cs_words=( $swords ); _clicue_cs_descs=( $sdescs ); _clicue_cs_for=$sfor
@@ -534,17 +549,43 @@ _clicue_harvest_flags() {
 }
 
 # `-l, --long` when both spellings are known, otherwise just what was given.
+# `-r, -R, --recursive` — every spelling of one option, short forms first, which
+# is the convention the manual pages use.
 _clicue_flag_label() {
   local cmd=$1 f=$2
   _clicue_fkey $cmd $f
   local alt=${_clicue_flag_alt[$_clicue_fk]}
   if [[ -z $alt ]]; then
     _clicue_fl=$f
-  elif [[ $f == --* ]]; then
-    _clicue_fl="$alt, $f"
-  else
-    _clicue_fl="$f, $alt"
+    return
   fi
+  local -a all=( $f ${=alt} )
+  local -a shorts=() longs=()
+  local x
+  for x in $all; do
+    if [[ $x == --* ]]; then longs+=( $x ); else shorts+=( $x ); fi
+  done
+  _clicue_fl=${(j:, :)${(o)shorts}}
+  if (( ${#longs} )); then
+    [[ -n $_clicue_fl ]] && _clicue_fl+=", "
+    _clicue_fl+=${(j:, :)${(o)longs}}
+  fi
+}
+
+# The spelling that gets INSERTED: the shortest form, because that is what
+# composes into a cluster. The label still names the long form so the operator can
+# read what they are building.
+_clicue_flag_canon() {
+  local cmd=$1 f=$2
+  _clicue_fkey $cmd $f
+  local alt=${_clicue_flag_alt[$_clicue_fk]}
+  _clicue_fc=$f
+  [[ -z $alt ]] && return
+  local x
+  for x in $f ${=alt}; do
+    [[ $x == --* ]] && continue
+    [[ ${#x} -lt ${#_clicue_fc} || $_clicue_fc == --* ]] && _clicue_fc=$x
+  done
 }
 
 # Split a clustered short-flag token (-lat) into its constituents, but ONLY when
@@ -1202,6 +1243,12 @@ _clicue_pre_redraw() {
     # ── argument position ───────────────────────────────────────────────────
     _clicue_mode=arg
     _clicue_cmd=${words[1]}
+    # is the operator already composing options?
+    _clicue_optctx=0
+    local _ow
+    for _ow in ${words[2,-1]}; do
+      [[ $_ow == -* ]] && { _clicue_optctx=1; break }
+    done
     # Unambiguously filesystem — compsys owns this, stand down entirely so its
     # coloured path picker works untouched.
     [[ ${words[-1]} == */* || ${words[-1]} == '~'* ]] && return 0
@@ -1228,7 +1275,18 @@ _clicue_pre_redraw() {
       # filename, which is what the denylist was actually for.
       if [[ $_clicue_pfx != -* ]]; then
         [[ -n $_clicue_pfx ]] && return 0
-        _clicue_info=1
+        # Empty prefix — a space was just typed. If the line ALREADY carries an
+        # option, the operator is composing options and the useful move is to
+        # offer the rest of them: mixing -p with --some-other-thing is normal, and
+        # inserting one long parameter used to dead-end the card here.
+        #
+        # On a bare `cmd ` with no options yet, they are far more likely to be
+        # naming a file, so that still yields to compsys.
+        if (( _clicue_optctx )) && _clicue_flag_load $_clicue_cmd 2>/dev/null; then
+          :
+        else
+          _clicue_info=1
+        fi
       fi
     fi
   fi

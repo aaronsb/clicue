@@ -428,14 +428,20 @@ else
   nope "the count survives as the fallback when nothing describes the flag"
 fi
 
-# Pairing requires EXACTLY two spellings sharing a description; three or more
-# means the description is generic and pairing would be a guess.
+# Spellings sharing a description group together — not restricted to pairs, since
+# `-r`, `-R` and `--recursive` are all one option. But CAPPED, because a generic
+# description shared by unrelated flags must not group them.
 body=$(awk '/^_clicue_harvest_flags\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
-if [[ $body == *'${#names} == 2'* ]]; then
-  ok "short/long pairing requires exactly two spellings"
+if [[ $body == *'${#names} >= 2'* ]]; then
+  ok "two or more spellings sharing a description group together"
 else
-  nope "short/long pairing requires exactly two spellings" \
-       "generic descriptions like 'display help information' would pair wrongly"
+  nope "two or more spellings sharing a description group together"
+fi
+if [[ $body == *'${#names} <= 3'* ]]; then
+  ok "grouping is capped, so a generic description cannot merge unrelated flags"
+else
+  nope "grouping is capped, so a generic description cannot merge unrelated flags" \
+       "'display help information' is shared by unrelated flags in some completers"
 fi
 
 # The buffer must be restored after the synthesised `<cmd> -` harvest, in a way
@@ -495,11 +501,32 @@ else
   nope "flag candidates load from cache with no fork"
 fi
 
-# One row per flag, not per spelling.
+# One row per flag, not per spelling — and the inserted token is the short form,
+# because that is what composes into a cluster.
 if [[ $body == *'_clicue_disp['* ]]; then
-  ok "paired spellings collapse to one row with a display label"
+  ok "grouped spellings collapse to one row with a display label"
 else
-  nope "paired spellings collapse to one row with a display label"
+  nope "grouped spellings collapse to one row with a display label"
+fi
+if [[ $body == *'_clicue_flag_canon'* ]]; then
+  ok "the row inserts the canonical short spelling"
+else
+  nope "the row inserts the canonical short spelling"
+fi
+# A typed prefix must win over the canonical form: typing --rec must not insert -r.
+if [[ $body == *'canon != ${pfx}*'* ]]; then
+  ok "a typed prefix overrides the canonical spelling"
+else
+  nope "a typed prefix overrides the canonical spelling" \
+       "typing --rec and getting -r inserted would be a silent substitution"
+fi
+
+# After a space, options are still offered when the line already carries one.
+if [[ $body == *'_clicue_optctx'* ]]; then
+  ok "options are offered on an empty prefix while composing options"
+else
+  nope "options are offered on an empty prefix while composing options" \
+       "inserting one long parameter dead-ended the card"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
