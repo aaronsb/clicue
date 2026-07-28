@@ -11,7 +11,7 @@
 # ── behaviour ────────────────────────────────────────────────────────────────
 zstyle ':clicue:*' min-input 1        # chars before the card appears
 zstyle ':clicue:*' tier1-rows 10      # cues in the primary card; overflow -> grid
-zstyle ':clicue:*' tier2-rows 4       # grid rows in the secondary card
+zstyle ':clicue:*' tier2-rows auto    # grid fills the terminal; or a fixed count
 zstyle ':clicue:*' enabled   yes
 
 # ── why these are fixed counts ───────────────────────────────────────────────

@@ -160,6 +160,10 @@ _clicue_gloss() {
 # system. Alt+Down flows out of the bottom of tier 1 straight into tier 2, so
 # there is no mode to switch and no second keybinding to learn.
 typeset -ga _clicue_lines=()
+typeset -ga _clicue_gridrows=()    # indices into _clicue_lines that are grid rows
+typeset -g  _clicue_selline=0      # line index holding the selected grid cell
+typeset -g  _clicue_selcol=0       # char offset of that cell within the line
+typeset -g  _clicue_selw=0         # its width
 typeset -g  _clicue_top1=1
 typeset -g  _clicue_top2=0
 typeset -g  _clicue_focus=1        # 1 = tier 1 list, 2 = tier 2 grid (a MODE)
@@ -255,10 +259,11 @@ _clicue_emit_grid() {
   (( rule < 1 )) && rule=1
   _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
 
-  local -i r c idx
+  local -i r c idx off
   local row nm cell
   for (( r = 0; r < rows; r++ )); do
     row=''
+    off=0
     for (( c = 0; c < ncols; c++ )); do
       idx=$(( _clicue_gridtop + c * rows + r ))
       if (( idx > hi )) || (( idx - _clicue_gridtop >= page )); then
@@ -267,11 +272,19 @@ _clicue_emit_grid() {
       fi
       nm=${_clicue_cands[idx]}
       cell=${(r:$colw:)${nm[1,$w]}}
-      # mark the selection with a leading glyph inside its own cell
-      (( idx == _clicue_sel )) && cell="▸${${(r:$(( colw - 1 )):)${nm[1,$w]}}}"
+      if (( idx == _clicue_sel )); then
+        cell="▸${${(r:$(( colw - 1 )):)${nm[1,$w]}}}"
+        # remember exactly where this cell lands so only IT gets the selection
+        # highlight — colouring the whole row would imply the row is the unit
+        _clicue_selline=$(( ${#_clicue_lines} + 1 ))
+        _clicue_selcol=$(( 1 + gutter + off ))
+        _clicue_selw=$colw
+      fi
       row+=$cell
+      (( off += colw ))
     done
     _clicue_lines+=( "│${(r:$gutter:)}${${(r:$avail:)row}}│" )
+    _clicue_gridrows+=( ${#_clicue_lines} )
   done
   # not padded either — see the note in _clicue_emit_box
   return 0
@@ -313,9 +326,18 @@ _clicue_render() {
   local -i t1rows=10
   zstyle -s ':clicue:*' tier1-rows t1rows 2>/dev/null || t1rows=10
   (( t1rows < 1 )) && t1rows=1
-  local -i t2rows=4
-  zstyle -s ':clicue:*' tier2-rows t2rows 2>/dev/null || t2rows=4
-  (( t2rows < 1 )) && t2rows=1
+  # The grid expands to whatever the terminal can spare — a fixed row count
+  # wasted most of a tall window. Overhead: 3 borders + hint + gloss + the
+  # prompt's own lines, kept generous so the card never pushes the prompt off.
+  local t2cfg=auto
+  zstyle -s ':clicue:*' tier2-rows t2cfg 2>/dev/null || t2cfg=auto
+  local -i t2rows
+  if [[ $t2cfg == auto ]]; then
+    t2rows=$(( ${LINES:-24} - t1rows - 10 ))
+  else
+    t2rows=$t2cfg
+  fi
+  (( t2rows < 2 )) && t2rows=2
 
   local -i t1n=$t1rows
   (( t1n > total )) && t1n=$total
@@ -368,6 +390,7 @@ _clicue_render() {
   (( glossw < 10 )) && glossw=10
 
   _clicue_lines=()
+  _clicue_gridrows=(); _clicue_selline=0
   local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
   (( _clicue_info )) && { local REPLY; local -a dv
     zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
@@ -412,12 +435,26 @@ _clicue_render() {
 
   # highlight spans over the assembled card
   local -a specs=()
-  local -i pos=1 len
+  local -i pos=1 len i=0
   local ln
+  local -A isgrid=()
+  for i in ${_clicue_gridrows}; do isgrid[$i]=1; done
+  i=0
   for ln in $_clicue_lines; do
+    (( i++ ))
     len=${#ln}
     if [[ $ln == ('╭'|'╰')* ]]; then
       specs+=( "$pos $(( pos + len )) fg=${CLICUE_THEME[border]}" )
+    elif (( ${+isgrid[$i]} )); then
+      # A grid row is N cells of the SAME kind — every column is a command name.
+      # Applying the list layout's name/gloss spans here was tinting columns 2+
+      # with the description colour, as though they were descriptions.
+      specs+=( "$pos $(( pos + 1 )) fg=${CLICUE_THEME[border]}" )
+      specs+=( "$(( pos + len - 1 )) $(( pos + len )) fg=${CLICUE_THEME[border]}" )
+      specs+=( "$(( pos + 1 )) $(( pos + len - 1 )) fg=${CLICUE_THEME[accent]}" )
+      if (( _clicue_selline == i )); then
+        specs+=( "$(( pos + _clicue_selcol )) $(( pos + _clicue_selcol + _clicue_selw )) fg=${CLICUE_THEME[seltext]},bg=${CLICUE_THEME[selbg]},bold" )
+      fi
     else
       specs+=( "$pos $(( pos + 1 )) fg=${CLICUE_THEME[border]}" )
       specs+=( "$(( pos + len - 1 )) $(( pos + len )) fg=${CLICUE_THEME[border]}" )
