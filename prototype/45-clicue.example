@@ -25,14 +25,25 @@ zstyle ':clicue:*' enabled   yes
 # else alphabetically. Anything past N flows into the grid.
 
 # ── navigation ───────────────────────────────────────────────────────────────
-#   Tab          cycle the highlighted cue (wraps); the proposal shows as ghost
-#   Right Arrow  accept the ghost — the same gesture that accepts an
-#                autosuggestion, so there is nothing new to learn
-#   Arrows       navigate the grid, once Tab has carried the selection into it.
-#                This is menuselect in clicue's visual language: a mode entered
-#                deliberately, so arrows are on loan and are handed straight back
-#                on exit. Outside the grid, Up/Down are history as always.
-#   Esc          dismiss until the line is cleared
+#   Tab      cycle within the primary card. That card is history-ranked, so the
+#            cue you want is usually one or two presses away. The ordering is
+#            LEARNED rather than deterministic, and stabilises statistically as
+#            history accumulates. Nothing is inserted — the proposal shows as
+#            ghost text.
+#   ↑ ↓      once you have started cycling, walk the selection. Off the end of
+#            the primary card it continues straight into the grid.
+#   ← →      jump a grid column. Meaningful only inside the grid, so Right keeps
+#            working as the autosuggestion accept everywhere else.
+#   Enter    put the highlighted cue on the command line — NOT run it. Choosing
+#            from a card is composition, not execution; you still decide when to
+#            run. Untouched, Enter executes exactly as always.
+#   Esc      dismiss until the line is cleared
+#
+# Arrows and Enter are only taken WHILE a card is being navigated, and delegate
+# to whatever owned them otherwise. Two bindings are refused outright and say so
+# on stderr: unmodified Up/Down as a scroll key, and any bare printable
+# character — binding 'q' as an alternate dismiss would break every command
+# containing a q.
 
 # ── keys ─────────────────────────────────────────────────────────────────────
 # Every binding is configuration. Multiple sequences per action are fine —

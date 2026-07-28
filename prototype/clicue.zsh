@@ -642,6 +642,12 @@ _clicue_bindall() {
         '^[[A'|'^[[B'|'^[OA'|'^[OB'|$'\e[A'|$'\e[B')
           print -u2 "clicue: refusing to bind ${k} — plain arrows belong to history"
           continue ;;
+        [[:print:]])
+          # A bare printable character is literally what the operator types.
+          # Binding 'q' as an alternate dismiss would break every command
+          # containing a q. Never do this, however convenient it looks.
+          print -u2 "clicue: refusing to bind '${k}' — bare printable characters are typing"
+          continue ;;
       esac
       bindkey $k $widget
       _clicue_bound+=( $k )
@@ -658,9 +664,75 @@ _clicue_build_hint() {
   zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
   _clicue_keylabel ${av[1]}; local cyc=$REPLY
   _clicue_keylabel ${dv[1]}; local dis=$REPLY
-  typeset -g _clicue_hint=" ${cyc} cycle · → accept · ↑↓ browse · ${dis} dismiss "
+  typeset -g _clicue_hint=" ${cyc} cycle · ↑↓ browse · ⏎ insert · ${dis} dismiss "
 }
 
+# ── movement primitive ───────────────────────────────────────────────────────
+# Tier 1 and the grid are ONE selection, so walking off the end of tier 1 simply
+# lands in the grid. Returns non-zero when the card is not being navigated, which
+# is how every arrow delegates to whatever owned it.
+_clicue_move() {
+  (( _clicue_visible && _clicue_engaged )) || return 1
+  (( ${#_clicue_cands} )) || return 1
+  (( _clicue_sel += $1 ))
+  (( _clicue_sel < 1 )) && _clicue_sel=1
+  (( _clicue_sel > ${#_clicue_cands} )) && _clicue_sel=${#_clicue_cands}
+  zle -R
+  return 0
+}
+
+_clicue_scroll_down() { _clicue_move 1;  return 0 }
+_clicue_scroll_up()   { _clicue_move -1; return 0 }
+
+# ^C cannot be used for dismiss: the tty driver raises SIGINT before ZLE sees the
+# character, and TRAPINT can observe it but not stop ZLE aborting the line.
+_clicue_dismiss() {
+  if (( _clicue_visible )); then
+    _clicue_suppressed=1
+    _clicue_clear
+    zle -R
+  fi
+  return 0
+}
+
+# Tab CYCLES within the primary card. That card is history-ranked, so the cue the
+# operator wants is usually one or two presses away — the ordering is learned
+# rather than deterministic, and stabilises statistically as history accumulates.
+# Nothing is inserted; the proposal shows as ghost text.
+_clicue_accept() {
+  if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
+    _clicue_engaged=1
+    local -i lim=${_clicue_t1n:-0}
+    (( lim < 1 || lim > ${#_clicue_cands} )) && lim=${#_clicue_cands}
+    (( _clicue_sel++ ))
+    (( _clicue_sel > lim )) && _clicue_sel=1
+    zle -R
+    return 0
+  fi
+  zle ${_clicue_orig_tab:-expand-or-complete}
+}
+
+# Enter, while navigating a card, means "put this on the command line" — NOT
+# "run it". Choosing from a card is composition, not execution; the operator
+# still decides when to run. Untouched (not navigating), Enter delegates and
+# behaves exactly as it always did.
+_clicue_insert() {
+  if (( _clicue_visible && _clicue_engaged && ! _clicue_info )) && (( ${#_clicue_cands} )); then
+    local pick=${_clicue_cands[_clicue_sel]}
+    if [[ -n $_clicue_pfx ]]; then
+      LBUFFER="${LBUFFER%$_clicue_pfx}${pick} "
+    else
+      LBUFFER="${LBUFFER}${pick} "
+    fi
+    _clicue_reset_sel
+    _clicue_clear
+    zle -R
+    return 0
+  fi
+  zle ${_clicue_orig_enter:-.accept-line}
+}
+
+zle -N _clicue_insert
 zle -N _clicue_scroll_down
 zle -N _clicue_scroll_up
 zle -N _clicue_accept
@@ -708,6 +780,7 @@ typeset -ga _clicue_yield_widgets=(
 # past tier 1 — which is why it may take the arrows without violating the
 # plain-arrow invariant. Outside the grid every arrow delegates untouched.
 _clicue_grid_move() {
+  _clicue_in_grid || return 1
   local dir=$1
   local -i r=${_clicue_grid_rows:-1}
   case $dir in
@@ -719,6 +792,7 @@ _clicue_grid_move() {
   (( _clicue_sel < _clicue_t1n + 1 )) && _clicue_sel=$(( _clicue_t1n + 1 ))
   (( _clicue_sel > ${#_clicue_cands} )) && _clicue_sel=${#_clicue_cands}
   zle -R
+  return 0
 }
 
 _clicue_in_grid() {
@@ -727,14 +801,19 @@ _clicue_in_grid() {
   return 0
 }
 
-for _cd in up:A down:B right:C left:D; do
-  eval "_clicue_arrow_${_cd%%:*}() {
-    if _clicue_in_grid; then _clicue_grid_move ${_cd%%:*}; return 0; fi
-    zle \${_clicue_arrow_orig[${_cd##*:}]:-.${_cd%%:*}-line-or-history}
-  }"
-  zle -N _clicue_arrow_${_cd%%:*}
-done
-unset _cd
+# Up/Down walk the whole selection — tier 1 then straight on into the grid.
+# Left/Right jump a grid column and are meaningful ONLY in the grid, so Right
+# keeps working as autosuggestions' accept everywhere else.
+# Each delegates to whatever owned the key when the card is not being navigated.
+_clicue_arrow_down()  { _clicue_move  1     || zle ${_clicue_arrow_orig[B]:-.down-line-or-history} }
+_clicue_arrow_up()    { _clicue_move -1     || zle ${_clicue_arrow_orig[A]:-.up-line-or-history} }
+_clicue_arrow_right() { _clicue_grid_move right || zle ${_clicue_arrow_orig[C]:-.forward-char} }
+_clicue_arrow_left()  { _clicue_grid_move left  || zle ${_clicue_arrow_orig[D]:-.backward-char} }
+
+zle -N _clicue_arrow_down
+zle -N _clicue_arrow_up
+zle -N _clicue_arrow_right
+zle -N _clicue_arrow_left
 
 typeset -gA _clicue_arrow_orig=()
 
@@ -747,6 +826,11 @@ _clicue_install_arrows() {
     _clicue_arrow_orig[$k]=$w
     bindkey "^[[$k" _clicue_arrow_${want[$k]}
   done
+  # Enter: insert the highlighted cue rather than executing, but only while a
+  # card is being navigated. Capture what owned it so everything else is intact.
+  w=${${(z)$(bindkey '^M')}[2]}
+  [[ -n $w && $w != _clicue_insert ]] && typeset -g _clicue_orig_enter=$w
+  bindkey '^M' _clicue_insert
 }
 
 _clicue_install_yields() {
