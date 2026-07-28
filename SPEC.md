@@ -299,6 +299,22 @@ widgets), strip *our* card, then delegate. This must be installed at first
 wrapping at source time captures the bare builtin and leaves autosuggestions
 wrapping *us*, reading `POSTDISPLAY` before we can clear it.
 
+**A third consumer: the async writer [MEASURED].** zsh-autosuggestions computes
+suggestions *asynchronously* by default — it sets `ZSH_AUTOSUGGEST_USE_ASYNC` to
+the empty string and then tests only for the parameter's **existence**, so async
+is on even though the value looks falsy. The result arrives through a `zle -F` fd
+handler at an arbitrary moment, frequently *after* `line-pre-redraw` has already
+composed the card, and writing `POSTDISPLAY` there destroys it.
+
+Symptom: the card vanished on roughly **alternate keystrokes** — whichever writer
+landed last won. Diagnosed from the operator's own hypothesis that keys were being
+consumed by a race; the state log had already ruled out every synchronous
+explanation by showing a correct card composed on every single keystroke while the
+screen disagreed.
+
+Mitigation: wrap `_zsh_autosuggest_async_response` and re-compose after it. Forcing
+synchronous mode would also work but puts a history search on every keystroke.
+
 **Why this matters beyond the bug.** The mitigation is fragile by construction:
 it depends on knowing the private widget list of another plugin, and it breaks
 whenever that plugin adds one or another `POSTDISPLAY` consumer appears. There

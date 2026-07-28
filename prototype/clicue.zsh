@@ -867,6 +867,28 @@ zle -N _clicue_arrow_left
 
 typeset -gA _clicue_arrow_orig=()
 
+# zsh-autosuggestions computes suggestions ASYNCHRONOUSLY by default — it sets
+# ZSH_AUTOSUGGEST_USE_ASYNC to the empty string and then tests only for the
+# parameter's EXISTENCE, so async is on even though the value looks falsy.
+#
+# The result arrives through a `zle -F` fd handler at an arbitrary moment, often
+# AFTER our line-pre-redraw has already appended the card, and writing
+# POSTDISPLAY there destroys it. Whether the card survived depended on which
+# landed last — which is exactly why it vanished on roughly alternate keystrokes.
+#
+# Forcing synchronous mode would fix it by putting a history search on every
+# keystroke. Cheaper to re-append after the async writer runs.
+_clicue_wrap_async() {
+  (( ${+functions[_zsh_autosuggest_async_response]} )) || return 0
+  (( ${+functions[_clicue_async_orig]} )) && return 0
+  functions[_clicue_async_orig]=$functions[_zsh_autosuggest_async_response]
+  _zsh_autosuggest_async_response() {
+    _clicue_async_orig "$@"
+    _clicue_pre_redraw
+  }
+  return 0
+}
+
 _clicue_install_arrows() {
   local -A want=( A up B down C right D left )
   local k w
@@ -908,6 +930,7 @@ autoload -Uz add-zsh-hook
 _clicue_first_precmd() {
   _clicue_install_yields
   _clicue_install_arrows
+  _clicue_wrap_async
   add-zsh-hook -d precmd _clicue_first_precmd
   unfunction _clicue_first_precmd
 }
