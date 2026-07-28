@@ -176,6 +176,45 @@ Notes on seams:
 
 **Ecosystem:** zsh first — a deliberate starting point, not an exclusion.
 
+### Where the card's authority ends **[decided in prototype]**
+
+The card and zsh's own completion menu present the same candidates. Showing both
+is strictly worse than showing either — the operator gets a styled card stacked
+above a wide, unstyled listing of its own contents.
+
+So the boundary is by **position**, not by mode:
+
+| Context | Owner |
+|---|---|
+| Command position (first word) | **clicue** — the card is the completion UI; Tab accepts the highlighted cue |
+| Arguments, paths, flags | **compsys** — card is not shown, Tab delegates untouched |
+| zsh menu selection active (`KEYMAP == menuselect`) | **compsys** — card stands down entirely |
+
+This is not a capture: no `:completion:*` zstyle is touched, and Tab delegates to
+whatever it was previously bound to whenever the card is not showing. The card
+simply owns interaction *while it is on screen*.
+
+The boundary moves outward only when the candidate-source adapter (component 3)
+can drive compsys — at which point the card can present argument and flag
+candidates too, still rendered by clicue and still sourced from compsys.
+
+### Terminal-level key conflicts are a real constraint **[MEASURED]**
+
+Card scrolling was first bound to Shift+Arrow. The widget worked correctly —
+verified in a pty — but **konsole binds Shift+Up/Down to Scroll Line Up/Down at
+the terminal level**, consuming the keystrokes before any shell process sees
+them. Moved to Alt+Arrow.
+
+Two consequences worth carrying:
+
+- No architecture avoids this. A pty wrapper would be equally blind — the
+  terminal intercepts before *any* process it hosts.
+- Bindings will therefore vary by terminal, which makes advertising them in the
+  card's hint line load-bearing rather than decorative.
+
+Diagnostic: `cat -v`, press the key. Nothing printed means the terminal ate it;
+a sequence printed means it reached the shell and the binding is at fault.
+
 ### Tuning is two jobs
 
 | Job | Nature | Tension |

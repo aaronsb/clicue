@@ -316,10 +316,16 @@ _clicue_scroll_up() {
   zle -R
 }
 
-# Tab only hijacks once the operator has actually engaged with the card.
-# Untouched Tab behaves exactly as it always did.
+# While the card is up it OWNS command-position completion: Tab accepts the
+# highlighted cue. Falling through to compsys here produced a second, wider
+# listing of the same candidates stacked under the card — the card looked like
+# the completion UI without being one.
+#
+# Outside command position (arguments, paths, flags) the card is not shown and
+# Tab delegates untouched, because clicue has no candidate-source adapter yet
+# and compsys is authoritative there.
 _clicue_accept() {
-  if (( _clicue_visible && _clicue_engaged )) && (( ${#_clicue_cands} )); then
+  if (( _clicue_visible )) && (( ${#_clicue_cands} )); then
     LBUFFER="${_clicue_cands[_clicue_sel]} "
     _clicue_reset_sel
     _clicue_clear
