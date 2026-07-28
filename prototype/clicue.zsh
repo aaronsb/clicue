@@ -48,7 +48,8 @@ typeset -g  _clicue_orig_tab=''
 typeset -g  _clicue_mode=cmd       # cmd | arg
 typeset -g  _clicue_cmd=''         # in arg mode, the command being argued
 typeset -g  _clicue_pfx=''         # the partial word being completed
-typeset -g  _clicue_suppressed=0   # dismissed by the operator, stay down
+typeset -g  _clicue_suppressed=0   # dismissed by the operator, this buffer only
+typeset -g  _clicue_supbuf=''      # the buffer the dismissal applies to
 typeset -g  _clicue_info=0         # card is informational, not a candidate list
 typeset -g  _clicue_ghost=''       # stem of the highlighted cue, shown dim
 
@@ -582,8 +583,23 @@ _clicue_pre_redraw() {
   _clicue_clear
   [[ -n $CLICUE_DEBUG ]] && print -r -- "  AFTERCLEAR pd=${#POSTDISPLAY}" >> $CLICUE_DEBUG
 
-  # dismissed by Esc — stay down until the line is emptied or finished
-  (( _clicue_suppressed )) && { [[ -n $LBUFFER ]] && { [[ -n $CLICUE_DEBUG ]] && print -r -- "  BAIL suppressed" >> $CLICUE_DEBUG; return 0 }; _clicue_suppressed=0 }
+  # Dismissed by Esc — but ONLY until the buffer next changes.
+  #
+  # This used to persist until the line was emptied, which meant one Esc press
+  # silently disabled the tool for the rest of the line with no indicator. That is
+  # indistinguishable from a malfunction, and it was in fact reported as one.
+  #
+  # A fallback that silently changes behaviour is worse than no fallback: the
+  # operator cannot tell working from broken, so confidence in the whole UI drops.
+  # Esc now hides the card for the current buffer only; typing brings it straight
+  # back. Predictable, and no invisible state to be surprised by.
+  if (( _clicue_suppressed )); then
+    if [[ $LBUFFER == $_clicue_supbuf ]]; then
+      [[ -n $CLICUE_DEBUG ]] && print -r -- "  BAIL dismissed (this buffer only)" >> $CLICUE_DEBUG
+      return 0
+    fi
+    _clicue_suppressed=0
+  fi
 
   # While zsh's own completion menu owns the display, complist drives redisplay
   # and our region_highlight spans never land — the card would render as
@@ -819,6 +835,7 @@ _clicue_scroll_up()   { _clicue_move -1; return 0 }
 _clicue_dismiss() {
   if (( _clicue_visible )); then
     _clicue_suppressed=1
+    _clicue_supbuf=$LBUFFER
     _clicue_clear
     zle -R
   fi

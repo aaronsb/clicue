@@ -95,6 +95,32 @@ This is also the sharpest available argument about the render surface. Borrowing
 `POSTDISPLAY` from ZLE is a milder instance of the same mistake: ZLE never agreed
 to share it either.
 
+### 1. No fallback may damage confidence in the UI
+
+A fallback that silently changes behaviour is **worse than no fallback**. The
+operator cannot distinguish working from broken, so trust in the whole surface
+drops — not just in the path that fell back.
+
+Found the hard way. Esc set a suppression flag that persisted until the line was
+emptied, silently disabling the tool for the rest of that line with no indicator.
+It was reported as clicue "occasionally dropping to the original completion
+engine", intermittently and then not reproducibly — because it stopped recurring
+as soon as a fresh line was started without pressing Esc. A full audit of every
+zsh entry point found no residual; the cause was clicue's own designed behaviour.
+
+Resolved by removing the persistence: Esc now dismisses for the **current buffer
+only**, and typing brings the card straight back. Predictable, with no invisible
+state to be surprised by.
+
+The general rule: **any invisible mode in a live-feedback tool will be reported as
+breakage**, because the operator has no way to attribute the change to their own
+action. Either the state is visible, or it does not persist.
+
+This constrains the remaining fallbacks too — Tab delegating to compsys outside
+command position, and the card standing down on path-like input. Those are
+acceptable because the *trigger is visible*: the operator can see they typed a
+space or a slash. Suppression had no such tell.
+
 ### 2. Compose, don't capture
 
 Every tool in this space we examined captures something it did not need to:
@@ -583,7 +609,12 @@ Committing now would foreclose designs we have not looked for.
 
 ---
 
-### Dismissal is invisible, and reads as a malfunction **[MEASURED]**
+### Dismissal was invisible, and read as a malfunction **[MEASURED — resolved]**
+
+> Resolved: see design value 1. Esc now applies to the current buffer only.
+> Original finding retained below because the diagnostic path is the lesson.
+
+#### Original finding
 
 The operator reported clicue "occasionally dropping to the original completion
 engine", intermittently and then not reproducibly. A full audit of every zsh entry
