@@ -125,11 +125,81 @@ if [[ -r $histfile ]]; then
       done
 fi
 
+# ── 4. whole-invocation frequency, recency, and percentile ────────────────────
+# Per-token counts answer "which flags do I use". The WHOLE invocation answers
+# something different: "do I know this command by heart" — which is what gates
+# how much explanation to show. `ls -lat` is a different fact from `ls` plus `-l`.
+#
+# Recency comes along for free: EXTENDED_HISTORY already stamps every line, so no
+# instrumentation is added here either.
+typeset -A invoke invlast invpct
+if [[ -r $histfile ]]; then
+  # NOT `local key cnt lst`: cnt is already a local from section 3 and holds a
+  # value, and re-declaring a set local PRINTS it — that is how a stray `cnt=''`
+  # ended up on stdout.
+  local key lst
+  sed 's/^: \([0-9]*\):[0-9]*;/\1\t/' $histfile 2>/dev/null \
+    | awk -F'\t' '
+        {
+          ts = 0; line = $0
+          if (NF >= 2 && $1 ~ /^[0-9]+$/) { ts = $1; line = $2 }
+          n = split(line, segs, /\|\||&&|[|;]/)
+          for (s = 1; s <= n; s++) {
+            m = split(segs[s], w, /[ \t]+/)
+            ci = 0
+            for (i = 1; i <= m; i++) if (w[i] != "") { ci = i; break }
+            if (!ci) continue
+            cmd = w[ci]
+            if (cmd !~ /^[a-zA-Z0-9_.:+-]+$/) continue
+            # key on the command plus its FLAG tokens only. Paths and values are
+            # data — including them would make every invocation unique and the
+            # count meaningless.
+            key = cmd; nf = 0
+            for (i = ci + 1; i <= m; i++) {
+              if (w[i] ~ /^-{1,2}[a-zA-Z0-9][a-zA-Z0-9_-]*$/) { key = key " " w[i]; nf++ }
+            }
+            if (!nf) continue
+            print key "\t" ts
+          }
+        }' \
+    | awk -F'\t' '{ c[$1]++; if ($2+0 > last[$1]) last[$1] = $2+0 }
+                  END { for (k in c) print c[k] "\t" k "\t" last[k] }' \
+    | sort -rn \
+    | while IFS=$'\t' read -r cnt key lst; do
+        [[ -z $key ]] && continue
+        invoke[$key]=$cnt
+        invlast[$key]=$lst
+      done
+
+  # Percentile by RANK among distinct invocations, so "top 10%" means "in the most
+  # frequent tenth of the things you actually run" — a threshold that reads the
+  # same whatever the size of the history.
+  local -i ninv=${#invoke} rank=0
+  if (( ninv > 0 )); then
+    for key in ${(k)invoke}; do
+      invpct[$key]=0
+    done
+    # Walk in descending count order. The count is zero-padded so a plain string
+    # sort orders it numerically, and the separator is a real tab — `print -r`
+    # does NOT expand \t, so writing it as an escape would leave the field
+    # unsplittable and every percentile identical.
+    local -a ordered=()
+    ordered=( ${(@f)"$(for key in ${(k)invoke}; do
+                         print -r -- "${(l:9::0:)invoke[$key]}"$'\t'"$key"
+                       done | sort -r | cut -f2-)"} )
+    for key in $ordered; do
+      (( rank++ ))
+      invpct[$key]=$(( (rank * 100 + ninv - 1) / ninv ))
+    done
+  fi
+fi
+
 # ── emit ──────────────────────────────────────────────────────────────────────
 {
   print -r -- "# clicue corpus cache — generated, do not edit"
   print -r -- "# built: $(date -Iseconds)"
-  print -r -- "typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN"
+  print -r -- "typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN \\"
+  print -r -- "            CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST"
   print -r -- "CLICUE_GLOSS=("
   for n in ${(k)gloss}; do
     print -r -- "  ${(qq)n} ${(qq)gloss[$n]}"
@@ -155,6 +225,21 @@ fi
     print -r -- "  ${(qq)n} ${(qq)argcount[$n]}"
   done
   print -r -- ")"
+  print -r -- "CLICUE_INVOKE=("
+  for n in ${(k)invoke}; do
+    print -r -- "  ${(qq)n} ${(qq)invoke[$n]}"
+  done
+  print -r -- ")"
+  print -r -- "CLICUE_INVOKE_PCT=("
+  for n in ${(k)invpct}; do
+    print -r -- "  ${(qq)n} ${(qq)invpct[$n]}"
+  done
+  print -r -- ")"
+  print -r -- "CLICUE_INVOKE_LAST=("
+  for n in ${(k)invlast}; do
+    print -r -- "  ${(qq)n} ${(qq)invlast[$n]}"
+  done
+  print -r -- ")"
 } > $tmp
 
 mv -f $tmp $out
@@ -164,4 +249,5 @@ print -r -- "  glosses:   ${#gloss}"
 print -r -- "  frequency: ${#freq}"
 print -r -- "  arg cmds:  ${#argrank}"
 print -r -- "  arg pairs: ${#argcount}"
+print -r -- "  invocations: ${#invoke}"
 print -r -- "  size:      $(du -h $out | cut -f1)"

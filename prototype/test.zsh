@@ -351,6 +351,119 @@ got=$(_unpack rm 'rm -- remove files')
   || nope "short word does not over-strip" "got [$got]"
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "silent-failure guards"
+# Two zsh behaviours that fail by STORING THE WRONG THING rather than erroring.
+# Both bit this project, one of them twice, so both are asserted across the whole
+# file rather than at the site that happened to be wrong.
+
+# 1. An unescaped `|` in an associative-array subscript does not store under the
+#    key it appears to. The write lands where the read never looks and the map
+#    stays empty, with no error anywhere.
+typeset -a badsub
+badsub=( ${(f)"$(grep -n '^[^#]*[A-Za-z_][A-Za-z0-9_]*\[\$[{(][^]]*|' $SRC | grep -v '\\|' || true)"} )
+if (( ${#badsub} == 0 )); then
+  ok "no composite assoc subscript builds its key inline with a bare |"
+else
+  nope "no composite assoc subscript builds its key inline with a bare |" \
+       "${badsub[1]}"
+fi
+
+if grep -q '_clicue_fkey()' $SRC; then
+  ok "composite keys go through _clicue_fkey"
+else
+  nope "composite keys go through _clicue_fkey"
+fi
+
+# 2. `print -r` does NOT expand escapes, so "\t" writes backslash-t. A file
+#    written that way and read back with a real-tab split silently merges fields.
+typeset -a badtab
+# Only the BROKEN form. Excluded: comment lines (the note explaining this bug
+# contains the pattern) and lines using $'\t', which is the correct spelling.
+badtab=( ${(f)"$(grep -n 'print -r.*\\t' $SRC \
+                 | grep -v ':[[:space:]]*#' \
+                 | grep -v "\\\$'" || true)"} )
+if (( ${#badtab} == 0 )); then
+  ok "no print -r writes a literal \\t where a tab is meant"
+else
+  nope "no print -r writes a literal \\t where a tab is meant" "${badtab[1]}"
+fi
+
+# 3. Glob operators that need EXTENDED_GLOB match LITERALLY when it is off, so a
+#    shape test silently rejects everything. _clicue_decompose runs without it.
+body=$(awk '/^_clicue_decompose\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+body=${(F)${(f)body}:#[[:space:]]#\#*}
+if [[ $body != *'##'* ]] || [[ $body == *'extended_glob'* ]]; then
+  ok "_clicue_decompose does not depend on EXTENDED_GLOB without setting it"
+else
+  nope "_clicue_decompose does not depend on EXTENDED_GLOB without setting it" \
+       "a ## here matches literally and rejects every cluster"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "flags are described, not just counted"
+
+# The description must come BEFORE the count in the argument gloss.
+body=$(awk '/^_clicue_gloss\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+body=${(F)${(f)body}:#[[:space:]]#\#*}
+if [[ $body == *'_clicue_g="$d'* ]]; then
+  ok "argument gloss leads with the description"
+else
+  nope "argument gloss leads with the description" \
+       "the count answers a question the operator rarely has"
+fi
+if [[ $body == *'used ${c}×'* ]]; then
+  ok "the count survives as the fallback when nothing describes the flag"
+else
+  nope "the count survives as the fallback when nothing describes the flag"
+fi
+
+# Pairing requires EXACTLY two spellings sharing a description; three or more
+# means the description is generic and pairing would be a guess.
+body=$(awk '/^_clicue_harvest_flags\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'${#names} == 2'* ]]; then
+  ok "short/long pairing requires exactly two spellings"
+else
+  nope "short/long pairing requires exactly two spellings" \
+       "generic descriptions like 'display help information' would pair wrongly"
+fi
+
+# The buffer must be restored after the synthesised `<cmd> -` harvest, in a way
+# that survives an aborting completer.
+if [[ $body == *'always'*'BUFFER=$sbuf'* ]]; then
+  ok "the synthesised harvest restores the operator's line in an always block"
+else
+  nope "the synthesised harvest restores the operator's line in an always block" \
+       "leaving a fabricated line on screen is the worst possible failure here"
+fi
+
+# Decomposition must refuse unless EVERY letter is documented.
+body=$(awk '/^_clicue_decompose\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'|| return 1'* ]]; then
+  ok "decomposition refuses a cluster with any undocumented letter"
+else
+  nope "decomposition refuses a cluster with any undocumented letter"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "familiarity gate is opt-in"
+# A verbosity change nobody asked for is the invisible behaviour shift design
+# value 1 forbids, so the threshold defaults to off.
+body=$(awk '/^_clicue_is_familiar\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'thresh=0'* && $body == *'thresh > 0'* ]]; then
+  ok "familiar-percentile defaults to 0 = off"
+else
+  nope "familiar-percentile defaults to 0 = off"
+fi
+
+body=$(awk '/^_clicue_emit_explain\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'to expand'* ]]; then
+  ok "a collapsed explanation names the key that opens it"
+else
+  nope "a collapsed explanation names the key that opens it" \
+       "an unexplained collapsed box reads as breakage"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "corpus"
 
 typeset -g CORPUS=${XDG_CACHE_HOME:-$HOME/.cache}/clicue/corpus.zsh

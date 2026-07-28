@@ -548,6 +548,87 @@ with an empty widget field, so no pattern selects clicue's call and not the
 operator's. Configuring compsys by zstyle is using its own API; this is not the
 kind of reaching-in that design value 0 forbids.
 
+### A flag's meaning is constructible; its short/long pair is too **[MEASURED]**
+
+The count of how often a flag was used answers a question the operator rarely
+has. What the flag *does* is the useful thing, and compsys already carries it —
+two properties make a real reference page constructible with no hand-authoring:
+
+1. Driving `<cmd> -` yields the documented flag set with descriptions.
+2. A short flag and its long spelling carry the **identical** description, so they
+   can be paired by grouping on description text.
+
+| Command | words | described | distinct descriptions | shared by 2 names |
+|---|---|---|---|---|
+| `rm -` | 17 | 17 | 12 | 4 |
+| `ps -` | 62 | 62 | 44 | 17 |
+| `ls -` | 98 | 81 | 57 | 24 |
+| `curl -` | 332 | 331 | — | — |
+
+Pairing requires **exactly two** spellings sharing a description. Three or more
+means the description is generic (`display help information`) and pairing it
+would be a guess.
+
+Clustered short flags decompose only when **every** letter is documented:
+
+```
+rm -rf     -r            remove directories and their contents recursively
+           -f, --force   ignore nonexistent files, never prompt
+curl -fsSL -f, --fail    Fail fast with no output on HTTP errors
+           -s, --silent  Silent mode
+           -S, --show-error  Show error even when -s is used
+           -L, --location    Follow redirects
+ps -aux    REFUSED — ps documents no dashed `u`
+```
+
+`ps -aux` refusing is the guard working. It is also a famously wrong invocation
+(BSD `aux` takes no dash), so inventing an explanation would have taught the
+operator something false.
+
+Harvesting forks, so it happens on the first Tab per command and is cached in
+`~/.cache/clicue/flags/<cmd>.zsh` against the binary's mtime — a command cannot
+document new flags without the binary changing.
+
+### Whole-invocation statistics gate verbosity **[MEASURED]**
+
+Per-token counts answer "which flags do I use". The whole invocation answers
+"do I know this by heart", keyed on the command plus its flag tokens only — paths
+and values are data, and including them would make every invocation unique.
+
+| Invocation | count | percentile | last |
+|---|---|---|---|
+| `rm -rf` | 31 | top 1% | today |
+| `ps -aux` | 5 | top 7% | 6d ago |
+| `curl -fsSL` | 3 | top 12% | 46d ago |
+| `ls -lat` | 1 | top 58% | today |
+
+176 distinct invocations across 1,695 history lines. Counts are deflated by
+`HIST_IGNORE_ALL_DUPS` — `rm -rf` reaching 31 *despite* dedup is the signal, not
+the number. Recency is free: `EXTENDED_HISTORY` already stamps every line, so
+nothing is instrumented here either.
+
+The familiarity gate defaults to **off**. A card that quietly shows less than it
+did yesterday is indistinguishable from a broken one, and the collapsed row names
+the key that expands it — design value 1 applied to a feature whose whole purpose
+is showing less.
+
+### Two zsh behaviours that fail by storing the wrong thing **[MEASURED]**
+
+Both cost debugging passes here, and neither produces an error:
+
+| Construct | What actually happens |
+|---|---|
+| `assoc[${a}|${b}]=$v` | does **not** store under `a|b`; the write lands where the read never looks, and the map stays silently empty |
+| `print -r -- "x\ty"` | `-r` does not expand escapes, so this writes backslash-t; a reader splitting on a real tab merges every field |
+
+A third of the same shape: a glob operator needing `EXTENDED_GLOB` matches
+**literally** when it is off, so `-[a-zA-Z][a-zA-Z]##` silently rejected every
+cluster it was written to match.
+
+All three are now asserted across the whole file rather than at the site that
+happened to be wrong, and the `\t` guard was mutation-tested — reintroducing the
+broken form does fail it.
+
 ### Coverage against installed commands **[MEASURED]**
 
 | Tier | Count | % of installed |

@@ -1,18 +1,25 @@
 #!/usr/bin/env zsh
 # clicue — prototype presentation engine
 #
-# SCOPE (v1): command-position candidates only. Typing the first word of a line
-# shows a cue card of matching commands/aliases/functions with glosses from the
-# corpus, ranked by frequency derived from shell history. Subcommand and flag
-# completion needs the candidate-source adapter talking to compsys — deliberately
-# not in this prototype. See SPEC.md components 3 and 5.
+# SCOPE: command position and argument position.
+#
+# Command position: typing the first word shows a card of matching
+# commands/aliases/functions with glosses from the corpus, ranked by frequency
+# derived from shell history.
+#
+# Argument position: the candidate-source adapter drives compsys for subcommands
+# and flags WITH their real descriptions, and the second box stops browsing
+# commands — it enumerates what is already on the line instead.
 #
 # Composability contract (SPEC.md design value 2):
 #   - registers via add-zle-hook-widget; never zle -N a hook someone else owns
 #   - tags region_highlight entries with memo=clicue
 #   - PRESERVES any existing POSTDISPLAY (e.g. zsh-autosuggestions) and appends
 #     below it rather than overwriting
-#   - never touches :completion:* zstyles
+#   - borrows exactly one :completion:* zstyle — list-grouped, for the duration of
+#     one capture, restored in an `always` block. Nothing else is touched, and
+#     nothing is left changed. (This line previously claimed none at all; the
+#     borrow is documented at the capture site and in SPEC.md.)
 #
 # Debugging:
 #   CLICUE_DEBUG=/path/to/log zsh -i
@@ -69,7 +76,13 @@ typeset -gA CLICUE_THEME=(
 _clicue_load() {
   (( _clicue_loaded )) && return 0
   _clicue_loaded=1
-  [[ -r $CLICUE_CACHE ]] || { typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ; return 1 }
+  # Declared unconditionally, BEFORE the cache is read. A corpus built by an
+  # older version simply will not define the newer maps, and an undefined
+  # association read with a subscript is an error, not an empty string — so the
+  # card would break on a stale cache rather than degrade.
+  typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN \
+              CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST
+  [[ -r $CLICUE_CACHE ]] || return 1
   source $CLICUE_CACHE
   return 0
 }
@@ -280,6 +293,235 @@ _clicue_capture_fn() {
 
 zle -C _clicue_capture list-choices _clicue_capture_fn
 
+# Strip compdescribe's packed display prefix. It formats each display string as
+# "<word><padding>-- <description>" so the list lines up in COMPSYS's single
+# column; clicue renders name and gloss as separate columns, so the prefix has to
+# come off or every row shows its name twice.
+_clicue_unpack_desc() {
+  setopt localoptions extended_glob
+  local w=$1 d=$2 sep
+  zstyle -s ':completion:*:*' list-separator sep || sep='--'
+  if [[ $d == ${w}* ]]; then
+    d=${d#$w}
+    d=${d##[[:space:]]#}
+    [[ $d == ${sep}(|[[:space:]]*) ]] && d=${d#$sep}
+    d=${d##[[:space:]]#}
+  fi
+  _clicue_ud=${d%%[[:space:]]#}
+}
+
+# ── flag intelligence ────────────────────────────────────────────────────────
+# What a flag MEANS is more useful than how often it was used. The count is still
+# shown, but it trails the description rather than replacing it.
+#
+# Two facts make this constructible from compsys alone:
+#
+#   1. Driving `<cmd> -` yields the documented flag set with descriptions.
+#   2. A short flag and its long spelling carry the IDENTICAL description, so
+#      they can be paired by grouping on description text. [MEASURED]
+#        rm -   17 words, 17 described, 4 descriptions shared -> `-f, --force`
+#        ps -   62/62, 17 shared -> `-V, --version`
+#        ls -   98 words, 81 described, 57 distinct, 24 shared
+#
+# Harvesting forks, so it cannot run per keystroke. It runs on demand and the
+# result is cached on disk: a command's documented flag set does not change until
+# the binary does, which is what the stamp check covers.
+# Composite keys are built in a VARIABLE, never written inline as
+# assoc[${cmd}|${flag}]. An unescaped `|` in a subscript does not store under the
+# key it appears to — the write lands somewhere the read never looks, silently,
+# and the map simply stays empty. That cost a debugging pass here; the corpus code
+# escapes it as \| for the same reason.
+_clicue_fkey() { _clicue_fk="${1}|${2}" }
+
+typeset -gA _clicue_flag_desc=()     # cmd|flag  -> description
+typeset -gA _clicue_flag_alt=()      # cmd|flag  -> the other spelling
+typeset -gA _clicue_flag_have=()     # cmd       -> 1 once loaded or harvested
+
+zmodload -F zsh/stat b:zstat 2>/dev/null
+zmodload zsh/datetime 2>/dev/null
+
+_clicue_flag_cachedir() {
+  print -r -- "${XDG_CACHE_HOME:-$HOME/.cache}/clicue/flags"
+}
+
+# How often the operator has actually run THIS invocation, and how recently.
+# Their own habits are the one thing no manual page knows, and it is the input
+# the familiarity gate needs.
+_clicue_invocation_note() {
+  local key="${(j: :)_clicue_words}"
+  local n=${CLICUE_INVOKE[$key]:-}
+  [[ -z $n ]] && { print -r -- ''; return 0 }
+  local out="run ${n}×"
+  local pct=${CLICUE_INVOKE_PCT[$key]:-}
+  [[ -n $pct ]] && out+="  ·  top ${pct}% of your invocations"
+  local last=${CLICUE_INVOKE_LAST[$key]:-}
+  if [[ -n $last && $last != 0 && -n $EPOCHSECONDS ]]; then
+    local -i days=$(( (EPOCHSECONDS - last) / 86400 ))
+    if (( days <= 0 )); then out+="  ·  today"
+    elif (( days == 1 )); then out+="  ·  yesterday"
+    else out+="  ·  ${days}d ago"
+    fi
+  fi
+  print -r -- $out
+}
+
+# Is this invocation one the operator demonstrably knows by heart?
+# Off by default: a verbosity change the operator did not ask for is precisely the
+# invisible behaviour shift design value 1 forbids.
+_clicue_is_familiar() {
+  local -i thresh=0
+  zstyle -s ':clicue:*' familiar-percentile thresh 2>/dev/null || thresh=0
+  (( thresh > 0 )) || return 1
+  local key="${(j: :)_clicue_words}"
+  local pct=${CLICUE_INVOKE_PCT[$key]:-}
+  [[ -n $pct ]] || return 1
+  (( pct <= thresh ))
+}
+
+# Stamp is the command's own mtime. A rebuilt binary may document new flags; an
+# unchanged one cannot, so there is nothing to re-fetch.
+_clicue_flag_stamp() {
+  local cmd=$1 p=${commands[$1]}
+  if [[ -n $p && -e $p ]]; then
+    print -r -- ${$(zstat -F '%s' +mtime $p 2>/dev/null):-0}
+  else
+    print -r -- 'builtin'
+  fi
+}
+
+_clicue_flag_load() {
+  local cmd=$1
+  (( ${+_clicue_flag_have[$cmd]} )) && return 0
+  local f=$(_clicue_flag_cachedir)/${cmd}.zsh
+  [[ -r $f ]] || return 1
+  local -a lines=( ${(f)"$(<$f)"} )
+  # line 1 is the stamp; a mismatch means the binary moved on
+  [[ ${lines[1]} == $(_clicue_flag_stamp $cmd) ]] || return 1
+  local l flag alt desc
+  for l in ${lines[2,-1]}; do
+    flag=${l%%$'\t'*}; l=${l#*$'\t'}
+    alt=${l%%$'\t'*}; desc=${l#*$'\t'}
+    [[ -z $flag ]] && continue
+    _clicue_fkey $cmd $flag
+    _clicue_flag_desc[$_clicue_fk]=$desc
+    [[ -n $alt ]] && _clicue_flag_alt[$_clicue_fk]=$alt
+  done
+  _clicue_flag_have[$cmd]=1
+  return 0
+}
+
+_clicue_flag_save() {
+  local cmd=$1
+  local dir=$(_clicue_flag_cachedir)
+  mkdir -p $dir 2>/dev/null || return 1
+  local f=$dir/${cmd}.zsh
+  {
+    print -r -- "$(_clicue_flag_stamp $cmd)"
+    local k flag
+    for k in ${(k)_clicue_flag_desc}; do
+      [[ $k == ${cmd}\|* ]] || continue
+      flag=${k#*\|}
+      # REAL tabs, via $'\t'. `print -r` does not expand escapes, so writing "\t"
+      # here stored the two characters backslash-t; the loader splits on an actual
+      # tab, so every field came back merged. A cache that reloads as garbage is
+      # worse than no cache — it would put wrong descriptions on right flags.
+      print -r -- "${flag}"$'\t'"${_clicue_flag_alt[$k]}"$'\t'"${_clicue_flag_desc[$k]}"
+    done
+  } >! $f.$$ 2>/dev/null && mv -f $f.$$ $f 2>/dev/null
+  return 0
+}
+
+# Harvest `<cmd> -` by synthesising that line, then putting the operator's line
+# back. No redraw happens in between — zle -R is not called — so the substitution
+# is never visible. Deliberate and on demand: the alternative is guessing what a
+# flag means, and a wrong gloss is worse than none.
+_clicue_harvest_flags() {
+  local cmd=$1
+  (( ${+_clicue_flag_have[$cmd]} )) && return 0
+  _clicue_flag_load $cmd && return 0
+  _clicue_flag_have[$cmd]=1        # set first: one attempt per command per shell
+
+  local sbuf=$BUFFER
+  local -i scur=$CURSOR
+  local -a swords=( $_clicue_cs_words ) sdescs=( $_clicue_cs_descs )
+  local sfor=$_clicue_cs_for
+
+  BUFFER="$cmd -"; CURSOR=${#BUFFER}
+  {
+    zle _clicue_capture 2>/dev/null
+  } always {
+    BUFFER=$sbuf; CURSOR=$scur
+  }
+
+  local -A byd=()
+  local -i i
+  local w d
+  for (( i = 1; i <= ${#_clicue_cs_words}; i++ )); do
+    w=${_clicue_cs_words[i]}
+    [[ $w == -* ]] || continue
+    _clicue_unpack_desc $w "${_clicue_cs_descs[i]}"
+    d=$_clicue_ud
+    [[ -z $d || $d == '@' ]] && continue
+    _clicue_fkey $cmd $w
+    _clicue_flag_desc[$_clicue_fk]=$d
+    byd[$d]+="$w "
+  done
+
+  # exactly two spellings sharing a description is a short/long pair; three or
+  # more means the description is generic ("display help information") and pairing
+  # it would be a guess
+  local -a names
+  for d in ${(k)byd}; do
+    names=( ${=byd[$d]} )
+    (( ${#names} == 2 )) || continue
+    _clicue_fkey $cmd ${names[1]}; _clicue_flag_alt[$_clicue_fk]=${names[2]}
+    _clicue_fkey $cmd ${names[2]}; _clicue_flag_alt[$_clicue_fk]=${names[1]}
+  done
+
+  _clicue_cs_words=( $swords ); _clicue_cs_descs=( $sdescs ); _clicue_cs_for=$sfor
+  _clicue_flag_save $cmd
+  return 0
+}
+
+# `-l, --long` when both spellings are known, otherwise just what was given.
+_clicue_flag_label() {
+  local cmd=$1 f=$2
+  _clicue_fkey $cmd $f
+  local alt=${_clicue_flag_alt[$_clicue_fk]}
+  if [[ -z $alt ]]; then
+    _clicue_fl=$f
+  elif [[ $f == --* ]]; then
+    _clicue_fl="$alt, $f"
+  else
+    _clicue_fl="$f, $alt"
+  fi
+}
+
+# Split a clustered short-flag token (-lat) into its constituents, but ONLY when
+# EVERY letter is a flag this command actually documents. A partial match means
+# the cluster is something else — a value, a negative number, an unknown short
+# option — and inventing properties the operator never asked about is exactly the
+# kind of added information design value 4 rules out.
+_clicue_decompose() {
+  local cmd=$1 tok=$2
+  _clicue_parts=()
+  # Plain glob on purpose: `##` would need EXTENDED_GLOB, which this function does
+  # not set, and an unsupported operator matches literally rather than failing —
+  # so the shape test silently rejected every cluster. Two letters minimum, and
+  # anything non-alphabetic is caught by the per-letter lookup below.
+  [[ $tok == -[a-zA-Z][a-zA-Z]* ]] || return 1
+  local letters=${tok#-}
+  local -i i
+  local ch
+  for (( i = 1; i <= ${#letters}; i++ )); do
+    ch=${letters[i]}
+    _clicue_fkey $cmd "-$ch"
+    [[ -n ${_clicue_flag_desc[$_clicue_fk]} ]] || return 1
+    _clicue_parts+=( "-$ch" )
+  done
+  return 0
+}
+
 # Build the name -> description map from the aligned harvest.
 #
 # compdescribe packs each display string as "<word><padding>-- <description>" so
@@ -289,24 +531,16 @@ zle -C _clicue_capture list-choices _clicue_capture_fn
 # the compadd shadow: alignment is guaranteed by -D, and this is our own code
 # where the shell options are ours to set.
 _clicue_cs_build_gloss() {
-  setopt localoptions extended_glob
   _clicue_cs_gloss=()
-  local sep w d
-  zstyle -s ':completion:*:*' list-separator sep || sep='--'
+  local w d
   local -i i
   for (( i = 1; i <= ${#_clicue_cs_words}; i++ )); do
     d=${_clicue_cs_descs[i]}
     [[ $d == '@' || -z $d ]] && continue      # placeholder: no description given
     w=${_clicue_cs_words[i]}
-    if [[ $d == ${w}* ]]; then
-      d=${d#$w}
-      d=${d##[[:space:]]#}
-      [[ $d == ${sep}(|[[:space:]]*) ]] && d=${d#$sep}
-      d=${d##[[:space:]]#}
-    fi
-    d=${d%%[[:space:]]#}
-    [[ -z $d ]] && continue
-    _clicue_cs_gloss[$w]=$d
+    _clicue_unpack_desc $w "$d"
+    [[ -z $_clicue_ud ]] && continue
+    _clicue_cs_gloss[$w]=$_clicue_ud
   done
 }
 
@@ -318,14 +552,19 @@ _clicue_gloss() {
       _clicue_g=${CLICUE_GLOSS[$name]:-'no recorded arguments'}
       return
     fi
-    # compsys's own description when we have it (Tab fetches these), else the
-    # usage count as an honest fallback
-    if [[ -n ${_clicue_cs_gloss[$name]} ]]; then
-      _clicue_g=${_clicue_cs_gloss[$name]}
-      return
-    fi
+    # What the flag MEANS leads; how often it was used trails.
+    #
+    # The count alone answers a question the operator rarely has. It is still
+    # worth showing — it is the only evidence of their own habits — but as an
+    # annotation after the description, not instead of one.
+    _clicue_fkey $_clicue_cmd $name
+    local d=${_clicue_cs_gloss[$name]:-${_clicue_flag_desc[$_clicue_fk]}}
     local c=${CLICUE_ARGN[${_clicue_cmd}\|${name}]:-}
-    _clicue_g=${c:+used ${c}×}
+    if [[ -n $d ]]; then
+      _clicue_g="$d${c:+  ${c}×}"
+    else
+      _clicue_g=${c:+used ${c}×}
+    fi
     return
   fi
   case $kind in
@@ -343,6 +582,12 @@ _clicue_gloss() {
 # there is no mode to switch and no second keybinding to learn.
 typeset -ga _clicue_lines=()
 typeset -ga _clicue_gridrows=()    # indices into _clicue_lines that are grid rows
+typeset -ga _clicue_explain_rows=()  # "label\tdescription" for the typed line
+typeset -ga _clicue_explainrows=()   # indices into _clicue_lines that are explain rows
+typeset -g  _clicue_footrow=0        # index of the invocation-stats footer, if any
+typeset -g  _clicue_expanded=0       # operator asked for the full explanation
+typeset -g  _clicue_expcmd=''        # command the expansion applies to
+typeset -ga _clicue_words=()         # the current segment, split into words
 typeset -g  _clicue_selline=0      # line index holding the selected grid cell
 typeset -g  _clicue_selcol=0       # char offset of that cell within the line
 typeset -g  _clicue_selw=0         # its width
@@ -389,6 +634,76 @@ _clicue_emit_box() {
   # taller POSTDISPLAY over a shorter one rather than reflowing) — that was
   # never isolated, only worked around. If display mangling returns while
   # typing, the inference was right and padding must come back.
+  return 0
+}
+
+# Tier 2 in argument position: what the operator has ALREADY typed, enumerated.
+#
+# Once the invocation is past the command name there is no reason to keep hunting
+# for similarly-named commands — that question is answered. The useful question is
+# what the thing on the line actually does, so the same real estate becomes one
+# row per property:
+#
+#   -l, --long        Display extended file metadata as a table
+#   -a, --all         Do not ignore entries starting with .
+#   -t, --timesort    Sort by time modified
+#
+# Rows are `label<TAB>description`. Not selectable: this box is an explanation of
+# the line, not a picker. The selection stays in tier 1 where it composes.
+#   $1 maxrows  $2 namew  $3 inner  $4 footer
+_clicue_emit_explain() {
+  local -i maxrows=$1 namew=$2 inner=$3
+  local footer=$4
+  (( ${#_clicue_explain_rows} )) || return 1
+
+  # An invocation in the top percentile of the operator's own history is one they
+  # know. Collapse to the evidence line and say how to open it — a REDUCED view,
+  # never a silently different one, and the expand key is named on the row so a
+  # collapsed box cannot be mistaken for a broken one.
+  local -i collapsed=0
+  if (( ! _clicue_expanded )) && _clicue_is_familiar; then collapsed=1; fi
+
+  local label=' typed '
+  (( collapsed )) && label=' typed · collapsed '
+  local -i rule=$(( inner - ${#label} ))
+  (( rule < 1 )) && rule=1
+  _clicue_lines+=( "├${label}${(l:$rule::─:):-}┤" )
+
+  if (( collapsed )); then
+    local REPLY ekey
+    local -a ev
+    zstyle -a ':clicue:keys' expand ev || ev=( '^[e' )
+    _clicue_keylabel ${ev[1]}; ekey=$REPLY
+    local note=${footer:-"${#_clicue_explain_rows} properties"}
+    local line="${note}  ·  ${ekey} to expand"
+    local -i crule=$(( inner - ${#line} - 3 ))
+    (( crule < 1 )) && crule=1
+    _clicue_lines+=( "│   ${line}${(l:$crule:: :):-}│" )
+    _clicue_footrow=${#_clicue_lines}
+    return 0
+  fi
+
+  # left column matches tier 1's width so the two boxes line up
+  local -i lw=$namew
+  local row nm ds
+  local -i i=0 dw
+  for row in $_clicue_explain_rows; do
+    (( ++i > maxrows )) && break
+    nm=${row%%$'\t'*}
+    ds=${row#*$'\t'}
+    (( ${#nm} > lw )) && nm="${nm[1,$lw]}"
+    dw=$(( inner - lw - 5 ))
+    (( dw < 10 )) && dw=10
+    (( ${#ds} > dw )) && ds="${ds[1,$(( dw - 1 ))]}…"
+    _clicue_lines+=( "│   ${(r:$lw:)nm}  ${(r:$dw:)ds}│" )
+    _clicue_explainrows+=( ${#_clicue_lines} )
+  done
+  if [[ -n $footer ]]; then
+    local -i frule=$(( inner - ${#footer} - 3 ))
+    (( frule < 1 )) && frule=1
+    _clicue_lines+=( "│   ${footer}${(l:$frule:: :):-}│" )
+    _clicue_footrow=${#_clicue_lines}
+  fi
   return 0
 }
 
@@ -491,7 +806,42 @@ _clicue_render() {
     _clicue_candidates $pfx
   fi
   cands=( $reply )
-  (( ${#cands} )) || return 1
+
+  # ── what is already on the line, explained ────────────────────────────────
+  # Built before the empty-candidate bail, because a COMPLETE invocation is
+  # exactly the case with nothing left to propose. `ls -lat` matches no further
+  # candidate, so the card used to vanish at the moment the operator had typed
+  # something worth explaining.
+  #
+  # Only populated once the command's flag set is known — that needs a compsys
+  # fork, so it arrives on the first Tab and from the on-disk cache thereafter.
+  _clicue_explain_rows=()
+  if [[ $_clicue_mode == arg ]] && (( ${#_clicue_words} > 1 )); then
+    local -a eparts
+    local etok ef
+    local -A eseen=()
+    for etok in ${_clicue_words[2,-1]}; do
+      [[ $etok == -* ]] || continue
+      _clicue_fkey $_clicue_cmd $etok
+      if [[ -n ${_clicue_flag_desc[$_clicue_fk]} ]]; then
+        eparts=( $etok )
+      elif _clicue_decompose $_clicue_cmd $etok; then
+        eparts=( $_clicue_parts )
+      else
+        continue
+      fi
+      for ef in $eparts; do
+        (( ${+eseen[$ef]} )) && continue
+        eseen[$ef]=1
+        _clicue_flag_label $_clicue_cmd $ef
+        _clicue_fkey $_clicue_cmd $ef
+        _clicue_explain_rows+=( "${_clicue_fl}"$'\t'"${_clicue_flag_desc[$_clicue_fk]}" )
+      done
+    done
+  fi
+
+  # An explanation alone is enough to justify the card.
+  (( ${#cands} || ${#_clicue_explain_rows} )) || return 1
   _clicue_cands=( $cands )
 
   # ── height budget ──────────────────────────────────────────────────────────
@@ -574,6 +924,7 @@ _clicue_render() {
 
   _clicue_lines=()
   _clicue_gridrows=(); _clicue_selline=0
+  _clicue_explainrows=(); _clicue_footrow=0
   local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
   (( _clicue_info )) && { local REPLY; local -a dv
     zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
@@ -584,7 +935,12 @@ _clicue_render() {
     _clicue_emit_box 1 $t1n $_clicue_top1 " ${_clicue_sel}/${total} " \
                      $r1 $namew $glossw $inner
   fi
-  if (( total > t1n )); then
+  # In argument position the second box explains the line instead of browsing
+  # commands. The grid stays for command position, where "what else is named like
+  # this" is still the live question.
+  if (( ${#_clicue_explain_rows} )); then
+    _clicue_emit_explain $r2 $namew $inner "$(_clicue_invocation_note)"
+  elif (( total > t1n )); then
     _clicue_emit_grid $(( t1n + 1 )) $total $r2 $inner
   fi
 
@@ -724,6 +1080,7 @@ _clicue_pre_redraw() {
   seg=${seg##[[:space:]]#}                 # strip leading blanks
 
   local -a words=( ${(z)seg} )
+  _clicue_words=( $words )
   local trailing=0
   [[ $seg == *[[:space:]] ]] && trailing=1
 
@@ -763,6 +1120,8 @@ _clicue_pre_redraw() {
   [[ $buf != $_clicue_lastbuf ]] && { _clicue_lastbuf=$buf; _clicue_reset_sel }
   # a different command means the harvest no longer applies
   [[ $_clicue_mode == cmd ]] && { _clicue_cs_words=(); _clicue_cs_gloss=(); _clicue_cs_for=$'\0' }
+  # the expansion is sticky per invocation, not for ever
+  [[ $_clicue_cmd != $_clicue_expcmd ]] && { _clicue_expcmd=$_clicue_cmd; _clicue_expanded=0 }
 
   if ! _clicue_render "$_clicue_pfx"; then
     [[ -n $CLICUE_DEBUG ]] && print -r -- "  BAIL render-failed mode=$_clicue_mode pfx=[$_clicue_pfx] info=$_clicue_info" >> $CLICUE_DEBUG
@@ -863,7 +1222,8 @@ _clicue_bindall() {
       scroll-down _clicue_scroll_down \
       scroll-up   _clicue_scroll_up \
       accept      _clicue_accept \
-      dismiss     _clicue_dismiss
+      dismiss     _clicue_dismiss \
+      expand      _clicue_expand
   do
     seqs=()
     zstyle -a ':clicue:keys' $action seqs
@@ -878,6 +1238,7 @@ _clicue_bindall() {
         scroll-up)   seqs=( '^[[1;2A' '^[[1;3A' '^[^[[A' ) ;;
         accept)      seqs=( '^I' ) ;;
         dismiss)     seqs=( '^[' ) ;;
+        expand)      seqs=( '^[e' ) ;;
       esac
     fi
     for k in $seqs; do
@@ -931,6 +1292,14 @@ _clicue_move() {
 _clicue_scroll_down() { _clicue_move 1;  return 0 }
 _clicue_scroll_up()   { _clicue_move -1; return 0 }
 
+# Open a collapsed explanation. Sticky for the rest of the line: an operator who
+# asked for the detail once should not have to keep asking as they keep typing.
+_clicue_expand() {
+  _clicue_expanded=$(( ! _clicue_expanded ))
+  zle -R
+  return 0
+}
+
 # ^C cannot be used for dismiss: the tty driver raises SIGINT before ZLE sees the
 # character, and TRAPINT can observe it but not stop ZLE aborting the line.
 _clicue_dismiss() {
@@ -976,6 +1345,10 @@ _clicue_accept() {
     _clicue_cs_for=$LBUFFER
     zle _clicue_capture 2>/dev/null
     _clicue_cs_build_gloss
+    # Learn the command's documented flag set too. This is what lets the second
+    # box explain `-lat`. It forks at most once per command ever — the result is
+    # cached on disk against the binary's mtime.
+    [[ -n $_clicue_cmd ]] && _clicue_harvest_flags $_clicue_cmd
     if [[ -n $CLICUE_DEBUG ]]; then
       print -r -- "  COMPSYS words=${#_clicue_cs_words} descs=${#_clicue_cs_descs} glossed=${#_clicue_cs_gloss}" >> $CLICUE_DEBUG
       local _dn
@@ -1026,6 +1399,7 @@ zle -N _clicue_scroll_down
 zle -N _clicue_scroll_up
 zle -N _clicue_accept
 zle -N _clicue_dismiss
+zle -N _clicue_expand
 
 _clicue_orig_tab=${${(z)$(bindkey '^I')}[2]:-expand-or-complete}
 [[ $_clicue_orig_tab == _clicue_accept ]] && _clicue_orig_tab=expand-or-complete

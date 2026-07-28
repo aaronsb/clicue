@@ -14,6 +14,34 @@ zstyle ':clicue:*' tier1-rows 10      # cues in the primary card; overflow -> gr
 zstyle ':clicue:*' tier2-rows auto    # grid fills the terminal; or a fixed count
 zstyle ':clicue:*' enabled   yes
 
+# ── argument position: what you typed, explained ─────────────────────────────
+# Past the command name, the second box stops browsing commands — that question
+# is already answered — and enumerates the properties on the line instead:
+#
+#   ├ typed ────────────────────────────────────────────────────────────────┤
+#   │   -l                   long listing                                   │
+#   │   -a, --all            list entries starting with .                    │
+#   │   -t                   sort by modification time                      │
+#   │   run 1×  ·  top 58% of your invocations  ·  today                    │
+#
+# Short and long spellings are paired by their shared description, which is how
+# compsys happens to encode them. A clustered token like -lat is split only when
+# EVERY letter is a flag the command documents — `ps -aux` is deliberately NOT
+# explained, because ps does not document a dashed `u`.
+#
+# The flag set comes from compsys, which forks, so it arrives on the first Tab for
+# a command and from ~/.cache/clicue/flags thereafter (keyed on the binary mtime).
+# Descriptions lead; the usage count trails them rather than replacing them.
+
+# ── verbosity for invocations you already know ───────────────────────────────
+# 0 disables this entirely, which is the default: a card that quietly shows less
+# than it did yesterday is indistinguishable from a broken one.
+#
+# Set it to a percentile (say 5) and any command+flags combination in the top 5%
+# of your own invocations collapses to a single evidence line naming the expand
+# key. `rm -rf` measured top 1% here, `ps -aux` top 7%, `ls -lat` top 58%.
+zstyle ':clicue:*' familiar-percentile 0
+
 # ── why these are fixed counts ───────────────────────────────────────────────
 # The card is always the same number of lines: tier1-rows + tier2-rows + 5.
 # ZLE paints a taller POSTDISPLAY over a shorter one instead of reflowing, so a
@@ -60,6 +88,8 @@ zstyle ':clicue:*' enabled   yes
 zstyle ':clicue:keys' scroll-down '^[[1;2B' '^[[1;3B' '^[^[[B' '^[j'
 zstyle ':clicue:keys' scroll-up   '^[[1;2A' '^[[1;3A' '^[^[[A' '^[k'
 zstyle ':clicue:keys' accept      '^I'                           # Tab
+zstyle ':clicue:keys' expand      '^[e'                    # Alt+E — open a
+                                                                 # collapsed explanation
 zstyle ':clicue:keys' dismiss     '^['                           # Esc (long reach —
                                                                  # change freely)
 
