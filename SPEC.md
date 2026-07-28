@@ -583,6 +583,32 @@ Committing now would foreclose designs we have not looked for.
 
 ---
 
+### Dismissal is invisible, and reads as a malfunction **[MEASURED]**
+
+The operator reported clicue "occasionally dropping to the original completion
+engine", intermittently and then not reproducibly. A full audit of every zsh entry
+point found **no residual** — no live autosuggestions reference, one `compinit`,
+Tab correctly owned, and `/etc/zsh/zshrc` inert (it guards on a file its own
+package never installed).
+
+The cause is clicue's own designed fallback. `_clicue_accept` delegates to
+`complete-word` whenever the card is not visible, and one reason it is not visible
+is `_clicue_suppressed` — set by Esc, and cleared only when the line is emptied.
+
+**That state has no visual indication at all.** One Esc press silently disables the
+tool for the rest of the line, which is indistinguishable from a malfunction, and
+it stops "happening" as soon as a fresh line is started without pressing Esc —
+which is exactly the reported pattern.
+
+The behaviour is as specified. The defect is that a mode with no indicator is
+indistinguishable from a bug. Open: either surface the dismissed state, or relax
+suppression to clear when the command word changes rather than when the line
+empties.
+
+Generalises: **any invisible mode in a live-feedback tool will be reported as
+breakage**, because the operator has no way to attribute the change to their own
+action.
+
 ## Experiments to run first
 
 Ordered by how much they would change the design.
