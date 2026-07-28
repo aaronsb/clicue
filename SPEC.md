@@ -198,6 +198,50 @@ The boundary moves outward only when the candidate-source adapter (component 3)
 can drive compsys — at which point the card can present argument and flag
 candidates too, still rendered by clicue and still sourced from compsys.
 
+### POSTDISPLAY is single-tenant **[MEASURED]** — the strongest evidence yet
+
+The composability contract works for two of the three shared resources ZLE
+exposes, and fails on the third:
+
+| Shared resource | Multi-tenancy affordance | Verdict |
+|---|---|---|
+| ZLE hooks | `add-zle-hook-widget` — a real registry | ✓ works; clicue, syntax-highlighting and zsh-autocomplete coexisted |
+| `region_highlight` | `memo=token` tagging | ✓ works; spans are separable and removable |
+| **`POSTDISPLAY`** | **none** | ✗ **a bare string with no ownership convention** |
+
+zsh-autosuggestions accepts a suggestion by doing, literally:
+
+```zsh
+BUFFER="$BUFFER$POSTDISPLAY"
+```
+
+It assumes the whole of `POSTDISPLAY` is its own. With the cue card appended
+there, pressing Right Arrow shovelled the entire multi-line card into the
+command buffer.
+
+**Mitigation applied:** wrap every widget known to consume `POSTDISPLAY`
+(`forward-char`, `end-of-line`, the vi equivalents, the partial-accept word
+widgets), strip *our* card, then delegate. This must be installed at first
+`precmd` — zsh-autosuggestions defers its own widget rebinding until then, so
+wrapping at source time captures the bare builtin and leaves autosuggestions
+wrapping *us*, reading `POSTDISPLAY` before we can clear it.
+
+**Why this matters beyond the bug.** The mitigation is fragile by construction:
+it depends on knowing the private widget list of another plugin, and it breaks
+whenever that plugin adds one or another `POSTDISPLAY` consumer appears. There
+is no protocol to negotiate with, only a convention to guess at.
+
+This is the strongest argument so far for **owning the render surface** rather
+than borrowing `POSTDISPLAY` — not for the italic/hyperlink reasons originally
+supposed, but because the borrowed resource has no multi-tenancy story at all.
+A card drawn into a region clicue manages itself would have no such conflict,
+and would not need to know that zsh-autosuggestions exists.
+
+Still not a decision — it is one input, and the mitigation does work. But it
+inverts the earlier reasoning: the render-surface question is now driven by
+**composability**, which is a design value, rather than by escape-sequence
+richness, which was an untested assumption.
+
 ### Terminal-level key conflicts are a real constraint **[MEASURED]**
 
 Card scrolling was first bound to Shift+Arrow. The widget worked correctly —

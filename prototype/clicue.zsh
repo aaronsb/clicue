@@ -545,5 +545,51 @@ fi
 _clicue_bindall
 _clicue_build_hint
 
+# ── POSTDISPLAY is single-tenant; yield it before anyone reads it ────────────
+# zsh-autosuggestions does, literally:      BUFFER="$BUFFER$POSTDISPLAY"
+# It assumes the whole of POSTDISPLAY is its suggestion. With our card appended
+# there, pressing Right Arrow shovelled the entire multi-line card into the
+# command buffer.
+#
+# Unlike ZLE hooks (add-zle-hook-widget) and highlights (memo=), POSTDISPLAY has
+# no multi-tenancy protocol at all — it is a bare string with no ownership
+# convention. So we cooperate manually: wrap every widget known to consume it,
+# strip OUR card first (leaving the other tenant's content untouched), then
+# delegate to whatever was there before.
+typeset -ga _clicue_yield_widgets=(
+  forward-char end-of-line vi-forward-char vi-end-of-line vi-add-eol
+  forward-word emacs-forward-word vi-forward-word vi-forward-word-end
+  vi-forward-blank-word vi-forward-blank-word-end
+)
+
+_clicue_install_yields() {
+  local w impl fn
+  for w in $_clicue_yield_widgets; do
+    impl=${widgets[$w]}
+    [[ -z $impl ]] && continue
+    fn=_clicue_yield_${w//-/_}
+    [[ $impl == user:${fn} ]] && continue        # already wrapped
+    case $impl in
+      user:*)      eval "${fn}_orig() { ${impl#user:} \"\$@\" }" ;;
+      completion:*) continue ;;
+      *)           eval "${fn}_orig() { zle .$w -- \"\$@\" }" ;;
+    esac
+    eval "$fn() { _clicue_clear; ${fn}_orig \"\$@\" }"
+    zle -N $w $fn
+  done
+}
+
+# Must run AFTER zsh-autosuggestions has done its own widget rebinding, which
+# it defers to its first precmd. Wrapping earlier captures the bare builtin and
+# leaves autosuggestions wrapping US — it would then read POSTDISPLAY before we
+# ever get to clear it. Registering our precmd after theirs makes us outermost.
+autoload -Uz add-zsh-hook
+_clicue_first_precmd() {
+  _clicue_install_yields
+  add-zsh-hook -d precmd _clicue_first_precmd
+  unfunction _clicue_first_precmd
+}
+add-zsh-hook precmd _clicue_first_precmd
+
 add-zle-hook-widget line-pre-redraw _clicue_pre_redraw
 add-zle-hook-widget line-finish     _clicue_line_finish
