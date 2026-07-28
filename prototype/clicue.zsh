@@ -235,8 +235,10 @@ _clicue_render() {
     fi
   done
 
-  local hint=' Alt+↑↓ scroll · Tab accept · Esc dismiss '
-  (( _clicue_info )) && hint=' Esc dismiss '
+  local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
+  (( _clicue_info )) && { local REPLY; local -a dv
+    zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
+    _clicue_keylabel ${dv[1]}; hint=" ${REPLY} dismiss " }
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 1 )) && brule=1
   lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
@@ -367,68 +369,93 @@ clicue-off() {
   add-zle-hook-widget -d line-pre-redraw _clicue_pre_redraw
   add-zle-hook-widget -d line-finish     _clicue_line_finish
   bindkey '^I' ${_clicue_orig_tab:-expand-or-complete}
-  bindkey -r '^[[1;3B' '^[[1;3A' '^[^[[B' '^[^[[A' '^[[1;2B' '^[[1;2A' '^[' 2>/dev/null
+  (( ${#_clicue_bound} )) && bindkey -r ${_clicue_bound[@]} 2>/dev/null
   _clicue_clear
   print "clicue: unhooked (this shell only)"
 }
 
 # ── keys ─────────────────────────────────────────────────────────────────────
-# Deliberately additive. Plain Up/Down keep doing whatever they already did
-# (history-substring-search here) — they are load-bearing muscle memory and
-# stealing them would be exactly the capture this project argues against.
-# Scrolling the card lives on Shift+Arrow, which nothing binds by default.
-
-_clicue_scroll_down() {
-  (( _clicue_visible )) || return 0
-  (( _clicue_sel < ${#_clicue_cands} )) && (( _clicue_sel++ ))
-  _clicue_engaged=1
-  zle -R
-}
-
-_clicue_scroll_up() {
-  (( _clicue_visible )) || return 0
-  (( _clicue_sel > 1 )) && (( _clicue_sel-- ))
-  _clicue_engaged=1
-  zle -R
-}
-
-# While the card is up it OWNS command-position completion: Tab accepts the
-# highlighted cue. Falling through to compsys here produced a second, wider
-# listing of the same candidates stacked under the card — the card looked like
-# the completion UI without being one.
+# Every binding is configuration. Set these BEFORE sourcing this file:
 #
-# Outside command position (arguments, paths, flags) the card is not shown and
-# Tab delegates untouched, because clicue has no candidate-source adapter yet
-# and compsys is authoritative there.
-# ^C cannot be used here: the tty driver raises SIGINT before ZLE sees the
-# character, and TRAPINT can observe it but not stop ZLE aborting the line
-# (both verified). Esc is unbound in this config and is the conventional
-# dismiss key for an overlay.
-_clicue_dismiss() {
-  if (( _clicue_visible )); then
-    _clicue_suppressed=1
-    _clicue_clear
-    zle -R
-    return 0
-  fi
-  return 0
+#   zstyle ':clicue:keys' scroll-down '^[[1;2B' '^[[1;3B'
+#   zstyle ':clicue:keys' scroll-up   '^[[1;2A' '^[[1;3A'
+#   zstyle ':clicue:keys' accept      '^I'
+#   zstyle ':clicue:keys' dismiss     '^['
+#   zstyle ':clicue:keys' scroll-label 'Shift+↑↓'   # optional; auto-derived
+#
+# Multiple sequences per action are fine — terminals disagree. Discover what a
+# key actually sends with `cat -v`, then press it.
+#
+# Plain Up/Down are deliberately never bound. They are load-bearing muscle
+# memory (history-substring-search here) and taking them would be exactly the
+# capture this project argues against.
+
+typeset -ga _clicue_bound=()
+
+# human-readable label for a key sequence, for the hint line
+_clicue_keylabel() {
+  case $1 in
+    '^[[1;2A'|'^[[1;2B') REPLY='Shift' ;;
+    '^[[1;3A'|'^[[1;3B'|'^[^[[A'|'^[^[[B') REPLY='Alt' ;;
+    '^[[1;5A'|'^[[1;5B') REPLY='Ctrl' ;;
+    '^I') REPLY='Tab' ;;
+    '^[') REPLY='Esc' ;;
+    '^G') REPLY='^G' ;;
+    *)    REPLY=$1 ;;
+  esac
 }
 
-_clicue_accept() {
-  # an informational card has nothing to accept — hand Tab back to compsys
-  if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
-    local pick=${_clicue_cands[_clicue_sel]}
-    if [[ -n $_clicue_pfx ]]; then
-      LBUFFER="${LBUFFER%$_clicue_pfx}${pick} "   # replace just the partial word
-    else
-      LBUFFER="${LBUFFER}${pick} "
+_clicue_bindall() {
+  local -a seqs
+  local k action widget
+
+  for action widget in \
+      scroll-down _clicue_scroll_down \
+      scroll-up   _clicue_scroll_up \
+      accept      _clicue_accept \
+      dismiss     _clicue_dismiss
+  do
+    seqs=()
+    zstyle -a ':clicue:keys' $action seqs
+    if (( ! ${#seqs} )); then
+      case $action in
+        # Shift is listed first and is the preferred ergonomics, but konsole
+        # claims Shift+Up/Down for Scroll Line Up/Down at the terminal level,
+        # so those keystrokes never reach the shell until that shortcut is
+        # cleared in Settings -> Configure Keyboard Shortcuts. Alt is bound
+        # alongside it so the card is usable either way.
+        scroll-down) seqs=( '^[[1;2B' '^[[1;3B' '^[^[[B' ) ;;
+        scroll-up)   seqs=( '^[[1;2A' '^[[1;3A' '^[^[[A' ) ;;
+        accept)      seqs=( '^I' ) ;;
+        dismiss)     seqs=( '^[' ) ;;
+      esac
     fi
-    _clicue_reset_sel
-    _clicue_clear
-    zle -R
-    return 0
+    for k in $seqs; do
+      bindkey $k $widget
+      _clicue_bound+=( $k )
+    done
+  done
+}
+
+# Build the hint line once, from what is actually bound — bindings vary by
+# terminal, so advertising them is load-bearing rather than decorative.
+_clicue_build_hint() {
+  local -a d u
+  local REPLY lbl
+  zstyle -a ':clicue:keys' scroll-down d || d=( '^[[1;2B' '^[[1;3B' )
+  zstyle -s ':clicue:keys' scroll-label lbl
+  if [[ -z $lbl ]]; then
+    # label the FIRST sequence that a real keypress can actually deliver here
+    _clicue_keylabel ${d[1]}; lbl="${REPLY}+↑↓"
+    [[ $CLICUE_TERM_EATS_SHIFT == 1 && ${REPLY} == Shift ]] && { _clicue_keylabel ${d[2]}; lbl="${REPLY}+↑↓" }
   fi
-  zle ${_clicue_orig_tab:-expand-or-complete}
+  local a dis
+  local -a av dv
+  zstyle -a ':clicue:keys' accept  av || av=( '^I' )
+  zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
+  _clicue_keylabel ${av[1]}; a=$REPLY
+  _clicue_keylabel ${dv[1]}; dis=$REPLY
+  typeset -g _clicue_hint=" ${lbl} scroll · ${a} accept · ${dis} dismiss "
 }
 
 zle -N _clicue_scroll_down
@@ -436,22 +463,24 @@ zle -N _clicue_scroll_up
 zle -N _clicue_accept
 zle -N _clicue_dismiss
 
-# remember what Tab did before we wrapped it, so we can delegate
 _clicue_orig_tab=${${(z)$(bindkey '^I')}[2]:-expand-or-complete}
 [[ $_clicue_orig_tab == _clicue_accept ]] && _clicue_orig_tab=expand-or-complete
 
-# Alt+Arrow is the primary binding. Shift+Arrow was the obvious choice but
-# konsole claims it for Scroll Line Up/Down at the terminal level, so those
-# keystrokes never reach the shell. Alt+Arrow is unclaimed by both konsole and
-# this config. Shift is kept bound anyway — harmless where it does arrive.
-bindkey '^[[1;3B' _clicue_scroll_down   # Alt+Down  (CSI modifier 3)
-bindkey '^[[1;3A' _clicue_scroll_up     # Alt+Up
-bindkey '^[^[[B'  _clicue_scroll_down   # Alt+Down  (ESC-prefixed form)
-bindkey '^[^[[A'  _clicue_scroll_up     # Alt+Up
-bindkey '^[[1;2B' _clicue_scroll_down   # Shift+Down — eaten by konsole
-bindkey '^[[1;2A' _clicue_scroll_up     # Shift+Up   — eaten by konsole
-bindkey '^I'      _clicue_accept
-bindkey '^['      _clicue_dismiss       # Esc — dismiss until the line is cleared
+# konsole consumes Shift+Arrow (Scroll Line Up/Down) before any hosted process
+# sees it, so the hint must not advertise a key that cannot arrive. Detect via
+# the env marker konsole exports — cheaper and far more reliable than walking
+# the process tree. Override with CLICUE_TERM_EATS_SHIFT=0 after clearing the
+# shortcut in Settings -> Configure Keyboard Shortcuts.
+if [[ -z $CLICUE_TERM_EATS_SHIFT ]]; then
+  if [[ -n $KONSOLE_DBUS_SESSION ]]; then
+    typeset -g CLICUE_TERM_EATS_SHIFT=1
+  else
+    typeset -g CLICUE_TERM_EATS_SHIFT=0
+  fi
+fi
+
+_clicue_bindall
+_clicue_build_hint
 
 add-zle-hook-widget line-pre-redraw _clicue_pre_redraw
 add-zle-hook-widget line-finish     _clicue_line_finish

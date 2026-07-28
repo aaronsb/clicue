@@ -4,10 +4,44 @@
 # Loads after 40-plugins so it registers its ZLE hooks AFTER zsh-autosuggestions,
 # letting it append its card below whatever autosuggestions puts in POSTDISPLAY
 # rather than overwriting it.
+#
+# NOTE: all zstyles must be set BEFORE the source line — keys are bound at
+# source time from this configuration.
+
+# ── behaviour ────────────────────────────────────────────────────────────────
+zstyle ':clicue:*' min-input 1        # chars before the card appears
+zstyle ':clicue:*' max-rows  8
+zstyle ':clicue:*' enabled   yes
+
+# ── keys ─────────────────────────────────────────────────────────────────────
+# Every binding is configuration. Multiple sequences per action are fine —
+# terminals disagree about what they send.
+#
+# To discover what a key actually emits:   cat -v    then press it.
+# If nothing prints, the TERMINAL consumed it and no shell config can help.
+#
+# Plain Up/Down are never bound by clicue — they stay on history-substring-search.
+
+zstyle ':clicue:keys' scroll-down '^[[1;2B' '^[[1;3B' '^[^[[B'   # Shift, then Alt
+zstyle ':clicue:keys' scroll-up   '^[[1;2A' '^[[1;3A' '^[^[[A'
+zstyle ':clicue:keys' accept      '^I'                           # Tab
+zstyle ':clicue:keys' dismiss     '^['                           # Esc
+
+# Optional: force the hint-line label instead of deriving it.
+# zstyle ':clicue:keys' scroll-label 'Shift+↑↓'
+
+# ── Shift+Arrow and konsole ──────────────────────────────────────────────────
+# konsole binds Shift+Up/Down to Scroll Line Up/Down at the APPLICATION level,
+# so those keystrokes never reach the shell. clicue detects konsole (via
+# $KONSOLE_DBUS_SESSION) and advertises Alt+Arrow in the hint line instead.
+# Both are bound, so the card works either way.
+#
+# To get Shift+Arrow — the better ergonomics — back:
+#   Settings → Configure Keyboard Shortcuts → search "Scroll Line"
+#   clear Scroll Line Up and Scroll Line Down, then uncomment:
+#
+# CLICUE_TERM_EATS_SHIFT=0
 
 _clicue_src=$HOME/Projects/app/clicue/prototype/clicue.zsh
 [[ -r $_clicue_src ]] && source $_clicue_src
 unset _clicue_src
-
-zstyle ':clicue:*' min-input 1
-zstyle ':clicue:*' max-rows  8
