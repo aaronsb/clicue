@@ -93,6 +93,92 @@ visual encodings — contrast, density, color-blind-safe hues, or dropping color
 entirely in favour of weight and glyph. A theme system is an accessibility
 surface, and should be designed as one rather than as a skin.
 
+### 4. Make the cheap path correct — don't add information
+
+Expertise is **recognition, not recall**. An operator knows `gcc` exists and that
+some flag does the thing they want; they do not hold 200 flags in memory. They run
+`--help`, skim, take the first plausible answer, and move on. That is rational
+satisficing, not a deficiency to compensate for.
+
+`--help` fails not by lacking information but by being a **context switch** — you
+leave the line you were composing, scan a wall, and return having lost your place.
+
+So the goal is *not* to inform more. It is to make the cheap path — glance,
+recognize, continue — land on the right answer more often. These are different
+targets, and optimizing for the first damages the second: a card showing
+everything is `--help` in a box, now also in your way.
+
+Constraints that follow:
+
+- **Ranking beats completeness.** Six well-chosen cues beat forty exhaustive ones.
+  The card's job is to make the top three right.
+- **Glosses stay short.** `cherry: find commits not merged upstream` is the right
+  length. A paragraph is a failure.
+- **Agent-written corpus entries will drift verbose.** Thoroughness is the default
+  failure mode of generated text and is precisely wrong here. The enrichment
+  prompt must fight it deliberately.
+
+---
+
+## Components
+
+A decomposition, not an implementation plan. The seams matter more than the parts:
+the second head (see `MOTIVATION.md`) is a north star whose job is **architectural
+discipline** — designing as though it exists keeps the separations honest without
+committing to build it.
+
+| # | Component | Responsibility |
+|---|---|---|
+| 1 | **Presentation engine** | on-screen formatting; the cue card. One *head* among possible heads. |
+| 2 | **Corpus** | what a candidate means. Built and maintained over time. |
+| 3 | **Candidate source adapter** | asks the completion engine what is valid *here*; normalizes its output |
+| 4 | **Hooks / integration** | ZLE wiring — when we are called, where we may draw |
+| 5 | **Tuning** | ordering and relatedness (see below) |
+| 6 | **Enrichment pipeline** | fills corpus gaps; batch, background, agent-assisted |
+
+Notes on seams:
+
+- **3 and 4 are separate on purpose.** ZLE wiring and completion-engine adaptation
+  change for different reasons; splitting them is what lets carapace, Fig specs or
+  anything else slot in without touching the editor integration.
+- **2 and 6 are separate runtimes.** Corpus *lookup* is hot-path and
+  latency-critical; corpus *building* is batch and occasionally invokes an agent.
+  Same data, opposite constraints.
+- **1 is the replaceable head.** Corpus and tuning are the body and should not
+  know what is rendering them.
+
+**Ecosystem:** zsh first — a deliberate starting point, not an exclusion.
+
+### Tuning is two jobs
+
+| Job | Nature | Tension |
+|---|---|---|
+| **Frequency ranking** | you use `git commit` constantly → it sorts first | none; pure optimization of the cheap path |
+| **Relatedness** | surface commands you *don't* invoke but might want | **conflicts with design value 4** — this is adding information |
+
+Relatedness is valuable (you only ever improve at what you already do) but cannot
+live on the main card without diluting the top three with noise in service of
+occasional teaching. Likely a separate mode or an explicit gesture — *"what else
+could do this?"* — rather than a default. **First real tension between two things
+we both want; unresolved.**
+
+### Statistics: derive, don't instrument
+
+A tuning layer that records command usage is structurally a thing that records
+everything you type — the exact critique we levelled at IRIS. It is avoidable.
+
+**The frequency data already exists in shell history.** The 172-distinct /
+43-undescribed measurements in this document came from `~/.zsh_history` with no
+instrumentation.
+
+Deriving rather than collecting means: zero new collection surface; data stays
+under controls the operator already owns; `HIST_IGNORE_SPACE` already works as a
+per-command opt-out (space-prefix and it never enters the corpus's view); and it
+stays inspectable with `grep`.
+
+A tool that watches your terminal and writes its own usage database must be
+trusted. One that reads a file you already curate need not be.
+
 ---
 
 ## Lineage
