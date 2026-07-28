@@ -248,12 +248,23 @@ body=$(awk '/^_clicue_accept\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
 # strip comments so prose cannot satisfy a code assertion
 body=${(F)${(f)body}:#[[:space:]]#\#*}
 
-# guard comes first, before the harvest
-if [[ $body == *'! _clicue_visible'*'_clicue_orig_tab'*'_clicue_cs_for != $LBUFFER'* ]]; then
-  ok "not-visible delegates to the original Tab BEFORE the harvest"
+# The guard comes first, before the harvest — and it tests STAND-DOWN, not
+# visibility. Those are different states, and conflating them is what dumped
+# zsh's raw completion listing on screen: a card with no candidates YET is not a
+# position clicue has yielded, and delegating there hands the flags to a
+# completely different visual language.
+if [[ $body == *'_clicue_standdown'*'_clicue_orig_tab'*'_clicue_cs_for != $LBUFFER'* ]]; then
+  ok "a deliberate stand-down delegates to the original Tab BEFORE the harvest"
 else
-  nope "not-visible delegates to the original Tab BEFORE the harvest" \
+  nope "a deliberate stand-down delegates to the original Tab BEFORE the harvest" \
        "order matters: harvesting first is what cost the extra press"
+fi
+
+if [[ $body != *'! _clicue_visible'* ]]; then
+  ok "Tab does not delegate merely because the card is empty"
+else
+  nope "Tab does not delegate merely because the card is empty" \
+       "an empty card is not a yielded position — that is how the raw listing appeared"
 fi
 
 # The harvest block must fall through, not return. Checked by position: the
@@ -442,6 +453,85 @@ if [[ $body == *'|| return 1'* ]]; then
   ok "decomposition refuses a cluster with any undocumented letter"
 else
   nope "decomposition refuses a cluster with any undocumented letter"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "flag position belongs to clicue"
+# A leading dash is never a filename. The stand-down rule used to yield whenever
+# the corpus knew no arguments for a command, which is true of every path-centric
+# command — so `rm -<Tab>` handed the flags to zsh and they appeared in a totally
+# different visual language, with clicue's card gone.
+
+body=$(awk '/^_clicue_pre_redraw\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+body=${(F)${(f)body}:#[[:space:]]#\#*}
+
+if [[ $body == *'$_clicue_pfx != -*'* ]]; then
+  ok "an option token is kept even when the corpus knows no arguments"
+else
+  nope "an option token is kept even when the corpus knows no arguments" \
+       "yielding here is what printed zsh's raw listing instead of the card"
+fi
+
+if [[ $body == *'_clicue_standdown=1'* && $body == *'_clicue_standdown=0'* ]]; then
+  ok "pre_redraw marks stand-down before, and clears it at the commit point"
+else
+  nope "pre_redraw marks stand-down before, and clears it at the commit point"
+fi
+
+# Path-like input must STILL yield — compsys owns the filesystem.
+if [[ $body == *'*/*'* && $body == *"'~'*"* ]]; then
+  ok "path-like input still yields to compsys"
+else
+  nope "path-like input still yields to compsys" \
+       "clicue must not compete with the coloured path picker"
+fi
+
+# Flag candidates come from the on-disk cache, so the card has content without a
+# fork. An empty card is how the raw listing got on screen.
+body=$(awk '/^_clicue_arg_candidates\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'_clicue_flag_load'* ]]; then
+  ok "flag candidates load from cache with no fork"
+else
+  nope "flag candidates load from cache with no fork"
+fi
+
+# One row per flag, not per spelling.
+if [[ $body == *'_clicue_disp['* ]]; then
+  ok "paired spellings collapse to one row with a display label"
+else
+  nope "paired spellings collapse to one row with a display label"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "no forks in the hot path"
+# Render and the per-keystroke helpers run on every keystroke. A command
+# substitution there is a fork per keystroke — the mistake that once put render
+# latency at 87ms via a $(printf) per candidate.
+typeset -a hotforks
+hotforks=( ${(f)"$(grep -n '\$(_clicue_' $SRC | grep -v ':[[:space:]]*#' || true)"} )
+if (( ${#hotforks} == 0 )); then
+  ok "no clicue helper is called through command substitution"
+else
+  nope "no clicue helper is called through command substitution" "${hotforks[1]}"
+fi
+
+# The display label must be measured, and the description looked up by TOKEN.
+body=$(awk '/^_clicue_emit_box\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+body=${(F)${(f)body}:#[[:space:]]#\#*}
+if [[ $body == *'_clicue_gloss $ent'* ]]; then
+  ok "the description is looked up by token, not by display label"
+else
+  nope "the description is looked up by token, not by display label" \
+       "keying on the label returned nothing for every paired row"
+fi
+
+# The explain box may be the first box on the card and then needs a real top edge.
+body=$(awk '/^_clicue_emit_explain\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'╭'* && $body == *'├'* ]]; then
+  ok "the explain box opens the card when nothing precedes it"
+else
+  nope "the explain box opens the card when nothing precedes it" \
+       "a complete invocation has no candidates, so the card had no top edge"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

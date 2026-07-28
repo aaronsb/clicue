@@ -49,8 +49,13 @@ typeset -g  _clicue_sel=1          # 1-based selection within the candidate list
 typeset -g  _clicue_top=1          # first visible row (window start)
 typeset -g  _clicue_engaged=0      # has the operator actually used the card?
 typeset -g  _clicue_visible=0
+typeset -g  _clicue_standdown=1   # clicue deliberately yielded this position
 typeset -g  _clicue_lastbuf=$'\0'
 typeset -ga _clicue_cands=()
+# Candidate -> what to SHOW for it. The candidate stays the exact token that gets
+# inserted; only the label differs, so `-d, --dir` can be one row without making
+# the insertion ambiguous.
+typeset -gA _clicue_disp=()
 typeset -g  _clicue_orig_tab=''
 typeset -g  _clicue_mode=cmd       # cmd | arg
 typeset -g  _clicue_cmd=''         # in arg mode, the command being argued
@@ -159,6 +164,41 @@ _clicue_arg_candidates() {
     [[ -n $pfx && $n != ${pfx}* ]] && continue
     seen[$n]=1; rest+=( $n )
   done
+
+  # The cached flag set, when the operator is typing an option. This is what lets
+  # the card have content in flag position WITHOUT a fork: reading the cache is
+  # cheap enough for a keystroke, and the first Tab for a command is what fills it.
+  # Without this the card would be empty until Tab, and an empty card is how
+  # zsh's raw listing got on screen in the first place.
+  if [[ $pfx == -* ]]; then
+    _clicue_flag_load $cmd 2>/dev/null
+    local fk alt
+    # Sorted so the SHORT spelling of a pair is met first and becomes the row.
+    for fk in ${(ko)_clicue_flag_desc}; do
+      [[ $fk == ${cmd}\|* ]] || continue
+      n=${fk#*\|}
+      (( ${+seen[$n]} )) && continue
+      [[ $n != ${pfx}* ]] && continue
+      # One row per FLAG, not per spelling. `-d` and `--dir` describing the same
+      # thing were two rows saying the same sentence twice, which is what the
+      # description-pairing was for in the first place. The short form is the
+      # candidate — it is what the operator is typing — and the long form rides
+      # along in the label.
+      _clicue_fkey $cmd $n
+      alt=${_clicue_flag_alt[$_clicue_fk]}
+      if [[ -n $alt && $n == --* ]]; then
+        # long form met first only when the short one does not match the prefix
+        [[ $alt == ${pfx}* ]] && continue
+      fi
+      seen[$n]=1
+      if [[ -n $alt ]]; then
+        seen[$alt]=1
+        _clicue_flag_label $cmd $n
+        _clicue_disp[$n]=$_clicue_fl
+      fi
+      rest+=( $n )
+    done
+  fi
   typeset -g _clicue_arg_t1=${#hist}
   reply=( $hist ${(o)rest} )
   (( ${#reply} )) || return 1
@@ -340,17 +380,20 @@ typeset -gA _clicue_flag_have=()     # cmd       -> 1 once loaded or harvested
 zmodload -F zsh/stat b:zstat 2>/dev/null
 zmodload zsh/datetime 2>/dev/null
 
-_clicue_flag_cachedir() {
-  print -r -- "${XDG_CACHE_HOME:-$HOME/.cache}/clicue/flags"
-}
+# A plain global, NOT a function invoked through $( ). _clicue_flag_load runs on
+# every keystroke in flag position, and a command substitution there is a fork per
+# keystroke — the same mistake that once put render latency at 87ms.
+typeset -g _clicue_flagdir="${XDG_CACHE_HOME:-$HOME/.cache}/clicue/flags"
 
 # How often the operator has actually run THIS invocation, and how recently.
 # Their own habits are the one thing no manual page knows, and it is the input
 # the familiarity gate needs.
+# Sets _clicue_invnote. Called from render, so it must not fork.
 _clicue_invocation_note() {
   local key="${(j: :)_clicue_words}"
+  _clicue_invnote=''
   local n=${CLICUE_INVOKE[$key]:-}
-  [[ -z $n ]] && { print -r -- ''; return 0 }
+  [[ -z $n ]] && return 0
   local out="run ${n}×"
   local pct=${CLICUE_INVOKE_PCT[$key]:-}
   [[ -n $pct ]] && out+="  ·  top ${pct}% of your invocations"
@@ -362,7 +405,7 @@ _clicue_invocation_note() {
     else out+="  ·  ${days}d ago"
     fi
   fi
-  print -r -- $out
+  _clicue_invnote=$out
 }
 
 # Is this invocation one the operator demonstrably knows by heart?
@@ -380,23 +423,30 @@ _clicue_is_familiar() {
 
 # Stamp is the command's own mtime. A rebuilt binary may document new flags; an
 # unchanged one cannot, so there is nothing to re-fetch.
+# Sets _clicue_fstamp rather than printing: same fork argument as above.
 _clicue_flag_stamp() {
-  local cmd=$1 p=${commands[$1]}
+  local p=${commands[$1]}
+  local -a st
   if [[ -n $p && -e $p ]]; then
-    print -r -- ${$(zstat -F '%s' +mtime $p 2>/dev/null):-0}
+    if zstat -A st +mtime $p 2>/dev/null; then
+      _clicue_fstamp=${st[1]}
+    else
+      _clicue_fstamp=0
+    fi
   else
-    print -r -- 'builtin'
+    _clicue_fstamp='builtin'
   fi
 }
 
 _clicue_flag_load() {
   local cmd=$1
   (( ${+_clicue_flag_have[$cmd]} )) && return 0
-  local f=$(_clicue_flag_cachedir)/${cmd}.zsh
+  local f=$_clicue_flagdir/${cmd}.zsh
   [[ -r $f ]] || return 1
   local -a lines=( ${(f)"$(<$f)"} )
   # line 1 is the stamp; a mismatch means the binary moved on
-  [[ ${lines[1]} == $(_clicue_flag_stamp $cmd) ]] || return 1
+  _clicue_flag_stamp $cmd
+  [[ ${lines[1]} == $_clicue_fstamp ]] || return 1
   local l flag alt desc
   for l in ${lines[2,-1]}; do
     flag=${l%%$'\t'*}; l=${l#*$'\t'}
@@ -412,11 +462,11 @@ _clicue_flag_load() {
 
 _clicue_flag_save() {
   local cmd=$1
-  local dir=$(_clicue_flag_cachedir)
-  mkdir -p $dir 2>/dev/null || return 1
-  local f=$dir/${cmd}.zsh
+  mkdir -p $_clicue_flagdir 2>/dev/null || return 1
+  local f=$_clicue_flagdir/${cmd}.zsh
+  _clicue_flag_stamp $cmd
   {
-    print -r -- "$(_clicue_flag_stamp $cmd)"
+    print -r -- "$_clicue_fstamp"
     local k flag
     for k in ${(k)_clicue_flag_desc}; do
       [[ $k == ${cmd}\|* ]] || continue
@@ -559,6 +609,18 @@ _clicue_gloss() {
     # annotation after the description, not instead of one.
     _clicue_fkey $_clicue_cmd $name
     local d=${_clicue_cs_gloss[$name]:-${_clicue_flag_desc[$_clicue_fk]}}
+    # A cluster has no description of its own, but it does have a meaning: the
+    # flags it stands for. `-lat` glossing as `used 25×` says nothing; glossing as
+    # `-l · -a, --all · -t` says what the operator actually typed.
+    if [[ -z $d ]] && _clicue_decompose $_clicue_cmd $name; then
+      local -a plabels=()
+      local pf
+      for pf in $_clicue_parts; do
+        _clicue_flag_label $_clicue_cmd $pf
+        plabels+=( $_clicue_fl )
+      done
+      d=${(j: · :)plabels}
+    fi
     local c=${CLICUE_ARGN[${_clicue_cmd}\|${name}]:-}
     if [[ -n $d ]]; then
       _clicue_g="$d${c:+  ${c}×}"
@@ -617,10 +679,12 @@ _clicue_emit_box() {
   for (( i = top; i <= bot; i++ )); do
     (( emitted++ ))
     ent=${_clicue_cands[i]}
-    name=$ent
+    name=${_clicue_disp[$ent]:-$ent}
     kind=${_clicue_kind[$ent]:-system}
     [[ $_clicue_mode == arg ]] && kind=arg
-    _clicue_gloss $name $kind; g=$_clicue_g
+    # $ent, NOT $name: the description is keyed on the real token. Looking it up
+    # by the display label silently returned nothing for every paired row.
+    _clicue_gloss $ent $kind; g=$_clicue_g
     marker='  '
     (( i == _clicue_sel )) && marker=' ▸'
     nmcol=${(r:$namew:)${name[1,$namew]}}
@@ -667,7 +731,13 @@ _clicue_emit_explain() {
   (( collapsed )) && label=' typed · collapsed '
   local -i rule=$(( inner - ${#label} ))
   (( rule < 1 )) && rule=1
-  _clicue_lines+=( "├${label}${(l:$rule::─:):-}┤" )
+  # ├ joins the box above; ╭ opens one. With a complete invocation there are no
+  # candidates and therefore no box above, and the card was drawn with no top edge.
+  if (( ${#_clicue_lines} )); then
+    _clicue_lines+=( "├${label}${(l:$rule::─:):-}┤" )
+  else
+    _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
+  fi
 
   if (( collapsed )); then
     local REPLY ekey
@@ -750,7 +820,11 @@ _clicue_emit_grid() {
 
   local -i shown=$(( hi - _clicue_gridtop + 1 ))
   (( shown > page )) && shown=$page
+  # Label says what the box actually holds. "on system" is a command-position
+  # sentence; in argument position these are the remaining options for one command.
   local label=" all ${n} on system "
+  [[ $_clicue_mode == arg ]] && label=" ${n} more "
+
   (( _clicue_focus == 2 )) && label=" browsing ${n} — $(( _clicue_sel - lo + 1 ))/${n} "
   local -i rule=$(( inner - ${#label} ))
   (( rule < 1 )) && rule=1
@@ -792,20 +866,8 @@ _clicue_render() {
   local -a cands
   local -a reply
   typeset -g _clicue_tier1_n=0
-
-  if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
-    reply=( $_clicue_cmd ); _clicue_tier1_n=1
-  elif [[ $_clicue_mode == arg ]]; then
-    if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
-      [[ -n $pfx ]] && return 1
-      _clicue_info=1; reply=( $_clicue_cmd )
-    fi
-    # history-derived args are tier 1; compsys-derived fill the grid
-    _clicue_tier1_n=${_clicue_arg_t1:-${#reply}}
-  else
-    _clicue_candidates $pfx
-  fi
-  cands=( $reply )
+  # cleared per render, or a label from the previous command would outlive it
+  _clicue_disp=()
 
   # ── what is already on the line, explained ────────────────────────────────
   # Built before the empty-candidate bail, because a COMPLETE invocation is
@@ -817,6 +879,8 @@ _clicue_render() {
   # fork, so it arrives on the first Tab and from the on-disk cache thereafter.
   _clicue_explain_rows=()
   if [[ $_clicue_mode == arg ]] && (( ${#_clicue_words} > 1 )); then
+    # cheap: reads the cache file at most once per command per shell
+    _clicue_flag_load $_clicue_cmd 2>/dev/null
     local -a eparts
     local etok ef
     local -A eseen=()
@@ -839,6 +903,28 @@ _clicue_render() {
       done
     done
   fi
+
+  if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
+    reply=( $_clicue_cmd ); _clicue_tier1_n=1
+  elif [[ $_clicue_mode == arg ]]; then
+    if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
+      if (( ${#_clicue_explain_rows} )); then
+        # A COMPLETE invocation is exactly the case with nothing left to propose.
+        # `rm -rf` matches no further candidate, so the card used to vanish at the
+        # moment the operator had typed something worth explaining.
+        reply=()
+      elif [[ -n $pfx ]]; then
+        return 1
+      else
+        _clicue_info=1; reply=( $_clicue_cmd )
+      fi
+    fi
+    # history-derived args are tier 1; compsys-derived fill the grid
+    _clicue_tier1_n=${_clicue_arg_t1:-${#reply}}
+  else
+    _clicue_candidates $pfx
+  fi
+  cands=( $reply )
 
   # An explanation alone is enough to justify the card.
   (( ${#cands} || ${#_clicue_explain_rows} )) || return 1
@@ -910,12 +996,19 @@ _clicue_render() {
   # name column sized over both visible windows
   local -i namew=0 i
   local -a vis=()
-  (( t1n > 0 )) && for (( i = _clicue_top1; i <= t1n && i < _clicue_top1 + r1; i++ )) vis+=( ${cands[i]} )
+  # Measured over DISPLAY labels, not raw tokens: a paired row shows `-f, --force`
+  # and sizing on `-f` truncated it to `-f, --forc`.
+  (( t1n > 0 )) && for (( i = _clicue_top1; i <= t1n && i < _clicue_top1 + r1; i++ )) vis+=( ${_clicue_disp[${cands[i]}]:-${cands[i]}} )
   if (( total > t1n )); then
     local -i t2=$_clicue_top2
     (( t2 < t1n + 1 )) && t2=$(( t1n + 1 ))
-    for (( i = t2; i <= total && i < t2 + r2; i++ )) vis+=( ${cands[i]} )
+    for (( i = t2; i <= total && i < t2 + r2; i++ )) vis+=( ${_clicue_disp[${cands[i]}]:-${cands[i]}} )
   fi
+  # The explain box shares this column so the two boxes line up, so its labels
+  # have to be measured too — otherwise a card with no candidates at all sizes to
+  # the 10-column minimum and clips every explanation.
+  local erow
+  for erow in $_clicue_explain_rows; do vis+=( ${erow%%$'\t'*} ); done
   for i in {1..${#vis}}; do (( ${#vis[i]} > namew )) && namew=${#vis[i]}; done
   (( namew > 28 )) && namew=28
   (( namew < 10 )) && namew=10
@@ -939,7 +1032,15 @@ _clicue_render() {
   # commands. The grid stays for command position, where "what else is named like
   # this" is still the live question.
   if (( ${#_clicue_explain_rows} )); then
-    _clicue_emit_explain $r2 $namew $inner "$(_clicue_invocation_note)"
+    # Its own allocation. r2 is the CANDIDATE overflow, which is zero when a
+    # complete invocation leaves nothing further to propose — and a zero
+    # allocation drew the box header with no rows under it.
+    local -i er=${#_clicue_explain_rows}
+    (( er > r2 )) && (( r2 > 0 )) && er=$r2
+    (( er > maxlines - 6 )) && er=$(( maxlines - 6 ))
+    (( er < 1 )) && er=1
+    _clicue_invocation_note
+    _clicue_emit_explain $er $namew $inner "$_clicue_invnote"
   elif (( total > t1n )); then
     _clicue_emit_grid $(( t1n + 1 )) $total $r2 $inner
   fi
@@ -959,6 +1060,7 @@ _clicue_render() {
   # the fix.
   if (( ${#_clicue_cands} )); then
     local gname=${_clicue_cands[_clicue_sel]}
+    local gdisp=${_clicue_disp[$gname]:-$gname}
     local gkind=${_clicue_kind[$gname]:-system}
     [[ $_clicue_mode == arg ]] && gkind=arg
     _clicue_gloss $gname $gkind
@@ -966,7 +1068,7 @@ _clicue_render() {
     (( gw < 10 )) && gw=10
     local gg=$_clicue_g
     (( ${#gg} > gw )) && gg="${gg[1,$(( gw - 1 ))]}…"
-    _clicue_lines+=( "│   ${(r:$namew:)${gname[1,$namew]}}  ${(r:$gw:)gg}│" )
+    _clicue_lines+=( "│   ${(r:$namew:)${gdisp[1,$namew]}}  ${(r:$gw:)gg}│" )
     _clicue_lines+=( "╰${(l:$inner::─:):-}╯" )
   fi
 
@@ -1036,6 +1138,11 @@ _clicue_clear() {
 }
 
 _clicue_pre_redraw() {
+  # Set until clicue commits to owning this line, so every early return below
+  # leaves it set. Tab consults it: a deliberate yield (a path, a prefix too
+  # short, a menuselect keymap) delegates instantly, but merely having no
+  # candidates YET must not — that is what dumped zsh's raw listing on screen.
+  _clicue_standdown=1
   [[ -n $CLICUE_DEBUG ]] && print -r -- "ENTER buf=[$LBUFFER] pd=${#POSTDISPLAY} card=${#_clicue_card} ghost=[$_clicue_ghost] sup=$_clicue_suppressed vis=$_clicue_visible" >> $CLICUE_DEBUG
   _clicue_clear
   [[ -n $CLICUE_DEBUG ]] && print -r -- "  AFTERCLEAR pd=${#POSTDISPLAY}" >> $CLICUE_DEBUG
@@ -1108,11 +1215,21 @@ _clicue_pre_redraw() {
     # card on space was the single most jarring thing about the previous build.
     _clicue_info=0
     if [[ -z ${CLICUE_ARGS[$_clicue_cmd]} ]]; then
-      # Mid-word with nothing to offer: get out of the way entirely so compsys
-      # can do path/file completion. An informational card here would swallow
-      # Tab and block `cd proj<Tab>`.
-      [[ -n $_clicue_pfx ]] && return 0
-      _clicue_info=1
+      # A LEADING DASH IS NEVER A FILENAME.
+      #
+      # This rule used to yield whenever the corpus knew no arguments for the
+      # command, which is true of every path-centric command — `rm` is on that
+      # denylist precisely so it records no arguments. So `rm -<Tab>` stood down
+      # and Tab handed off to zsh, which printed its own listing raw: the card
+      # vanished and the flags appeared in a completely different visual language.
+      #
+      # Options are the one thing this tool exists to explain, and they cannot be
+      # confused with a path. Keep them. Yield only when the token could be a
+      # filename, which is what the denylist was actually for.
+      if [[ $_clicue_pfx != -* ]]; then
+        [[ -n $_clicue_pfx ]] && return 0
+        _clicue_info=1
+      fi
     fi
   fi
 
@@ -1123,6 +1240,7 @@ _clicue_pre_redraw() {
   # the expansion is sticky per invocation, not for ever
   [[ $_clicue_cmd != $_clicue_expcmd ]] && { _clicue_expcmd=$_clicue_cmd; _clicue_expanded=0 }
 
+  _clicue_standdown=0
   if ! _clicue_render "$_clicue_pfx"; then
     [[ -n $CLICUE_DEBUG ]] && print -r -- "  BAIL render-failed mode=$_clicue_mode pfx=[$_clicue_pfx] info=$_clicue_info" >> $CLICUE_DEBUG
     return 0
@@ -1326,7 +1444,7 @@ _clicue_accept() {
   # be displayed, consumed the keystroke, and left the operator to press Tab
   # again for the completion they asked for the first time. Forking to populate a
   # card that is not on screen is work with no reader.
-  if (( ! _clicue_visible )); then
+  if (( _clicue_standdown )); then
     zle ${_clicue_orig_tab:-expand-or-complete}
     return 0
   fi
@@ -1358,8 +1476,14 @@ _clicue_accept() {
     fi
     # the harvest changes the candidate set, so any prior selection is stale
     _clicue_reset_sel
+    # A harvest that found something turns an informational card into a real one.
+    # Leaving _clicue_info set would skip the cycle branch below and fall through
+    # to native completion — which is exactly the raw listing this is replacing.
+    (( ${#_clicue_cs_words} )) && _clicue_info=0
     # rebuild the card against the enlarged set before the selection lands on it
-    _clicue_render "$_clicue_pfx" 2>/dev/null
+    if _clicue_render "$_clicue_pfx" 2>/dev/null; then
+      _clicue_visible=1
+    fi
   fi
 
   if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
