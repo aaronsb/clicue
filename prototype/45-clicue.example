@@ -10,8 +10,19 @@
 
 # ── behaviour ────────────────────────────────────────────────────────────────
 zstyle ':clicue:*' min-input 1        # chars before the card appears
-zstyle ':clicue:*' max-rows  8
+zstyle ':clicue:*' max-lines 14       # TOTAL card height, always. See note below.
 zstyle ':clicue:*' enabled   yes
+
+# ── why max-lines and not max-rows ───────────────────────────────────────────
+# The card is a fixed number of lines regardless of how many candidates match.
+# ZLE paints a taller POSTDISPLAY over a shorter one instead of reflowing, so a
+# card that grew or shrank while typing would mangle itself. Both boxes divide
+# this one budget and pad into it.
+#
+#   both tiers:   border + tier1 rows + border + grid rows + hint + gloss + close
+#   tier 1 only:  border + tier1 rows + hint + gloss + close
+#
+# Raise it for more context, lower it to keep the terminal quieter. Minimum 8.
 
 # ── keys ─────────────────────────────────────────────────────────────────────
 # Every binding is configuration. Multiple sequences per action are fine —

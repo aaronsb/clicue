@@ -179,9 +179,11 @@ _clicue_emit_box() {
   (( rule < 1 )) && rule=1
   _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
 
+  local -i emitted=0
   local -i i
   local ent name kind g nmcol gcol marker
   for (( i = top; i <= bot; i++ )); do
+    (( emitted++ ))
     ent=${_clicue_cands[i]}
     name=$ent
     kind=${_clicue_kind[$ent]:-system}
@@ -193,6 +195,10 @@ _clicue_emit_box() {
     (( ${#g} > glossw )) && g="${g[1,$(( glossw - 1 ))]}…"
     gcol=${(r:$glossw:)g}
     _clicue_lines+=( "│${marker} ${nmcol}  ${gcol}│" )
+  done
+  # pad to the allocation — a card that changes height gets painted over itself
+  while (( emitted < maxrows )); do
+    _clicue_lines+=( "│${(r:$inner:)}│" ); (( emitted++ ))
   done
   return 0
 }
@@ -215,6 +221,9 @@ _clicue_emit_grid() {
   local -i colw=$(( w + 2 ))
   local -i ncols=$(( inner / colw ))
   (( ncols < 1 )) && ncols=1
+  # LAYOUT rows come from the content (so few items spread across columns rather
+  # than stacking in one); the box is then PADDED to the full allocation so the
+  # card's total height stays invariant. Two different numbers.
   local -i rows=$(( (n + ncols - 1) / ncols ))
   (( rows > maxrows )) && rows=$maxrows
   (( rows < 1 )) && rows=1
@@ -256,6 +265,11 @@ _clicue_emit_grid() {
     done
     _clicue_lines+=( "│${${(r:$inner:)row}}│" )
   done
+  # pad to the allocation
+  local -i pad=$rows
+  while (( pad < maxrows )); do
+    _clicue_lines+=( "│${(r:$inner:)}│" ); (( pad++ ))
+  done
   return 0
 }
 
@@ -280,8 +294,16 @@ _clicue_render() {
   (( ${#cands} )) || return 1
   _clicue_cands=( $cands )
 
-  local -i maxrows=8
-  zstyle -s ':clicue:*' max-rows maxrows 2>/dev/null || maxrows=8
+  # ── height budget ──────────────────────────────────────────────────────────
+  # The card is a FIXED number of lines, always. ZLE paints a taller POSTDISPLAY
+  # over a shorter one rather than reflowing, so any variation as the operator
+  # types mangles the display. Both boxes divide one budget and pad into it.
+  #
+  # both tiers:  1 border + r1 + 1 border + r2 + hint + gloss + close = r1+r2+5
+  # tier 1 only: 1 border + r1 + hint + gloss + close                 = r1+4
+  local -i maxlines=14
+  zstyle -s ':clicue:*' max-lines maxlines 2>/dev/null || maxlines=14
+  (( maxlines < 8 )) && maxlines=8
   local -i total=${#cands}
   local -i t1n=$_clicue_tier1_n
   (( t1n > total )) && t1n=$total
@@ -296,27 +318,41 @@ _clicue_render() {
   (( width < 40 ))  && width=40
   local -i inner=$(( width - 2 ))
 
+  local -i r1=0 r2=0
+  if (( t1n > 0 && total > t1n )); then
+    local -i pool=$(( maxlines - 5 ))
+    (( pool < 2 )) && pool=2
+    r1=$t1n
+    (( r1 > pool - 1 )) && r1=$(( pool - 1 ))   # leave the grid at least a row
+    (( r1 < 1 )) && r1=1
+    r2=$(( pool - r1 ))
+  elif (( t1n > 0 )); then
+    r1=$(( maxlines - 4 )); r2=0
+  else
+    r2=$(( maxlines - 4 )); r1=0
+  fi
+
   # clamp selection across the whole list, then slide whichever window holds it
   (( _clicue_sel < 1 )) && _clicue_sel=1
   (( _clicue_sel > total )) && _clicue_sel=$total
   if (( _clicue_sel <= t1n )); then
     (( _clicue_sel < _clicue_top1 )) && _clicue_top1=$_clicue_sel
-    (( _clicue_sel > _clicue_top1 + maxrows - 1 )) && _clicue_top1=$(( _clicue_sel - maxrows + 1 ))
+    (( _clicue_sel > _clicue_top1 + r1 - 1 )) && _clicue_top1=$(( _clicue_sel - r1 + 1 ))
     (( _clicue_top1 < 1 )) && _clicue_top1=1
   else
     (( _clicue_top2 < t1n + 1 )) && _clicue_top2=$(( t1n + 1 ))
     (( _clicue_sel < _clicue_top2 )) && _clicue_top2=$_clicue_sel
-    (( _clicue_sel > _clicue_top2 + maxrows - 1 )) && _clicue_top2=$(( _clicue_sel - maxrows + 1 ))
+    (( _clicue_sel > _clicue_top2 + r2 - 1 )) && _clicue_top2=$(( _clicue_sel - r2 + 1 ))
   fi
 
   # name column sized over both visible windows
   local -i namew=0 i
   local -a vis=()
-  (( t1n > 0 )) && for (( i = _clicue_top1; i <= t1n && i < _clicue_top1 + maxrows; i++ )) vis+=( ${cands[i]} )
+  (( t1n > 0 )) && for (( i = _clicue_top1; i <= t1n && i < _clicue_top1 + r1; i++ )) vis+=( ${cands[i]} )
   if (( total > t1n )); then
     local -i t2=$_clicue_top2
     (( t2 < t1n + 1 )) && t2=$(( t1n + 1 ))
-    for (( i = t2; i <= total && i < t2 + maxrows; i++ )) vis+=( ${cands[i]} )
+    for (( i = t2; i <= total && i < t2 + r2; i++ )) vis+=( ${cands[i]} )
   fi
   for i in {1..${#vis}}; do (( ${#vis[i]} > namew )) && namew=${#vis[i]}; done
   (( namew > 28 )) && namew=28
@@ -333,10 +369,10 @@ _clicue_render() {
   # tier 1 first — nearest the prompt
   if (( t1n > 0 )); then
     _clicue_emit_box 1 $t1n $_clicue_top1 " ${_clicue_sel}/${total} " \
-                     $maxrows $namew $glossw $inner
+                     $r1 $namew $glossw $inner
   fi
   if (( total > t1n )); then
-    _clicue_emit_grid $(( t1n + 1 )) $total $maxrows $inner
+    _clicue_emit_grid $(( t1n + 1 )) $total $r2 $inner
   fi
 
   local -i brule=$(( inner - ${#hint} ))

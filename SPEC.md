@@ -231,13 +231,28 @@ crossing the tier boundary grew the card by two lines mid-redraw. **ZLE mishandl
 a POSTDISPLAY that changes height**, painting the taller content over the shorter
 rather than reflowing.
 
-Fix: render the gloss bar unconditionally, keeping the card a constant height
-regardless of where the selection sits. Verified identical at 21 lines across the
-boundary.
+First fix rendered the gloss bar unconditionally, which stabilised height *within*
+a prefix. Insufficient: height still varied *across* prefixes — 21 lines for `g`,
+9 for `claude` — so it mangled as the operator typed and the candidate counts
+changed.
 
-This is a genuine constraint on any POSTDISPLAY-based renderer — the card cannot
-grow or shrink in response to state — and it stacks with the single-tenancy
-finding below.
+Real fix: the card has a **fixed total line budget** (`zstyle ':clicue:*'
+max-lines`, default 14) which both boxes divide and pad into.
+
+```
+both tiers:   border + r1 + border + r2 + hint + gloss + close   = r1 + r2 + 5
+tier 1 only:  border + r1 + hint + gloss + close                 = r1 + 4
+```
+
+Two numbers that are easy to conflate and must stay separate: a box's **layout**
+rows come from its content (so few grid items spread across columns instead of
+stacking in one), while its **allocation** is padded to a constant. Verified
+identical at 14 lines across nine prefixes × three selection positions.
+
+This is a hard constraint on any POSTDISPLAY-based renderer — **the card cannot
+grow or shrink in response to state**, so every layout decision must be made
+against a fixed budget rather than to fit content. It stacks with the
+single-tenancy finding below.
 
 ### POSTDISPLAY is single-tenant **[MEASURED]** — the strongest evidence yet
 
