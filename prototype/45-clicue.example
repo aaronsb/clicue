@@ -1,0 +1,13 @@
+#!/usr/bin/env zsh
+# clicue — prototype cue card. Remove this file to disable entirely.
+#
+# Loads after 40-plugins so it registers its ZLE hooks AFTER zsh-autosuggestions,
+# letting it append its card below whatever autosuggestions puts in POSTDISPLAY
+# rather than overwriting it.
+
+_clicue_src=$HOME/Projects/app/clicue/prototype/clicue.zsh
+[[ -r $_clicue_src ]] && source $_clicue_src
+unset _clicue_src
+
+zstyle ':clicue:*' min-input 1
+zstyle ':clicue:*' max-rows  8
