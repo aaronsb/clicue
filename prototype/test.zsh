@@ -577,6 +577,57 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "how a match ends is compsys's declaration"
+# What follows an inserted match is per-match DATA handed to us in the compadd
+# call: -S '' means append nothing (tar's -A clusters), -S <str> means append that
+# (`=` for a value-taking option), no -S at all means a trailing space. clicue used
+# to append a space unconditionally, which inserted `--file ` where `--file=` was
+# meant and broke cluster-building with `tar -A `.
+
+body=$(awk '/^_clicue_insert\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+body=${(F)${(f)body}:#[[:space:]]#\#*}
+if [[ $body == *'_clicue_cs_sfx'* ]]; then
+  ok "insertion replays the suffix compsys declared"
+else
+  nope "insertion replays the suffix compsys declared" \
+       "appending a space unconditionally breaks --file= and tar -A"
+fi
+
+# "-S with an empty value" and "no -S at all" mean OPPOSITE things, so an
+# association cannot represent both with the empty string.
+if [[ $body == *"\$'\\0'"* ]]; then
+  ok "an empty declared suffix is distinguishable from no declaration"
+else
+  nope "an empty declared suffix is distinguishable from no declaration"
+fi
+
+# The cache must carry it too, or a warm cache regresses what a fresh harvest gets
+# right — the worst kind of bug, since it only appears in the SECOND shell.
+body=$(awk '/^_clicue_flag_load\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'_clicue_cs_sfx'* ]]; then
+  ok "the flag cache restores the suffix"
+else
+  nope "the flag cache restores the suffix" \
+       "a warm cache would insert a space where a fresh harvest would not"
+fi
+
+# A layout change must invalidate old caches; the mtime stamp cannot notice one.
+if grep -q '_clicue_flag_fmt' $SRC; then
+  ok "the cache carries a format version"
+else
+  nope "the cache carries a format version" \
+       "an old cache would be parsed with the wrong field count"
+fi
+
+# Mechanism 1 was measured and rejected; make sure it is not half-present.
+if ! grep -q '_clicue_finish' $SRC; then
+  ok "no second unshadowed completion pass remains"
+else
+  nope "no second unshadowed completion pass remains" \
+       "placing the candidate moves the completion position: tar - inserted tar -Af"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "familiarity gate is opt-in"
 # A verbosity change nobody asked for is the invisible behaviour shift design
 # value 1 forbids, so the threshold defaults to off.
