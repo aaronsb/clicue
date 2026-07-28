@@ -250,23 +250,50 @@ quoting, and `IPREFIX` — which had to be reimplemented by hand after `tar` bro
 `compstate[insert]` accepts **a number**: "the match whose number is given will be
 inserted into the command line." So compsys can do this correctly.
 
-**Complication, and why this is not yet fixed:** `compadd -O array` explicitly does
-*not* add matches to the match set — that is the whole reason clicue can harvest
-without disturbing the line. So there is no match list for `compstate[insert]=<n>`
-to index into. Delegating insertion therefore needs a **second, unshadowed
-completion pass** at accept time, and a way to aim it at the chosen candidate.
-Two mechanisms look viable and neither has been tested:
+### Resolved: replay the declaration, don't re-run the decision **[MEASURED]**
 
-1. Replace the current token with the chosen candidate, then run an ordinary
-   completion pass and let exact-match handling insert it with its real suffix.
-2. Record each candidate's position in compsys's own match order during the
-   harvest, then run an unshadowed pass with `compstate[insert]=<that index>`.
+`compstate[insert]=<n>` turned out to be unusable here: `compadd -O array`
+explicitly does *not* add matches to the match set — the very property that lets
+clicue harvest without disturbing the line — so there is no match list to index
+into.
 
-Mechanism 1 is simpler but depends on the candidate being unambiguous;
-mechanism 2 needs the index to survive clicue's reordering and spelling-grouping,
-and grouped or corpus-only rows have no compsys index at all. Either way both
-paths must coexist, because history-derived and cache-derived candidates are not
-compsys matches.
+**Handing the line back to compsys was tried and rejected on measurement.** A
+second, unshadowed completion pass at accept time does fix the `=` cases, but
+placing the candidate on the line **moves the completion position**:
+
+| buffer | delegated pass inserted | correct |
+|---|---|---|
+| `git commit --fi` | `--file=` ✓ | `--file=` |
+| `man --enc` | `--encoding=` ✓ | `--encoding=` |
+| `tar -` | `tar -Af` ✗ | `tar -A` |
+| `rm -` | `rm -df` ✗ | `rm -d` |
+
+With `-A` on the line compsys stops offering `-A` and starts offering the next
+cluster letter, so it completed straight past the operator's choice. Any mechanism
+that re-enters completion inherits this, which rules out the index approach too.
+
+**What works instead:** how a match ends is per-match *data*, handed to us in the
+`compadd` call at the position where the candidate is actually valid.
+
+| declaration | meaning | measured on |
+|---|---|---|
+| `-S ''` | append nothing — clusters, or takes an attached value | `tar -` (all 7), `man -H` |
+| `-S <str>` | append that string | value-taking long options (`=`) |
+| *no* `-S` | ordinary trailing space | `rm -`, most of `man -` |
+
+Recording that at harvest time and replaying it at insert time gets all five cases
+right, and has no position-shift failure mode. `-S ''` and "no `-S`" mean opposite
+things, so the empty string cannot represent both — the sentinel matters.
+
+This is the distinction design value 5 is really about: **replaying what compsys
+declared is showing; re-deriving where the word begins is deciding.** Capturing
+three documented per-match flags is a different scale of coupling from modelling
+the word grammar, which is what `IPREFIX` forced and what broke `tar`.
+
+The suffix is persisted in the flag cache with a format version, because the mtime
+stamp cannot notice that clicue started writing a fourth field — and a warm cache
+that silently regressed what a fresh harvest gets right would only show up in the
+*second* shell.
 
 ---
 

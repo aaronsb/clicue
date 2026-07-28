@@ -258,11 +258,13 @@ typeset -ga _clicue_cs_descs=()
 typeset -gA _clicue_cs_gloss=()
 typeset -g  _clicue_cs_for=$'\0'      # buffer the last harvest was for
 typeset -g  _clicue_cs_iprefix=''     # what compsys had already consumed
+typeset -gA _clicue_cs_seen=()        # candidates compsys produced
+typeset -gA _clicue_cs_sfx=()         # per-match suffix compsys declared
 
 _clicue_capture_fn() {
   compstate[insert]=''
   compstate[list]=''
-  _clicue_cs_words=(); _clicue_cs_descs=()
+  _clicue_cs_words=(); _clicue_cs_descs=(); _clicue_cs_seen=(); _clicue_cs_sfx=()
 
   compadd() {
     # What compsys treats as ALREADY on the line. Candidates are relative to this:
@@ -274,7 +276,7 @@ _clicue_capture_fn() {
     _clicue_cs_iprefix=$IPREFIX
     local -a w dsp
     local -i i
-    local a dv probe=''
+    local a dv probe='' sfx='' hassfx=''
     # Scan the options for two things: the -d display array, and whether the
     # CALLER already supplied -O/-A of its own.
     for (( i = 1; i <= $#; i++ )); do
@@ -304,7 +306,11 @@ _clicue_capture_fn() {
         # Leave the call untouched and harvest nothing; the same words come back
         # described in the grouped calls that follow.
         (O|A) probe=1 ;;
+        # -S takes an argument, so it is last in its cluster; it may also arrive
+        # with the value attached, as -S=
+        (S) hassfx=1; sfx=${@[i+1]} ;;
       esac
+      [[ $a == -[A-Za-z]#S?* && $a != --* ]] && { hassfx=1; sfx=${a#*S} }
     done
 
     if [[ -n $probe ]]; then
@@ -322,6 +328,18 @@ _clicue_capture_fn() {
       print -r -- "    compadd d=${dv:-none} dsp:${pre}->${#dsp} words=${#w}" >> $CLICUE_DEBUG
     (( ${#w} )) || return 1
     _clicue_cs_words+=( $w )
+    for a in $w; do
+      _clicue_cs_seen[$a]=1
+      # \0 records "compsys gave -S with an empty value" — distinct from "no -S at
+      # all", which is the ordinary trailing-space case. An empty string cannot
+      # carry that distinction in an association.
+      (( hassfx )) && _clicue_cs_sfx[$a]=${sfx:-$'\0'}
+      # also under the normalised spelling, since that is what the card offers
+      if [[ $a != -* && $_clicue_cs_iprefix == -* ]]; then
+        _clicue_cs_seen[${_clicue_cs_iprefix}${a}]=1
+        (( hassfx )) && _clicue_cs_sfx[${_clicue_cs_iprefix}${a}]=${sfx:-$'\0'}
+      fi
+    done
     if (( ${#dsp} == ${#w} )); then
       _clicue_cs_descs+=( $dsp )
     else
@@ -371,6 +389,26 @@ _clicue_capture_fn() {
 }
 
 zle -C _clicue_capture list-choices _clicue_capture_fn
+
+# ── how a match ends, as compsys itself declares it ──────────────────────────
+# What follows an inserted match is per-match DATA, handed to us in the compadd
+# call, not a decision to be re-derived:
+#
+#   -S ''      append nothing — the match clusters (tar's -A) or takes an
+#              attached value
+#   -S <str>   append that string, e.g. `=` for an option taking a value
+#   no -S      the ordinary case: a trailing space
+#
+# Recording and replaying that is design value 5's "show what they decided". It is
+# NOT the same as modelling where the current word begins, which is what went wrong
+# with IPREFIX.
+#
+# A second unshadowed completion pass was tried first and rejected on measurement.
+# Handing the line back to compsys does fix `--file=`, but placing the candidate
+# MOVES THE COMPLETION POSITION: with `-A` on the line, compsys stops offering
+# `-A` and starts offering the next cluster letter, so `tar -` inserted `tar -Af`
+# and `rm -` inserted `rm -df`. Capturing the suffix at the position where the
+# candidate was actually valid has no such failure mode.
 
 # Strip compdescribe's packed display prefix. It formats each display string as
 # "<word><padding>-- <description>" so the list lines up in COMPSYS's single
@@ -463,6 +501,10 @@ _clicue_is_familiar() {
 # Stamp is the command's own mtime. A rebuilt binary may document new flags; an
 # unchanged one cannot, so there is nothing to re-fetch.
 # Sets _clicue_fstamp rather than printing: same fork argument as above.
+# Bumped whenever the cache LAYOUT changes. The mtime stamp only catches a changed
+# binary; it cannot notice that clicue started writing a fourth field.
+typeset -g _clicue_flag_fmt=2
+
 _clicue_flag_stamp() {
   local p=${commands[$1]}
   local -a st
@@ -475,6 +517,7 @@ _clicue_flag_stamp() {
   else
     _clicue_fstamp='builtin'
   fi
+  _clicue_fstamp="v${_clicue_flag_fmt}:${_clicue_fstamp}"
 }
 
 _clicue_flag_load() {
@@ -486,14 +529,22 @@ _clicue_flag_load() {
   # line 1 is the stamp; a mismatch means the binary moved on
   _clicue_flag_stamp $cmd
   [[ ${lines[1]} == $_clicue_fstamp ]] || return 1
-  local l flag alt desc
+  local l flag alt desc sfx
   for l in ${lines[2,-1]}; do
     flag=${l%%$'\t'*}; l=${l#*$'\t'}
-    alt=${l%%$'\t'*}; desc=${l#*$'\t'}
+    alt=${l%%$'\t'*}; l=${l#*$'\t'}
+    sfx=${l%%$'\t'*}; desc=${l#*$'\t'}
     [[ -z $flag ]] && continue
     _clicue_fkey $cmd $flag
     _clicue_flag_desc[$_clicue_fk]=$desc
     [[ -n $alt ]] && _clicue_flag_alt[$_clicue_fk]=$alt
+    # `-` means "no -S was given"; `_` means "-S with an empty value". Both have to
+    # survive the round trip, because they mean opposite things at insertion.
+    case $sfx in
+      (-) ;;
+      (_) _clicue_cs_sfx[$flag]=$'\0' ;;
+      (*) _clicue_cs_sfx[$flag]=$sfx ;;
+    esac
   done
   _clicue_flag_have[$cmd]=1
   return 0
@@ -506,7 +557,7 @@ _clicue_flag_save() {
   _clicue_flag_stamp $cmd
   {
     print -r -- "$_clicue_fstamp"
-    local k flag
+    local k flag sfx
     for k in ${(k)_clicue_flag_desc}; do
       [[ $k == ${cmd}\|* ]] || continue
       flag=${k#*\|}
@@ -514,7 +565,13 @@ _clicue_flag_save() {
       # here stored the two characters backslash-t; the loader splits on an actual
       # tab, so every field came back merged. A cache that reloads as garbage is
       # worse than no cache — it would put wrong descriptions on right flags.
-      print -r -- "${flag}"$'\t'"${_clicue_flag_alt[$k]}"$'\t'"${_clicue_flag_desc[$k]}"
+      if (( ${+_clicue_cs_sfx[$flag]} )); then
+        sfx=${_clicue_cs_sfx[$flag]}
+        [[ $sfx == $'\0' ]] && sfx='_'
+      else
+        sfx='-'
+      fi
+      print -r -- "${flag}"$'\t'"${_clicue_flag_alt[$k]}"$'\t'"${sfx}"$'\t'"${_clicue_flag_desc[$k]}"
     done
   } >! $f.$$ 2>/dev/null && mv -f $f.$$ $f 2>/dev/null
   return 0
@@ -1622,13 +1679,20 @@ _clicue_accept() {
 _clicue_insert() {
   if (( _clicue_visible && _clicue_engaged && ! _clicue_info )) && (( ${#_clicue_cands} )); then
     local pick=${_clicue_cands[_clicue_sel]}
-    if [[ -n $_clicue_pfx ]]; then
-      LBUFFER="${LBUFFER%$_clicue_pfx}${pick} "
-    else
-      LBUFFER="${LBUFFER}${pick} "
-    fi
     _clicue_reset_sel
     _clicue_clear
+
+    # What follows the match is compsys's declaration, not our guess.
+    local tail=' '
+    if (( ${+_clicue_cs_sfx[$pick]} )); then
+      tail=${_clicue_cs_sfx[$pick]}
+      [[ $tail == $'\0' ]] && tail=''
+    fi
+    if [[ -n $_clicue_pfx ]]; then
+      LBUFFER="${LBUFFER%$_clicue_pfx}${pick}${tail}"
+    else
+      LBUFFER="${LBUFFER}${pick}${tail}"
+    fi
     zle -R
     return 0
   fi
