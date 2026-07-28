@@ -13,13 +13,24 @@
 emulate -L zsh
 setopt extended_glob
 
-typeset -g SRC=${0:A:h}/clicue.zsh
+typeset -g DIR=${0:A:h}
 typeset -gi PASS=0 FAIL=0
 # Declared once, up front. Re-declaring a set `local` in zsh prints its value.
-typeset -g k w d c body want got word disp leak bad harvest
+typeset -g k w d c body want got word disp leak bad harvest f
 typeset -g SCRATCH=${TMPDIR:-/tmp}/clicue-test.$$
 mkdir -p $SCRATCH
 trap "rm -rf $SCRATCH" EXIT
+
+# EVERY source file, entry point first. The glob is (N) so this suite works both
+# before and during the split into lib/.
+typeset -ga SRCS=( $DIR/clicue.zsh $DIR/lib/*.zsh(N) )
+
+# Content assertions read a CONCATENATION of all of them. A guard that reads only
+# the entry point would go blind to exactly the regression splitting causes: a
+# widget whose function ended up in a file nobody sources. Assertions that need a
+# real filename or line number iterate $SRCS instead.
+typeset -g SRC=$SCRATCH/all.zsh
+cat $SRCS > $SRC
 
 ok()   { (( PASS++ )); print -r -- "  ok   $1" }
 nope() { (( FAIL++ )); print -r -- "  FAIL $1"; [[ -n $2 ]] && print -r -- "         $2" }
@@ -29,10 +40,34 @@ section() { print -r -- ""; print -r -- "## $1" }
 # ─────────────────────────────────────────────────────────────────────────────
 section "parses"
 
-if zsh -n $SRC 2>$SCRATCH/syn; then
-  ok "clicue.zsh parses"
-else
-  nope "clicue.zsh parses" "$(<$SCRATCH/syn)"
+for f in $SRCS; do
+  if zsh -n $f 2>$SCRATCH/syn; then
+    ok "${f:t} parses"
+  else
+    nope "${f:t} parses" "$(<$SCRATCH/syn)"
+  fi
+done
+ok "found ${#SRCS} source file(s)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "the tree hangs together"
+# Splitting into lib/ introduces a failure mode that nothing else here would catch:
+# a file that defines functions but is never sourced. zle -N accepts a name whose
+# function does not exist, so the result is silence at load and `no such shell
+# function` on a keypress.
+
+typeset -a unsourced=()
+for f in $DIR/lib/*.zsh(N); do
+  if grep -q "${f:t}" $DIR/clicue.zsh $DIR/lib/*.zsh(N) 2>/dev/null; then
+    ok "lib/${f:t} is referenced by a source line"
+  else
+    unsourced+=( ${f:t} )
+    nope "lib/${f:t} is referenced by a source line" \
+         "defines functions that will never load"
+  fi
+done
+if (( ${#SRCS} == 1 )); then
+  print -r -- "  note  not split yet — lib/ assertions are inert until it is"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -371,7 +406,7 @@ section "silent-failure guards"
 #    key it appears to. The write lands where the read never looks and the map
 #    stays empty, with no error anywhere.
 typeset -a badsub
-badsub=( ${(f)"$(grep -n '^[^#]*[A-Za-z_][A-Za-z0-9_]*\[\$[{(][^]]*|' $SRC | grep -v '\\|' || true)"} )
+badsub=( ${(f)"$(grep -n '^[^#]*[A-Za-z_][A-Za-z0-9_]*\[\$[{(][^]]*|' $SRCS | grep -v '\\|' || true)"} )
 if (( ${#badsub} == 0 )); then
   ok "no composite assoc subscript builds its key inline with a bare |"
 else
@@ -407,7 +442,7 @@ loopdecl=( ${(f)"$(awk '
   /^[[:space:]]*(for|while|repeat) .*(do|\{)[[:space:]]*$/ { depth++; next }
   /^[[:space:]]*(done|\})[[:space:]]*$/ { if (depth > 0) depth-- ; next }
   depth > 0 && /^[[:space:]]*local [a-zA-Z_]/ && !/^[[:space:]]*#/ { print FILENAME ":" NR ": " $0 }
-' $SRC || true)"} )
+' $SRCS || true)"} )
 if (( ${#loopdecl} == 0 )); then
   ok "no local declaration sits inside a loop body"
 else
@@ -550,7 +585,7 @@ section "no forks in the hot path"
 # substitution there is a fork per keystroke — the mistake that once put render
 # latency at 87ms via a $(printf) per candidate.
 typeset -a hotforks
-hotforks=( ${(f)"$(grep -n '\$(_clicue_' $SRC | grep -v ':[[:space:]]*#' || true)"} )
+hotforks=( ${(f)"$(grep -n '\$(_clicue_' $SRCS | grep -v ':[[:space:]]*#' || true)"} )
 if (( ${#hotforks} == 0 )); then
   ok "no clicue helper is called through command substitution"
 else
