@@ -203,6 +203,71 @@ Therefore:
 - Corpus entries may be **tiered** — a one-line gloss plus a fuller description —
   so presenters can choose depth by available space and attention state.
 
+### 5. Decide vs. show — the boundary test
+
+**compsys decides. clicue shows.**
+
+| compsys decides | clicue shows |
+|---|---|
+| what matches | in what order |
+| where the current word starts and ends | with what gloss |
+| how a match is inserted — suffixes, quoting, `IPREFIX` | grouped how, laid out how |
+| when a completer forks and what it costs | with what statistics from the operator's own history |
+
+**A fix that requires knowing more about how compsys _decides_ is a signal to
+delegate, not to model harder.** A fix about how information is _shown or ranked_
+is ours.
+
+This value was earned, not designed. Four consecutive fixes were all compsys-model
+semantics rather than presentation: `compadd`'s clustered option grammar (`-ld`),
+caller-supplied `-O`/`-A` probe calls, `list-grouped`'s effect on where a
+description lives, and `IPREFIX`'s notion of the current word. Every one of those
+is a documented API, so this is *not* the design value 0 situation — compsys agreed
+to be driven. But the shape is the same, and the shape is the warning.
+
+The operator named it before the code did: *"so we don't sink into rebuilding the
+real completer in thousands of lines of bespoke zsh script, are we doing this the
+right way?"* `clicue.zsh` had grown from 1,085 to 1,824 lines in one session.
+
+Where the line actually falls, measured: the corpus, history ranking, gloss
+pairing, cluster decomposition and the familiarity gate are all genuinely ours —
+compsys provides none of them. **Candidate filtering and insertion are not.**
+
+### Insertion drops semantics compsys already knows **[MEASURED — open defect]**
+
+clicue computes `LBUFFER` itself, and is wrong in at least two ways:
+
+```
+git commit --fi   clicue: "git commit --file "     compsys carries -S= → "--file="
+tar -             clicue: "tar -A "                tar's letters cluster; the
+                                                   trailing space breaks "tar -Ac"
+```
+
+The second breaks the cluster-building the card exists to support. Also discarded:
+`-q` (suffix removed on the next keypress), `-r` (removed on given characters),
+quoting, and `IPREFIX` — which had to be reimplemented by hand after `tar` broke.
+
+`compstate[insert]` accepts **a number**: "the match whose number is given will be
+inserted into the command line." So compsys can do this correctly.
+
+**Complication, and why this is not yet fixed:** `compadd -O array` explicitly does
+*not* add matches to the match set — that is the whole reason clicue can harvest
+without disturbing the line. So there is no match list for `compstate[insert]=<n>`
+to index into. Delegating insertion therefore needs a **second, unshadowed
+completion pass** at accept time, and a way to aim it at the chosen candidate.
+Two mechanisms look viable and neither has been tested:
+
+1. Replace the current token with the chosen candidate, then run an ordinary
+   completion pass and let exact-match handling insert it with its real suffix.
+2. Record each candidate's position in compsys's own match order during the
+   harvest, then run an unshadowed pass with `compstate[insert]=<that index>`.
+
+Mechanism 1 is simpler but depends on the candidate being unambiguous;
+mechanism 2 needs the index to survive clicue's reordering and spelling-grouping,
+and grouped or corpus-only rows have no compsys index at all. Either way both
+paths must coexist, because history-derived and cache-derived candidates are not
+compsys matches.
+
 ---
 
 ## Components
