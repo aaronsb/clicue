@@ -194,10 +194,38 @@ if [[ -r $histfile ]]; then
   fi
 fi
 
+# ── input stamp ───────────────────────────────────────────────────────────────
+# Cheap enough to recompute on every shell start: zstat is a builtin, so this costs
+# no forks. History mtime+size covers "have I run more commands"; the mtimes of the
+# $path directories cover "has anything been installed or removed" without walking
+# every binary.
+zmodload -F zsh/stat b:zstat 2>/dev/null
+# One `+` spec per zstat call: a second is parsed as a FILENAME, not as another
+# format, so `zstat -A st +mtime +size f` fails and the component vanishes silently.
+# [MEASURED]
+local -a st st2
+local _clicue_stamp="v1"
+if [[ -r $histfile ]]; then
+  zstat -A st +mtime $histfile 2>/dev/null && zstat -A st2 +size $histfile 2>/dev/null \
+    && _clicue_stamp+=":h${st[1]}.${st2[1]}"
+fi
+local d
+for d in $path; do
+  [[ -d $d ]] || continue
+  zstat -A st +mtime $d 2>/dev/null && _clicue_stamp+=":${st[1]}"
+done
+
 # ── emit ──────────────────────────────────────────────────────────────────────
 {
   print -r -- "# clicue corpus cache — generated, do not edit"
   print -r -- "# built: $(date -Iseconds)"
+  # A stamp of the INPUTS, so a stale cache can be detected rather than trusted.
+  # The flag cache has had this since v2; the corpus went without one for far longer
+  # and simply rotted as history grew and packages came and went.
+  #
+  # Format version first: an added field or changed layout must invalidate, and an
+  # input stamp cannot notice that.
+  print -r -- "CLICUE_CORPUS_STAMP=${(qq)_clicue_stamp}"
   print -r -- "typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN \\"
   print -r -- "            CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST"
   print -r -- "CLICUE_GLOSS=("
@@ -250,4 +278,5 @@ print -r -- "  frequency: ${#freq}"
 print -r -- "  arg cmds:  ${#argrank}"
 print -r -- "  arg pairs: ${#argcount}"
 print -r -- "  invocations: ${#invoke}"
+print -r -- "  stamp:     ${_clicue_stamp[1,40]}..."
 print -r -- "  size:      $(du -h $out | cut -f1)"

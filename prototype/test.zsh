@@ -900,6 +900,93 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "cache lifecycle"
+# The corpus went a long time with NO staleness check: _clicue_load sourced whatever
+# was on disk and trusted it, so it rotted as history grew and packages changed.
+
+if grep -q 'CLICUE_CORPUS_STAMP' $DIR/build-corpus.zsh; then
+  ok "the builder emits an input stamp"
+else
+  nope "the builder emits an input stamp" "without one, staleness cannot be detected"
+fi
+
+body=$(awk '/^_clicue_load\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'_clicue_corpus_stale=1'* ]]; then
+  ok "loading records staleness"
+else
+  nope "loading records staleness"
+fi
+
+# A cache built before stamping existed has no stamp at all, which must read as
+# stale rather than as current.
+body=$(awk '/^_clicue_load\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'${CLICUE_CORPUS_STAMP:-}'* ]]; then
+  ok "an unstamped cache counts as stale"
+else
+  nope "an unstamped cache counts as stale" "a missing stamp must not compare equal"
+fi
+
+# The rebuild must not block the prompt, and must not re-fire every prompt.
+body=$(awk '/^_clicue_corpus_refresh\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'_clicue_rebuild_started'* ]]; then
+  ok "the rebuild fires at most once per shell"
+else
+  nope "the rebuild fires at most once per shell" "it would fork on every prompt"
+fi
+if [[ $body == *'&'* && $body == *'/dev/null'* ]]; then
+  ok "the rebuild is detached and silent"
+else
+  nope "the rebuild is detached and silent" \
+       "a stray line here lands in the middle of the operator's prompt"
+fi
+if [[ $body == *'auto-rebuild'* ]]; then
+  ok "the automatic rebuild can be turned off"
+else
+  nope "the automatic rebuild can be turned off"
+fi
+
+# zstat takes ONE + format spec per call; a second is read as a filename, so the
+# component silently vanishes. Both stamp implementations must avoid it. [MEASURED]
+bad=$(grep -n 'zstat.*+[a-z]* *+[a-z]' $DIR/build-corpus.zsh $DIR/lib/corpus.zsh 2>/dev/null | grep -v ':[[:space:]]*#' | head -1)
+if [[ -z $bad ]]; then
+  ok "no zstat call passes two + format specs"
+else
+  nope "no zstat call passes two + format specs" "$bad"
+fi
+
+# GC must judge by what the shell can actually run, not by $commands alone — cd is a
+# builtin and dropping its cache would cost a needless fork on next use.
+body=$(awk '/^_clicue_flags_gc\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+bad=''
+for k in commands builtins functions aliases; do
+  [[ $body == *"+${k}["* ]] || bad="$bad $k"
+done
+if [[ -z $bad ]]; then
+  ok "GC keeps anything the shell can run"
+else
+  nope "GC keeps anything the shell can run" "does not consult:$bad"
+fi
+
+if grep -q 'clicue-cache' $SRC; then
+  ok "clicue-cache exists so staleness is answerable, not guessable"
+else
+  nope "clicue-cache exists so staleness is answerable, not guessable"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "licensing"
+if [[ -r $DIR/../LICENSE ]]; then
+  ok "the project carries a LICENSE"
+  if grep -qi 'MIT License' $DIR/../LICENSE; then
+    ok "it is MIT, matching the zsh plugin norm (autosuggestions, fzf)"
+  else
+    ok "license is not MIT — fine, but README/packaging should agree"
+  fi
+else
+  nope "the project carries a LICENSE" "unlicensed code is not reusable by anyone"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "corpus"
 
 typeset -g CORPUS=${XDG_CACHE_HOME:-$HOME/.cache}/clicue/corpus.zsh

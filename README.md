@@ -72,9 +72,19 @@ always safe.
 | `corpus.zsh` | glosses, history frequency, invocation statistics | `clicue-rebuild` |
 | `flags/<cmd>.zsh` | a command's documented options, harvested from compsys | automatic on first use |
 
-The flag cache is versioned and invalidated by the command's mtime. The corpus is
-**not yet** — it is rebuilt only when you ask, so it goes stale as history grows.
-That is a known gap.
+Both are versioned and invalidated automatically. The corpus is stamped with the
+history file's mtime and size plus the mtimes of your `$path` directories, so it
+notices both "I have run more commands" and "something was installed or removed". A
+stale corpus is rebuilt in the background at the next prompt — never on the keystroke
+path, and at most once per shell.
+
+```zsh
+clicue-cache status    # is it current, how big, when was it built
+clicue-cache rebuild   # synchronously, now
+clicue-cache gc        # drop cached flag sets for commands that no longer exist
+clicue-cache clear     # all of it; safe, it is derived data
+zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
+```
 
 ## Status
 
@@ -87,6 +97,14 @@ any change.
   constrain everything else.
 - [MOTIVATION.md](MOTIVATION.md) — why this exists: the asymmetry between the typed
   interfaces agents get and the byte streams humans get on the same machine.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Chosen to match the immediate neighbourhood rather than
+by preference: zsh-autosuggestions and fzf are MIT, zsh-syntax-highlighting and
+zsh-completions are BSD-3-Clause, and zsh itself uses a custom MIT-like licence.
+Nothing in this ecosystem uses Apache 2.0, and for a plugin people copy into their
+dotfiles the shortest permissive licence imposes least.
 
 ## Prior art
 

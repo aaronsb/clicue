@@ -440,6 +440,19 @@ _clicue_first_precmd() {
   add-zsh-hook -d precmd _clicue_first_precmd
   unfunction _clicue_first_precmd
 }
+
+# Corpus maintenance, at the prompt rather than at a keystroke.
+#
+# Deliberately NOT in _clicue_first_precmd: the corpus loads lazily, so on the first
+# prompt of a shell nothing has read it yet and staleness is not yet known. This runs
+# on every prompt but returns immediately unless the cache was found stale, and the
+# rebuild itself fires at most once per shell.
+_clicue_maintenance_precmd() {
+  (( _clicue_loaded )) || return 0
+  _clicue_corpus_refresh
+  return 0
+}
+add-zsh-hook precmd _clicue_maintenance_precmd
 add-zsh-hook precmd _clicue_first_precmd
 
 add-zle-hook-widget line-pre-redraw _clicue_pre_redraw
