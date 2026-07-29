@@ -39,6 +39,18 @@ setopt local_options
 autoload -Uz add-zle-hook-widget
 
 typeset -g CLICUE_DIR=${0:A:h}
+
+# ── theme layer ──────────────────────────────────────────────────────────────
+# Sourced before anything that renders. Colours AND box glyphs live in a theme
+# file: a glyph the operator's font cannot draw looks like a malfunction, so the
+# glyph set is a correctness concern and belongs where it can be changed.
+source ${CLICUE_DIR}/lib/theme.zsh
+_clicue_theme_init() {
+  local want=aura
+  zstyle -s ':clicue:*' theme want 2>/dev/null || want=aura
+  _clicue_theme_load $want
+}
+_clicue_theme_init
 typeset -g CLICUE_CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/clicue/corpus.zsh
 typeset -g _clicue_loaded=0
 typeset -g _clicue_card=''
@@ -68,16 +80,6 @@ typeset -g  _clicue_info=0         # card is informational, not a candidate list
 typeset -g  _clicue_ghost=''       # stem of the highlighted cue, shown dim
 
 # ── theme (Aura, from IRIS — see SPEC.md design language) ────────────────────
-typeset -gA CLICUE_THEME=(
-  border  '#a277ff'
-  accent  '#61ffca'
-  text    '#edecee'
-  gloss   '#9692a8'
-  selbg   '#3d375e'
-  seltext '#ffffff'
-  hint    '#6d6a7f'
-  ghost   '#6d6a7f'
-)
 
 # ── lazy corpus load: startup pays nothing; first card pays ~8ms once ────────
 _clicue_load() {
@@ -812,7 +814,7 @@ _clicue_emit_box() {
 
   local -i rule=$(( inner - ${#label} ))
   (( rule < 1 )) && rule=1
-  _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
+  _clicue_lines+=( "${CLICUE_GLYPH[tl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[tr]}" )
 
   local -i emitted=0
   local -i i
@@ -826,12 +828,12 @@ _clicue_emit_box() {
     # $ent, NOT $name: the description is keyed on the real token. Looking it up
     # by the display label silently returned nothing for every paired row.
     _clicue_gloss $ent $kind; g=$_clicue_g
-    marker='  '
-    (( i == _clicue_sel )) && marker=' ▸'
+    marker=" ${CLICUE_GLYPH[nosel]}"
+    (( i == _clicue_sel )) && marker=" ${CLICUE_GLYPH[sel]}"
     nmcol=${(r:$namew:)${name[1,$namew]}}
     (( ${#g} > glossw )) && g="${g[1,$(( glossw - 1 ))]}…"
     gcol=${(r:$glossw:)g}
-    _clicue_lines+=( "│${marker} ${nmcol}  ${gcol}│" )
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}${marker} ${nmcol}  ${gcol}${CLICUE_GLYPH[v]}" )
   done
   # Deliberately NOT padded to the allocation. The card shows as many cues as
   # exist and no blank filler. This makes the card's height vary with the
@@ -875,9 +877,9 @@ _clicue_emit_explain() {
   # ├ joins the box above; ╭ opens one. With a complete invocation there are no
   # candidates and therefore no box above, and the card was drawn with no top edge.
   if (( ${#_clicue_lines} )); then
-    _clicue_lines+=( "├${label}${(l:$rule::─:):-}┤" )
+    _clicue_lines+=( "${CLICUE_GLYPH[jl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[jr]}" )
   else
-    _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
+    _clicue_lines+=( "${CLICUE_GLYPH[tl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[tr]}" )
   fi
 
   if (( collapsed )); then
@@ -889,7 +891,7 @@ _clicue_emit_explain() {
     local line="${note}  ·  ${ekey} to expand"
     local -i crule=$(( inner - ${#line} - 3 ))
     (( crule < 1 )) && crule=1
-    _clicue_lines+=( "│   ${line}${(l:$crule:: :):-}│" )
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${line}${(l:$crule:: :):-}${CLICUE_GLYPH[v]}" )
     _clicue_footrow=${#_clicue_lines}
     return 0
   fi
@@ -906,13 +908,13 @@ _clicue_emit_explain() {
     dw=$(( inner - lw - 5 ))
     (( dw < 10 )) && dw=10
     (( ${#ds} > dw )) && ds="${ds[1,$(( dw - 1 ))]}…"
-    _clicue_lines+=( "│   ${(r:$lw:)nm}  ${(r:$dw:)ds}│" )
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${(r:$lw:)nm}  ${(r:$dw:)ds}${CLICUE_GLYPH[v]}" )
     _clicue_explainrows+=( ${#_clicue_lines} )
   done
   if [[ -n $footer ]]; then
     local -i frule=$(( inner - ${#footer} - 3 ))
     (( frule < 1 )) && frule=1
-    _clicue_lines+=( "│   ${footer}${(l:$frule:: :):-}│" )
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${footer}${(l:$frule:: :):-}${CLICUE_GLYPH[v]}" )
     _clicue_footrow=${#_clicue_lines}
   fi
   return 0
@@ -969,7 +971,7 @@ _clicue_emit_grid() {
   (( _clicue_focus == 2 )) && label=" browsing ${n} — $(( _clicue_sel - lo + 1 ))/${n} "
   local -i rule=$(( inner - ${#label} ))
   (( rule < 1 )) && rule=1
-  _clicue_lines+=( "╭${label}${(l:$rule::─:):-}╮" )
+  _clicue_lines+=( "${CLICUE_GLYPH[tl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[tr]}" )
 
   local -i r c idx off
   local row nm cell
@@ -985,7 +987,7 @@ _clicue_emit_grid() {
       nm=${_clicue_cands[idx]}
       cell=${(r:$colw:)${nm[1,$w]}}
       if (( idx == _clicue_sel )); then
-        cell="▸${${(r:$(( colw - 1 )):)${nm[1,$w]}}}"
+        cell="${CLICUE_GLYPH[sel]}${${(r:$(( colw - 1 )):)${nm[1,$w]}}}"
         # remember exactly where this cell lands so only IT gets the selection
         # highlight — colouring the whole row would imply the row is the unit
         _clicue_selline=$(( ${#_clicue_lines} + 1 ))
@@ -995,7 +997,7 @@ _clicue_emit_grid() {
       row+=$cell
       (( off += colw ))
     done
-    _clicue_lines+=( "│${(r:$gutter:)}${${(r:$avail:)row}}│" )
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}${(r:$gutter:)}${${(r:$avail:)row}}${CLICUE_GLYPH[v]}" )
     _clicue_gridrows+=( ${#_clicue_lines} )
   done
   # not padded either — see the note in _clicue_emit_box
@@ -1197,7 +1199,7 @@ _clicue_render() {
 
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 1 )) && brule=1
-  _clicue_lines+=( "╰${(l:$brule::─:):-}${hint}╯" )
+  _clicue_lines+=( "${CLICUE_GLYPH[bl]}${(pl:$brule::$_clicue_hg:):-}${hint}${CLICUE_GLYPH[br]}" )
 
   # Gloss bar: the highlighted cue's description on its own line, so the grid
   # can stay dense without dropping descriptions.
@@ -1218,8 +1220,8 @@ _clicue_render() {
     (( gw < 10 )) && gw=10
     local gg=$_clicue_g
     (( ${#gg} > gw )) && gg="${gg[1,$(( gw - 1 ))]}…"
-    _clicue_lines+=( "│   ${(r:$namew:)${gdisp[1,$namew]}}  ${(r:$gw:)gg}│" )
-    _clicue_lines+=( "╰${(l:$inner::─:):-}╯" )
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${(r:$namew:)${gdisp[1,$namew]}}  ${(r:$gw:)gg}${CLICUE_GLYPH[v]}" )
+    _clicue_lines+=( "${CLICUE_GLYPH[bl]}${(pl:$inner::$_clicue_hg:):-}${CLICUE_GLYPH[br]}" )
   fi
 
   _clicue_text=$'\n'${(F)_clicue_lines}
@@ -1234,7 +1236,10 @@ _clicue_render() {
   for ln in $_clicue_lines; do
     (( i++ ))
     len=${#ln}
-    if [[ $ln == ('╭'|'╰')* ]]; then
+    # NOTE: this pass identifies a row by matching the RENDERED line, so it has to
+    # be told the themed glyphs too. Fragile, and known to be — it is why the glyph
+    # set is validated at load rather than trusted.
+    if [[ $ln == (${CLICUE_GLYPH[tl]}|${CLICUE_GLYPH[bl]}|${CLICUE_GLYPH[jl]})* ]]; then
       specs+=( "$pos $(( pos + len )) fg=${CLICUE_THEME[border]}" )
     elif (( ${+isgrid[$i]} )); then
       # A grid row is N cells of the SAME kind — every column is a command name.
@@ -1251,7 +1256,7 @@ _clicue_render() {
       specs+=( "$(( pos + len - 1 )) $(( pos + len )) fg=${CLICUE_THEME[border]}" )
       specs+=( "$(( pos + 4 )) $(( pos + 4 + namew )) fg=${CLICUE_THEME[accent]},bold" )
       specs+=( "$(( pos + 6 + namew )) $(( pos + len - 1 )) fg=${CLICUE_THEME[gloss]}" )
-      [[ $ln == '│ ▸'* ]] && \
+      [[ $ln == "${CLICUE_GLYPH[v]} ${CLICUE_GLYPH[sel]}"* ]] && \
         specs+=( "$pos $(( pos + len )) fg=${CLICUE_THEME[seltext]},bg=${CLICUE_THEME[selbg]}" )
     fi
     (( pos += len + 1 ))

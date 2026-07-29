@@ -682,6 +682,88 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "themes"
+# "Is it themeable?" A theme owns colours and glyphs and nothing else. The glyph set
+# is a CORRECTNESS concern, not decoration: a glyph the operator's font cannot draw
+# renders as a hollow box, which reads as breakage (design value 1).
+
+typeset -ga THEMES=( $DIR/themes/*.zsh(N) )
+if (( ${#THEMES} )); then
+  ok "found ${#THEMES} theme file(s)"
+else
+  nope "found theme files" "no themes/*.zsh"
+fi
+for f in $THEMES; do
+  if zsh -n $f; then ok "theme ${f:t:r} parses"; else nope "theme ${f:t:r} parses"; fi
+done
+
+# Every theme must define every key the renderer reads, or the card renders with a
+# region_highlight spec zsh rejects and no indication why.
+typeset -ga TKEYS=( border accent text gloss selbg seltext hint ghost badge badgefg )
+typeset -ga GKEYS=( tl tr bl br jl jr v h sel nosel )
+# Sourced, not grepped: a theme may put several pairs on one line, and what matters
+# is the resulting association, not the formatting.
+for f in $THEMES; do
+  bad=$(zsh -fc "
+    typeset -gA CLICUE_THEME=() CLICUE_GLYPH=()
+    source $f
+    for k in $TKEYS; do [[ -n \${CLICUE_THEME[\$k]} ]] || print -n \" THEME[\$k]\"; done
+    for k in $GKEYS; do (( \${+CLICUE_GLYPH[\$k]} )) || print -n \" GLYPH[\$k]\"; done
+  " 2>/dev/null)
+  if [[ -z $bad ]]; then
+    ok "theme ${f:t:r} defines every key"
+  else
+    nope "theme ${f:t:r} defines every key" "missing:$bad"
+  fi
+done
+
+# sel and nosel must be the same width or unselected rows sit a column off
+for f in $THEMES; do
+  body=$(zsh -fc "typeset -gA CLICUE_THEME=() CLICUE_GLYPH=(); source $f; print -r -- \"\${#CLICUE_GLYPH[sel]}:\${#CLICUE_GLYPH[nosel]}\"" 2>/dev/null)
+  if [[ ${body%%:*} == ${body##*:} ]]; then
+    ok "theme ${f:t:r} keeps sel and nosel the same width"
+  else
+    nope "theme ${f:t:r} keeps sel and nosel the same width" "got $body"
+  fi
+done
+
+# At least one theme must be pure ASCII, as the fallback for a terminal whose font
+# or encoding cannot be relied on.
+bad='none'
+for f in $THEMES; do
+  # the glyph values only — comments are prose and may contain anything
+  got=$(zsh -fc "
+    typeset -gA CLICUE_THEME=() CLICUE_GLYPH=()
+    source $f
+    print -rn -- \"\${(j::)CLICUE_GLYPH}\"
+  " 2>/dev/null)
+  LC_ALL=C print -rn -- "$got" | LC_ALL=C grep -qP '[^\x00-\x7F]' || bad=${f:t:r}
+done
+if [[ $bad != none ]]; then
+  ok "an all-ASCII theme exists as a fallback ($bad)"
+else
+  nope "an all-ASCII theme exists as a fallback" \
+       "every theme needs a font that can draw its glyphs"
+fi
+
+# The renderer must not hard-code box glyphs any more.
+bad=$(grep -n '[╭╮╰╯├┤│─▸]' $DIR/clicue.zsh | grep -v ':[[:space:]]*#' | head -1)
+if [[ -z $bad ]]; then
+  ok "the renderer hard-codes no box glyphs"
+else
+  nope "the renderer hard-codes no box glyphs" "$bad"
+fi
+
+# Padding a border needs the (p) flag: (l:n::pad:) expands NEITHER a subscripted nor
+# a plain parameter in its pad argument, and emits the source text into the border.
+bad=$(grep -n '(l:[^)]*\$_clicue_hg' $DIR/clicue.zsh | head -1)
+if [[ -z $bad ]]; then
+  ok "glyph padding uses the (p) flag so the parameter expands"
+else
+  nope "glyph padding uses the (p) flag so the parameter expands" "$bad"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "corpus"
 
 typeset -g CORPUS=${XDG_CACHE_HOME:-$HOME/.cache}/clicue/corpus.zsh
