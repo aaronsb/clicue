@@ -87,10 +87,27 @@ pessimistic. There is one rule:
 - clicue stood down → there is no candidate space; compsys owns the position
 
 Nothing changes behaviourally except that the **hint line names the next action** —
-`Tab accept` when the press will commit, `Tab cycle` when it will move. The hint is
+`Tab insert` when the press will commit, `Tab cycle` when it will move. The hint is
 already segment-based and width-aware, so it can carry this. That converts an
 invisible mode into a labelled one, which is what design value 1 actually asks for,
 without overturning the operator's decision that Tab cycles.
+
+**Implemented.** The legend is now derived from live state on every render rather than
+built once at load. Two corrections came out of building it:
+
+The verb is **`insert`, not `accept`** — the legend already used `accept` for `→`,
+which takes the *ghost text*, and Tab's commit path calls `_clicue_insert`, the same
+code Enter runs. Naming Tab's commit `accept` would have put two different actions
+under one word while hiding that Tab and Enter had become the same key. `Tab insert ·
+⏎ insert` reads as a duplication and is one: two keys, one action, said plainly.
+
+The legend also had to stop advertising **inert** gestures. On a one-candidate card
+there is nothing to browse and no ghost to accept, and on an explanation-only card
+(`rm -rf` — a complete invocation has no candidate left to propose) every navigation
+gesture is inert. Listing them is the same failure as an invisible mode, arrived at
+from the other side: the operator tries the gesture, nothing happens, and they
+discount the whole legend. So each segment is now gated on the thing it names being
+real, and `dismiss` — the way out — is the segment that survives every width.
 
 ### 4. Comprehension needs no paste detection
 

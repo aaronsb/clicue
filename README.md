@@ -38,12 +38,17 @@ startup.
 
 | Key | Action |
 |---|---|
-| `Tab` | cycle the primary card. It is history-ranked, so what you want is usually one or two presses away |
+| `Tab` | advance your position in the candidate space: cycle the primary card, or insert the cue when it is already the whole answer |
 | `↑` `↓` | walk the selection once you have started cycling; continues into the second box |
 | `←` `→` | jump a grid column; `→` also accepts the ghost-text proposal |
 | `Enter` | put the highlighted cue on the line — **not** run it |
 | `Esc` | dismiss for the current line |
 | `Alt+E` | expand a collapsed explanation |
+
+The card's bottom border carries a legend, and it lists only what will actually work
+on the card in front of you — so it says `Tab cycle` or `Tab insert` depending on
+which the next press will do, and a card that is pure explanation offers nothing but
+`Esc dismiss`. Narrow the terminal and segments drop, but the way out never does.
 
 Unmodified `↑`/`↓` always reach command history. That is enforced in code, not merely
 intended. No bare printable character is ever bound — binding `q` as an alternate
@@ -90,7 +95,7 @@ zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
 ## Status
 
 Working prototype, in daily use by its author. Not packaged, not versioned, no
-install script. `prototype/test.zsh` holds 139 in-process assertions; run it after
+install script. `prototype/test.zsh` holds 160 in-process assertions; run it after
 any change.
 
 - [SPEC.md](SPEC.md) — design values and every measured finding, tagged by

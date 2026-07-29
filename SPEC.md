@@ -121,6 +121,26 @@ command position, and the card standing down on path-like input. Those are
 acceptable because the *trigger is visible*: the operator can see they typed a
 space or a slash. Suppression had no such tell.
 
+**The same rule read from the other side: a legend that advertises a gesture which
+does nothing damages confidence exactly as much as a hidden mode.** The operator
+tries it, nothing happens, and they discount the whole legend — including the
+segments that were true. So the hint line is *derived from live state* on every
+render, not fixed at load: `↑↓ browse` appears only with more than one candidate,
+`→ accept` only when a ghost stem exists, and an explanation-only card advertises
+nothing but the way out. `dismiss` is the segment that survives every width, because
+a narrow terminal that leaves the operator holding a card with no advertised exit is
+this value's failure mode in its purest form.
+
+This also settles what Tab *means*, which had drifted into looking like four
+behaviours on invisible state. It is one rule — **Tab advances your position in the
+candidate space** — whose outcome is a move when there is somewhere to move and an
+insert when the highlighted cue is already the whole answer. Both outcomes are
+knowable at render time, so the legend names which one applies (`Tab cycle` /
+`Tab insert`) instead of leaving the operator to infer it from a `1/1` counter. The
+verb is `insert` rather than `accept` because Tab's commit path runs the same code as
+Enter, while `→ accept` takes the ghost — two different actions that must not share a
+word. See `docs/design-notes/composition-and-comprehension.md`.
+
 ### 2. Compose, don't capture
 
 Every tool in this space we examined captures something it did not need to:

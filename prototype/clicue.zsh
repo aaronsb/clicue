@@ -334,15 +334,13 @@ _clicue_pre_redraw() {
   # engine. zsh-autosuggestions was writing the same string for the same purpose,
   # and whichever landed last won — visible as the ghost turning grey and the
   # card's rendering breaking.
+  # The rule for WHAT the stem is lives in _clicue_ghost_stem, because the card's
+  # legend advertises `→ accept` only when a stem exists. Two copies of the rule
+  # would eventually disagree, and then the legend lies about the key.
   local ghost=''
-  if (( ${#_clicue_cands} )) && (( ! _clicue_info )); then
-    local pick=${_clicue_cands[_clicue_sel]}
-    if [[ -n $_clicue_pfx && $pick == ${_clicue_pfx}* ]]; then
-      ghost=${pick#$_clicue_pfx}
-    elif [[ -z $_clicue_pfx ]]; then
-      ghost=$pick
-    fi
-    (( ${#ghost} )) && POSTDISPLAY=''   # our cue supersedes the autosuggestion
+  if _clicue_ghost_stem; then
+    ghost=$_clicue_gstem
+    POSTDISPLAY=''                      # our cue supersedes the autosuggestion
   fi
 
   local -i gbase=$(( ${#BUFFER} + ${#POSTDISPLAY} ))

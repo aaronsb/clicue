@@ -479,16 +479,11 @@ _clicue_render() {
   _clicue_gridrows=(); _clicue_selline=0
   _clicue_explainrows=(); _clicue_footrow=0
   _clicue_matchlen=()
-  local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
-  # The reduced hint is for a card with nothing to navigate. Gated on that being
-  # TRUE, not on info mode: an informational card that carries an explanation is
-  # navigable, and advertising only `dismiss` there actively misleads about what Tab
-  # and the arrows will do.
-  if (( _clicue_info )) && (( ! ${#_clicue_explain_rows} )); then
-    local REPLY; local -a dv
-    zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
-    _clicue_keylabel ${dv[1]}; hint=" ${REPLY} dismiss "
-  fi
+  # Derived from live state, every render: which gestures are real depends on what
+  # the card is currently showing. The selection has already been clamped above, so
+  # _clicue_sel and _clicue_cands agree by the time this reads them.
+  _clicue_hint_segments
+  local hint=" ${(j: · :)_clicue_hintparts} "
 
   # tier 1 first — nearest the prompt
   if (( t1n > 0 )); then
@@ -535,13 +530,8 @@ _clicue_render() {
   # Left-justified: it reads as a label on the box rather than as a right-aligned
   # afterthought, and it is the end that gets dropped when space runs out, so the
   # segments that survive stay in a stable position instead of sliding.
-  if (( ${#_clicue_hintparts} )) && [[ $hint == " ${(j: · :)_clicue_hintparts} " ]]; then
-    _clicue_fit_hint $inner
-    hint=$_clicue_hintfit
-  elif (( ${#hint} > inner )); then
-    # a caller-supplied hint (the info card's `Esc dismiss`) still must not overflow
-    hint=" ${hint[2,$(( inner - 1 ))]} "
-  fi
+  _clicue_fit_hint $inner
+  hint=$_clicue_hintfit
   local -i brule=$(( inner - ${#hint} ))
   (( brule < 0 )) && brule=0
   _clicue_lines+=( "${CLICUE_GLYPH[bl]}${hint}${(pl:$brule::$_clicue_hg:):-}${CLICUE_GLYPH[br]}" )
@@ -654,29 +644,107 @@ _clicue_build_hint() {
   local -a av dv
   zstyle -a ':clicue:keys' accept  av || av=( '^I' )
   zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
-  _clicue_keylabel ${av[1]}; local cyc=$REPLY
-  _clicue_keylabel ${dv[1]}; local dis=$REPLY
+  _clicue_keylabel ${av[1]}; typeset -g _clicue_key_accept=$REPLY
+  _clicue_keylabel ${dv[1]}; typeset -g _clicue_key_dismiss=$REPLY
+  # A sane full-width default, so anything that renders before the first
+  # _clicue_hint_segments still has a legend.
   typeset -ga _clicue_hintparts=(
-    "${cyc} cycle"
+    "${_clicue_key_accept} cycle"
     "↑↓ browse"
     "→ accept"
     "⏎ insert"
-    "${dis} dismiss"
+    "${_clicue_key_dismiss} dismiss"
   )
-  typeset -g _clicue_hint=" ${(j: · :)_clicue_hintparts} "
+}
+
+# ── the legend, derived from what the keys will actually do right now ─────────
+# Not a fixed string. A legend that lists gestures which do nothing is worse than a
+# shorter one: the operator tries the gesture, nothing happens, and they stop
+# trusting the card. That is design value 1 — no fallback may damage confidence —
+# applied to the legend itself.
+#
+# Tab still has ONE rule: it advances your position in the candidate space. But that
+# advance is a MOVE when there is somewhere to move and an INSERT when the highlighted
+# cue is already the whole answer, and which of the two applies is knowable here. So
+# the legend names it, which turns invisible state into a label rather than leaving
+# the operator to infer it from a counter.
+#
+# One caveat, stated rather than hidden: the FIRST Tab in argument position also
+# fetches from compsys, and fetching can change the answer. The legend describes the
+# next press given what is known now, which is the most any legend can promise.
+_clicue_hint_segments() {
+  local acc=${_clicue_key_accept:-Tab}
+  local dis=${_clicue_key_dismiss:-Esc}
+
+  # Nothing to navigate: an informational card, or a card that is pure explanation
+  # (a COMPLETE invocation is exactly the case with no candidate left to propose).
+  # Both are worth reading and neither answers to an arrow.
+  if (( ! ${#_clicue_cands} )) || \
+     { (( _clicue_info )) && (( ! ${#_clicue_explain_rows} )) }; then
+    _clicue_hintparts=( "${dis} dismiss" )
+    return 0
+  fi
+
+  if _clicue_tab_inserts; then
+    # The cue IS what is typed: nothing to cycle, nothing to browse, and no ghost to
+    # accept. Tab and Enter do the same single thing here, and saying so beats
+    # advertising four gestures of which three are inert.
+    _clicue_hintparts=( "${acc} insert" "⏎ insert" "${dis} dismiss" )
+    return 0
+  fi
+
+  _clicue_hintparts=( "${acc} cycle" )
+  (( ${#_clicue_cands} > 1 )) && _clicue_hintparts+=( "↑↓ browse" )
+  _clicue_ghost_stem && _clicue_hintparts+=( "→ accept" )
+  _clicue_hintparts+=( "⏎ insert" "${dis} dismiss" )
+  return 0
+}
+
+# The stem the highlighted cue would add to the line, empty when it would add nothing.
+#
+# ONE definition, two callers: clicue.zsh draws it as ghost text, and the legend above
+# advertises `→ accept` only when there is something to accept. Duplicating the rule
+# would let the legend disagree with the key, which is the failure this whole change
+# is about.
+_clicue_ghost_stem() {
+  typeset -g _clicue_gstem=''
+  (( ${#_clicue_cands} )) || return 1
+  (( _clicue_info )) && return 1
+  local pick=${_clicue_cands[_clicue_sel]}
+  if [[ -n $_clicue_pfx && $pick == ${_clicue_pfx}* ]]; then
+    _clicue_gstem=${pick#$_clicue_pfx}
+  elif [[ -z $_clicue_pfx ]]; then
+    _clicue_gstem=$pick
+  fi
+  [[ -n $_clicue_gstem ]]
 }
 
 # Fit as many segments as the width allows. Always yields something: at absurd widths
 # it falls back to the first segment truncated, never to an overflowing line.
+#
+# Segments are dropped from the MIDDLE, not simply from the right: the last one is
+# always `dismiss`, and the escape hatch has to survive every width or a narrow
+# terminal leaves the operator with a card and no advertised way out. So the first
+# segment (the primary gesture) and the last (the way out) are the two that stay.
 _clicue_fit_hint() {
   local -i avail=$1
   local try
   local -i n=${#_clicue_hintparts}
-  while (( n > 0 )); do
-    try=" ${(j: · :)_clicue_hintparts[1,n]} "
+  local -i last=$n
+  try=" ${(j: · :)_clicue_hintparts} "
+  (( ${#try} <= avail )) && { _clicue_hintfit=$try; return 0 }
+  # Assembled into a real array first. `${(j:x:)${a[1,n]} ${a[last]}}` is a bad
+  # substitution — a join flag takes ONE parameter, not a list of words — and zsh
+  # reports it at render time, i.e. as a card that fails to draw. [MEASURED]
+  local -a keep
+  for (( n = last - 1; n >= 1; n-- )); do
+    keep=( "${(@)_clicue_hintparts[1,n]}" "${_clicue_hintparts[last]}" )
+    try=" ${(j: · :)keep} "
     (( ${#try} <= avail )) && { _clicue_hintfit=$try; return 0 }
-    (( n-- ))
   done
-  _clicue_hintfit=" ${_clicue_hintparts[1][1,$(( avail > 2 ? avail - 2 : 1 ))]} "
+  # Only the escape hatch fits, or not even that.
+  try=" ${_clicue_hintparts[last]} "
+  (( ${#try} <= avail )) && { _clicue_hintfit=$try; return 0 }
+  _clicue_hintfit=" ${_clicue_hintparts[last][1,$(( avail > 2 ? avail - 2 : 1 ))]} "
   return 0
 }

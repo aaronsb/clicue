@@ -987,6 +987,130 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "the legend names the next action"
+# Calls the REAL _clicue_hint_segments and _clicue_fit_hint. The point of the change
+# is that the legend is DERIVED from state, so a test that hand-built the expected
+# segments would pass forever after the derivation drifted.
+source $DIR/lib/render.zsh 2>/dev/null
+source $DIR/lib/keys.zsh 2>/dev/null
+typeset -ga _clicue_cands=() _clicue_explain_rows=()
+typeset -gi _clicue_info=0 _clicue_sel=1
+typeset -g _clicue_pfx='' _clicue_hintfit=''
+_clicue_build_hint
+
+hseg() {   # $1 pfx, $2 info, $3.. cands  → REPLY is the joined legend
+  _clicue_pfx=$1; _clicue_info=$2; shift 2
+  _clicue_cands=( "$@" ); _clicue_sel=1
+  _clicue_hint_segments
+  REPLY=${(j: · :)_clicue_hintparts}
+}
+
+# Tab has ONE rule — it advances your position in the candidate space — but that is a
+# MOVE when there is somewhere to move and an INSERT when the cue is already the whole
+# answer. The rule is constant; naming the outcome is what makes it visible.
+_clicue_explain_rows=()
+hseg gi 0 git gitk gio
+if [[ $REPLY == 'Tab cycle'* ]]; then
+  ok "with somewhere to move, the legend says cycle"
+else
+  nope "with somewhere to move, the legend says cycle" "$REPLY"
+fi
+
+# The reported gh dead end: `gh org<Tab>` offers exactly `org`, which is already typed.
+_clicue_explain_rows=( "org"$'\t'"Manage organizations" )
+hseg org 0 org
+if [[ $REPLY == 'Tab insert'* ]]; then
+  ok "when the only cue is already typed, the legend says insert"
+else
+  nope "when the only cue is already typed, the legend says insert" "$REPLY"
+fi
+# and it must not advertise browsing a one-item list, or a ghost that cannot exist
+if [[ $REPLY != *browse* && $REPLY != *'→'* ]]; then
+  ok "inert gestures are not advertised alongside it"
+else
+  nope "inert gestures are not advertised alongside it" "$REPLY"
+fi
+
+# The legend and the KEY read one predicate, not two copies of a condition.
+# Matched on the CALL, not on the bare name: the name appears in the prose above both
+# call sites, and an assertion that reads a comment keeps passing after the call goes.
+# That exact mistake has been made in this suite before.
+if [[ $(awk '/^_clicue_accept\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'_clicue_tab_inserts; then'* ]] \
+   && [[ $(awk '/^_clicue_hint_segments\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'if _clicue_tab_inserts; then'* ]]; then
+  ok "the legend and the key share the predicate rather than restating it"
+else
+  nope "the legend and the key share the predicate rather than restating it" \
+       "a legend that says cycle while the key inserts is worse than no legend"
+fi
+
+# A complete invocation has nothing left to propose: the card is pure explanation, and
+# every navigation gesture on it is inert.
+_clicue_explain_rows=( "-r"$'\t'"recursive" )
+hseg '' 0
+if [[ $REPLY == 'Esc dismiss' ]]; then
+  ok "an explanation-only card advertises only the way out"
+else
+  nope "an explanation-only card advertises only the way out" "$REPLY"
+fi
+
+# Same for an informational card carrying no explanation.
+_clicue_explain_rows=()
+hseg -x 1 man
+if [[ $REPLY == 'Esc dismiss' ]]; then
+  ok "an informational card advertises only the way out"
+else
+  nope "an informational card advertises only the way out" "$REPLY"
+fi
+
+# `→ accept` takes the GHOST, so it belongs in the legend only when a stem exists.
+_clicue_explain_rows=()
+hseg gr 0 grep
+if [[ $REPLY == *'→ accept'* ]]; then
+  ok "the ghost gesture is advertised when there is a stem to accept"
+else
+  nope "the ghost gesture is advertised when there is a stem to accept" "$REPLY"
+fi
+# ONE definition of the stem: clicue.zsh draws it, the legend advertises it.
+if [[ $(awk '/^_clicue_pre_redraw\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'if _clicue_ghost_stem; then'* ]]; then
+  ok "the drawn ghost and the advertised ghost come from one rule"
+else
+  nope "the drawn ghost and the advertised ghost come from one rule" \
+       "two copies of the rule let the legend disagree with the key"
+fi
+
+# Width degradation. The last segment is the escape hatch and must survive: a narrow
+# terminal that leaves the operator a card with no advertised way out is the failure
+# design value 1 is about.
+_clicue_explain_rows=()
+hseg gi 0 git gitk gio
+typeset -gi HFAIL=0
+for w in 60 46 30 22 14; do
+  _clicue_fit_hint $w
+  (( ${#_clicue_hintfit} <= w )) || { HFAIL=1; break }
+  [[ $_clicue_hintfit == *dismiss* ]] || { HFAIL=1; break }
+done
+if (( ! HFAIL )); then
+  ok "the legend fits every width and always keeps the way out"
+else
+  nope "the legend fits every width and always keeps the way out" \
+       "w=$w fit=[$_clicue_hintfit]"
+fi
+# Even at an absurd width it yields something rather than overflowing the box.
+_clicue_fit_hint 3
+if (( ${#_clicue_hintfit} <= 3 )); then
+  ok "an absurd width truncates rather than overflowing"
+else
+  nope "an absurd width truncates rather than overflowing" "[$_clicue_hintfit]"
+fi
+# A join flag takes ONE parameter: `${(j:x:)${a[1,n]} ${a[n]}}` is a bad substitution,
+# and it reports at render time — as a card that fails to draw.
+if [[ $(awk '/^_clicue_fit_hint\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) != *'j: · :)${_clicue_hintparts[1,'* ]]; then
+  ok "the segment join reads a real array, not a word list"
+else
+  nope "the segment join reads a real array, not a word list"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "cache lifecycle"
 # The corpus went a long time with NO staleness check: _clicue_load sourced whatever
 # was on disk and trusted it, so it rotted as history grew and packages changed.

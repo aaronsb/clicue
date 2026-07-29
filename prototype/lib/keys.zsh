@@ -124,6 +124,22 @@ _clicue_dismiss() {
   return 0
 }
 
+# Will the next Tab INSERT rather than move? True when the only candidate is already
+# what is typed — `gh org<Tab>` offers exactly `org`, so cycling a one-item list does
+# nothing visible and the only way forward is to take it and descend a level.
+#
+# A NAMED predicate with two callers: this file binds it, and render.zsh's legend
+# advertises it. Written out twice it would drift, and a legend that says `cycle`
+# while the key inserts is worse than no legend at all.
+#
+# _clicue_visible is deliberately NOT tested here — render evaluates this before it
+# has been set, so the caller supplies that condition.
+_clicue_tab_inserts() {
+  (( _clicue_info )) && return 1
+  (( ${#_clicue_cands} == 1 )) || return 1
+  [[ -n $_clicue_pfx && ${_clicue_cands[1]} == $_clicue_pfx ]]
+}
+
 # Tab CYCLES within the primary card. That card is history-ranked, so the cue the
 # operator wants is usually one or two presses away — the ordering is learned
 # rather than deterministic, and stabilises statistically as history accumulates.
@@ -214,8 +230,7 @@ _clicue_accept() {
   # Accepting inserts the token's declared suffix (usually a space), and the next
   # redraw shows the level below. This is what zsh's own completion does with
   # accept-exact, and the operator reasonably expects it.
-  if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} == 1 )) \
-     && [[ -n $_clicue_pfx && ${_clicue_cands[1]} == $_clicue_pfx ]]; then
+  if (( _clicue_visible )) && _clicue_tab_inserts; then
     _clicue_sel=1
     _clicue_engaged=1
     _clicue_insert
