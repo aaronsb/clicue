@@ -79,6 +79,30 @@ validated at load — a theme that forgets one falls back to the built-in defaul
 rather than rendering a broken card. Themes are treated as an accessibility surface,
 not a skin: see design value 3 in [SPEC.md](SPEC.md).
 
+## Ranking
+
+Which cue comes first is an experiment, switchable mid-session and — more usefully —
+answerable when an order looks wrong:
+
+```zsh
+clicue-rank                # frecency
+clicue-rank why gi         # the numbers behind the order
+clicue-rank frequency      # switch for this session
+```
+
+```
+ranking: frecency   prefix: gi   candidates: 31
+NAME                          COUNT     AGE WEIGHT      SCORE
+git                              44      0d    16        704
+github-backup                     1     28d     4          4
+```
+
+`frecency` (the default) weights your own count by how recently you used it — today
+×16, this week ×8, this month ×4, six months ×2, older ×1 — so a favourite from last
+year does not outrank what you ran an hour ago. `frequency` is count alone;
+`recency` is last-used alone. All three read data derived from history at build time;
+nothing is instrumented, so `HIST_IGNORE_SPACE` remains a per-command opt-out.
+
 ## Caches
 
 Both live under `$XDG_CACHE_HOME/clicue` and are derived data — deleting them is
@@ -106,7 +130,7 @@ zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
 ## Status
 
 Working prototype, in daily use by its author. Not packaged, not versioned, no
-install script. `prototype/test.zsh` holds 208 in-process assertions; run it after
+install script. `prototype/test.zsh` holds 219 in-process assertions; run it after
 any change.
 
 The card sizes itself to the terminal on every render — no SIGWINCH hook, since zsh

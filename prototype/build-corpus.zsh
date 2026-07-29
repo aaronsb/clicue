@@ -56,16 +56,31 @@ if (( $+commands[whatis] )); then
 fi
 
 # ── 2. frequency, derived from history ────────────────────────────────────────
-typeset -A freq
+typeset -A freq lastseen
 local histfile=${HISTFILE:-$HOME/.zsh_history}
 if [[ -r $histfile ]]; then
-  # strip EXTENDED_HISTORY ': <ts>:<dur>;' prefix, take the command word
-  sed 's/^: [0-9]*:[0-9]*;//' $histfile 2>/dev/null \
-    | awk '{print $1}' \
-    | grep -E '^[a-zA-Z0-9_.:+-]+$' \
-    | sort | uniq -c | sort -rn \
-    | while read -r c n; do
+  # Count AND last-seen, in one pass. Recency used to be discarded here — the `sed`
+  # stripped the timestamp before awk ever saw it — which left frequency as the only
+  # ranking signal available for command position. Keeping it costs nothing: the line
+  # is already being parsed, and EXTENDED_HISTORY has already stamped it.
+  local c n lst
+  sed 's/^: \([0-9]*\):[0-9]*;/\1\t/' $histfile 2>/dev/null \
+    | awk -F'\t' '
+        {
+          ts = 0; line = $0
+          if (NF >= 2 && $1 ~ /^[0-9]+$/) { ts = $1; line = $2 }
+          split(line, w, /[ \t]+/)
+          cmd = w[1]
+          if (cmd !~ /^[a-zA-Z0-9_.:+-]+$/) next
+          c[cmd]++
+          if (ts + 0 > last[cmd]) last[cmd] = ts + 0
+        }
+        END { for (k in c) print c[k] "\t" k "\t" last[k] }' \
+    | sort -rn \
+    | while IFS=$'\t' read -r c n lst; do
+        [[ -z $n ]] && continue
         freq[$n]=$c
+        lastseen[$n]=$lst
       done
 fi
 
@@ -204,7 +219,7 @@ zmodload -F zsh/stat b:zstat 2>/dev/null
 # format, so `zstat -A st +mtime +size f` fails and the component vanishes silently.
 # [MEASURED]
 local -a st st2
-local _clicue_stamp="v1"
+local _clicue_stamp="v2"   # must match _clicue_corpus_stamp in lib/corpus.zsh
 if [[ -r $histfile ]]; then
   zstat -A st +mtime $histfile 2>/dev/null && zstat -A st2 +size $histfile 2>/dev/null \
     && _clicue_stamp+=":h${st[1]}.${st2[1]}"
@@ -227,7 +242,7 @@ done
   # input stamp cannot notice that.
   print -r -- "CLICUE_CORPUS_STAMP=${(qq)_clicue_stamp}"
   print -r -- "typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN \\"
-  print -r -- "            CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST"
+  print -r -- "            CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST CLICUE_LAST"
   print -r -- "CLICUE_GLOSS=("
   for n in ${(k)gloss}; do
     print -r -- "  ${(qq)n} ${(qq)gloss[$n]}"
@@ -241,6 +256,12 @@ done
   print -r -- "CLICUE_FREQ=("
   for n in ${(k)freq}; do
     print -r -- "  ${(qq)n} ${(qq)freq[$n]}"
+  done
+  print -r -- ")"
+  # Last-seen epoch per command, so ranking can weigh recency without a rebuild.
+  print -r -- "CLICUE_LAST=("
+  for n in ${(k)lastseen}; do
+    print -r -- "  ${(qq)n} ${(qq)lastseen[$n]}"
   done
   print -r -- ")"
   print -r -- "CLICUE_ARGS=("

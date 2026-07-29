@@ -14,6 +14,22 @@ zstyle ':clicue:*' tier1-rows 10      # cues in the primary card; overflow -> gr
 zstyle ':clicue:*' tier2-rows auto    # auto = a third of the window, min 10 rows
 zstyle ':clicue:*' enabled   yes
 
+# ── ranking: which cue comes first ───────────────────────────────────────────
+# An experiment, not a decision. Which metric is right is not knowable from first
+# principles — it is knowable from living with it, so switch it mid-session and ask
+# it to justify itself when an order looks wrong:
+#
+#   clicue-rank                 which metric is active
+#   clicue-rank recency         switch for this session
+#   clicue-rank why gi          the count, age, weight and score behind each row
+#
+#   frecency   count weighted by how recently used (today x16, week x8, month x4,
+#              six months x2, older x1). The default: a favourite from last year
+#              should not outrank what you ran an hour ago.
+#   frequency  count alone — what this shipped with
+#   recency    last-used alone, count ignored
+zstyle ':clicue:*' ranking frecency
+
 # ── size ─────────────────────────────────────────────────────────────────────
 # CAPS, not targets. The terminal is the hard limit and always wins: the card is
 # drawn at most COLUMNS-1 wide (zsh's redisplay wraps in the last column rather

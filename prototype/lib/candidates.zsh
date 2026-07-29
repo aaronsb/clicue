@@ -9,8 +9,65 @@
 # commands actually used, so keying and sorting the whole match set is wasted work.
 # Frequent candidates sort by count descending, the rest alphabetically.
 
+# ── ranking, as a configurable experiment ────────────────────────────────────
+#
+#   zstyle ':clicue:*' ranking frecency   # default: count, weighted by how recent
+#   zstyle ':clicue:*' ranking frequency  # count alone — what this shipped with
+#   zstyle ':clicue:*' ranking recency    # last-used alone, count ignored
+#
+# Configurable rather than decided, because which one is right is not knowable from
+# first principles — it is knowable from living with it. Every report that shaped this
+# tool so far came from its author using it and something feeling off, so ranking is
+# built to be switched mid-session (`clicue-rank recency`) and, more importantly, to be
+# *interrogated* when an order looks wrong (`clicue-rank why gi`). A ranking you cannot
+# question is one you can only have opinions about.
+#
+# Integer arithmetic and bucketed decay, deliberately: a continuous half-life needs
+# zsh/mathfunc, and this runs on the keystroke path. Buckets are Mozilla's frecency
+# shape — a handful of multipliers by age — which is well-trodden and easy to reason
+# about when a result surprises you.
+_clicue_rank_mode() {
+  zstyle -s ':clicue:*' ranking _clicue_rmode 2>/dev/null || _clicue_rmode=frecency
+  case $_clicue_rmode in
+    (frequency|recency|frecency) ;;
+    (*) _clicue_rmode=frecency ;;
+  esac
+  return 0
+}
+
+# Age multiplier for a last-seen epoch. Sets _clicue_rw.
+_clicue_recency_weight() {
+  local -i last=${1:-0}
+  _clicue_rw=1
+  (( last > 0 && ${EPOCHSECONDS:-0} > 0 )) || return 0
+  local -i days=$(( (EPOCHSECONDS - last) / 86400 ))
+  if   (( days <= 0 ));  then _clicue_rw=16
+  elif (( days <= 7 ));  then _clicue_rw=8
+  elif (( days <= 30 )); then _clicue_rw=4
+  elif (( days <= 180 )); then _clicue_rw=2
+  else _clicue_rw=1
+  fi
+  return 0
+}
+
+# Sets _clicue_rscore for one command name. Higher sorts first.
+_clicue_rank_score() {
+  local n=$1
+  local -i f=${CLICUE_FREQ[$n]:-0}
+  local -i last=${CLICUE_LAST[$n]:-0}
+  case $_clicue_rmode in
+    (frequency) _clicue_rscore=$f ;;
+    # Recency alone still needs a tiebreak for everything never dated: an undated
+    # command scores 0 and falls to the alphabetical tier, which is where it belongs.
+    (recency)   _clicue_rscore=$(( last / 86400 )) ;;
+    (*)         _clicue_recency_weight $last
+                _clicue_rscore=$(( f * _clicue_rw )) ;;
+  esac
+  return 0
+}
+
 # ── candidate generation (command position only, v1) ─────────────────────────
-# Sets reply=( name:kind ... ) ranked by frequency then name.
+# Sets reply=( name:kind ... ) ranked by the configured metric, then name.
 _clicue_candidates() {
   local pfx=$1
   local n
@@ -34,11 +91,14 @@ _clicue_candidates() {
   # commands actually used (~173 here), so keying/sorting the whole match set
   # is wasted work. Frequent ones sort by count desc; the rest go alphabetical.
   local -a freqd rest
-  local -i f
+  _clicue_rank_mode
   for n in ${(k)_clicue_kind}; do
-    f=${CLICUE_FREQ[$n]:-0}
-    if (( f )); then
-      freqd+=( "${(l:8::0:)$(( 99999999 - f ))}|$n" )   # zsh padding, no fork
+    _clicue_rank_score $n
+    if (( _clicue_rscore )); then
+      # Descending by score via an ascending string sort on its complement. Width 10,
+      # not 8: `frecency` multiplies a count by up to 16, so an 8-digit field overflowed
+      # for a heavily-used command and wrapped it to the BOTTOM of the card.
+      freqd+=( "${(l:10::0:)$(( 9999999999 - _clicue_rscore ))}|$n" )   # no fork
     else
       rest+=( $n )
     fi
@@ -252,4 +312,63 @@ _clicue_arg_candidates() {
   reply=( $hist ${(o)rest} )
   (( ${#reply} )) || return 1
   return 0
+}
+
+# ── clicue-rank: switch the metric, and ask it to justify itself ──────────────
+# `why` exists because every improvement to this tool so far started as "that order
+# feels wrong" and then cost a measurement to explain. This makes the measurement one
+# command, so the feeling can be checked immediately instead of remembered vaguely.
+clicue-rank() {
+  emulate -L zsh
+  _clicue_rank_mode
+  local sub=$1
+  case $sub in
+    (''|status)
+      # The corpus loads LAZILY, so a status that does not load it first reports on an
+      # empty one and warns about missing recency that is sitting on disk.
+      _clicue_load 2>/dev/null
+      print -r -- "ranking: ${_clicue_rmode}"
+      print -r -- "modes:   frequency  recency  frecency"
+      print -r -- "         clicue-rank <mode>        switch for this session"
+      print -r -- "         clicue-rank why <prefix>  show the scores behind an order"
+      # Both ways recency can be silently absent. A metric that quietly degrades to a
+      # different metric is design value 1's invisible fallback, so it is stated.
+      (( ${#CLICUE_LAST} )) || \
+        print -u2 -- "note: no recency data in the corpus — run 'clicue-cache rebuild'"
+      (( ${EPOCHSECONDS:-0} )) || \
+        print -u2 -- "note: zsh/datetime is not loaded, so ages are unknown and ${_clicue_rmode} behaves as frequency"
+      return 0 ;;
+    (frequency|recency|frecency)
+      zstyle ':clicue:*' ranking $sub
+      print -r -- "clicue: ranking is now ${sub}"
+      return 0 ;;
+    (why)
+      shift
+      local pfx=$1
+      if [[ -z $pfx ]]; then print -u2 -- "usage: clicue-rank why <prefix>"; return 1; fi
+      _clicue_load 2>/dev/null
+      local -a reply=()
+      local n
+      _clicue_candidates $pfx
+      print -r -- "ranking: ${_clicue_rmode}   prefix: ${pfx}   candidates: ${#reply}"
+      printf '%-28s %6s %7s %5s %10s\n' NAME COUNT AGE WEIGHT SCORE
+      local -i shown=0 f last days
+      for n in $reply; do
+        (( shown++ > 19 )) && { print -r -- "  … ${#reply} total"; break }
+        f=${CLICUE_FREQ[$n]:-0}
+        last=${CLICUE_LAST[$n]:-0}
+        _clicue_recency_weight $last
+        _clicue_rank_score $n
+        if (( last > 0 && ${EPOCHSECONDS:-0} > 0 )); then
+          days=$(( (EPOCHSECONDS - last) / 86400 ))
+          printf '%-28s %6d %6dd %5d %10d\n' $n $f $days $_clicue_rw $_clicue_rscore
+        else
+          printf '%-28s %6d %7s %5s %10d\n' $n $f '—' '—' $_clicue_rscore
+        fi
+      done
+      return 0 ;;
+    (*)
+      print -u2 -- "clicue-rank: unknown '${sub}' — try: frequency recency frecency why"
+      return 1 ;;
+  esac
 }

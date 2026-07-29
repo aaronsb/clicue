@@ -1104,6 +1104,125 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "ranking is an experiment you can interrogate"
+# Which metric is right is not knowable from first principles — it is knowable from
+# living with the tool, and every improvement here so far started as "that feels off".
+# So the metric is switchable and, more importantly, ASKABLE.
+source $DIR/lib/candidates.zsh 2>/dev/null
+# clicue.zsh loads this; the libs alone do not. Without it EPOCHSECONDS is unset and
+# frecency degrades to frequency — which is exactly the assertion below failing for a
+# reason that has nothing to do with the ranking code.
+zmodload zsh/datetime 2>/dev/null
+typeset -gA CLICUE_FREQ=( heavy 100 stale 100 fresh 4 ) CLICUE_LAST=()
+typeset -gi NOW=${EPOCHSECONDS:-1785300000}
+CLICUE_LAST=( heavy $NOW  stale $(( NOW - 400 * 86400 ))  fresh $NOW )
+
+zstyle ':clicue:*' ranking frequency
+_clicue_rank_mode
+if [[ $_clicue_rmode == frequency ]]; then
+  _clicue_rank_score stale; typeset -gi S1=$_clicue_rscore
+  _clicue_rank_score fresh; typeset -gi S2=$_clicue_rscore
+  if (( S1 > S2 )); then
+    ok "frequency ignores age — a stale favourite outranks a fresh occasional"
+  else
+    nope "frequency ignores age" "stale=$S1 fresh=$S2"
+  fi
+else
+  nope "the ranking mode is read from zstyle" "got $_clicue_rmode"
+fi
+
+# The blend is the point of the exercise: a count from a year ago should not beat
+# something used today just because the count is bigger.
+zstyle ':clicue:*' ranking frecency
+_clicue_rank_mode
+_clicue_rank_score heavy; typeset -gi H=$_clicue_rscore
+_clicue_rank_score stale; typeset -gi T=$_clicue_rscore
+if (( H > T )); then
+  ok "frecency separates two equal counts by how recent they are"
+else
+  nope "frecency separates two equal counts by how recent they are" "heavy=$H stale=$T"
+fi
+zstyle ':clicue:*' ranking recency
+_clicue_rank_mode
+_clicue_rank_score fresh; typeset -gi F=$_clicue_rscore
+_clicue_rank_score stale; typeset -gi T2=$_clicue_rscore
+if (( F > T2 )); then
+  ok "recency ignores count entirely"
+else
+  nope "recency ignores count entirely" "fresh=$F stale=$T2"
+fi
+# An unknown value must not silently rank by something nobody asked for.
+zstyle ':clicue:*' ranking nonsense
+_clicue_rank_mode
+if [[ $_clicue_rmode == frecency ]]; then
+  ok "an unrecognised mode falls back to the documented default"
+else
+  nope "an unrecognised mode falls back to the documented default" "got $_clicue_rmode"
+fi
+zstyle -d ':clicue:*' ranking
+
+# The sort key must be wide enough for the widest score the blend can produce, or a
+# heavily-used command wraps to the BOTTOM of the card — the failure is invisible in
+# the arithmetic and obvious on screen.
+cbody=$(awk '/^_clicue_candidates\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $cbody == *'(l:10::0:)'* && $cbody == *'9999999999 - _clicue_rscore'* ]]; then
+  ok "the sort key is wide enough for a weighted count"
+else
+  nope "the sort key is wide enough for a weighted count" \
+       "an 8-digit field overflows once a count is multiplied"
+fi
+# clicue-rank why is the instrument: a ranking you cannot question is one you can only
+# have opinions about.
+if (( ${+functions[clicue-rank]} )) && \
+   [[ $(functions clicue-rank) == *'(why)'* ]]; then
+  ok "clicue-rank can be asked to justify an order"
+else
+  nope "clicue-rank can be asked to justify an order"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "the ghost proposes the rest of a remembered line"
+# clicue took the ghost from zsh-autosuggestions — correctly, since two writers for one
+# purpose fight — but took over only HALF of its job: it proposed the next TOKEN and
+# never the rest of a remembered line. So "type a few characters, see the whole command
+# from last time, press →" stopped working. Reported as a regression, and it was one.
+source $DIR/lib/render.zsh 2>/dev/null
+rbody=$(awk '/^_clicue_ghost_stem\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $rbody == *_clicue_history_stem* && $rbody == *_clicue_cue_stem* ]]; then
+  ok "the proposal considers both a remembered line and the highlighted cue"
+else
+  nope "the proposal considers both a remembered line and the highlighted cue"
+fi
+# A cue the operator is actively navigating must not be overridden by history: they are
+# choosing it right now.
+if [[ $rbody == *'(( _clicue_engaged )) && _clicue_cue_stem'* ]]; then
+  ok "a cue being navigated outranks history"
+else
+  nope "a cue being navigated outranks history"
+fi
+hbody=$(awk '/^_clicue_history_stem\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+# $history, not the corpus: the corpus is built from HISTFILE and lags this session.
+if [[ $hbody == *'history[(r)'* ]]; then
+  ok "it reads the in-memory history, which includes this session"
+else
+  nope "it reads the in-memory history, which includes this session"
+fi
+# (b) quoting, or a buffer containing a glob character pattern-matches every other line.
+if [[ $hbody == *'${(b)LBUFFER}'* ]]; then
+  ok "the buffer is quoted so a glob in it cannot match unrelated lines"
+else
+  nope "the buffer is quoted so a glob in it cannot match unrelated lines"
+fi
+# One definition, two callers — the drawer and the legend must agree about whether a
+# ghost exists, or `→ accept` is advertised for a ghost that is not there.
+if [[ $(awk '/^_clicue_pre_redraw\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'if _clicue_ghost_stem; then'* ]] \
+   && [[ $(awk '/^_clicue_hint_segments\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *_clicue_ghost_stem* ]]; then
+  ok "the drawn ghost and the advertised ghost still come from one rule"
+else
+  nope "the drawn ghost and the advertised ghost still come from one rule"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "compsys decides membership; the cache decides presentation"
 # Design value 5 in flag position, which is where it had been quietly violated. The
 # cached flag set is a snapshot taken at ONE canonical position and replayed at every

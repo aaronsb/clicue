@@ -872,23 +872,69 @@ _clicue_hint_segments() {
   return 0
 }
 
-# The stem the highlighted cue would add to the line, empty when it would add nothing.
-#
-# ONE definition, two callers: clicue.zsh draws it as ghost text, and the legend above
-# advertises `→ accept` only when there is something to accept. Duplicating the rule
-# would let the legend disagree with the key, which is the failure this whole change
-# is about.
-_clicue_ghost_stem() {
-  typeset -g _clicue_gstem=''
+# The stem the highlighted CUE would add to the line. Sets _clicue_cstem.
+_clicue_cue_stem() {
+  typeset -g _clicue_cstem=''
   (( ${#_clicue_cands} )) || return 1
   (( _clicue_info )) && return 1
   local pick=${_clicue_cands[_clicue_sel]}
   if [[ -n $_clicue_pfx && $pick == ${_clicue_pfx}* ]]; then
-    _clicue_gstem=${pick#$_clicue_pfx}
+    _clicue_cstem=${pick#$_clicue_pfx}
   elif [[ -z $_clicue_pfx ]]; then
-    _clicue_gstem=$pick
+    _clicue_cstem=$pick
   fi
-  [[ -n $_clicue_gstem ]]
+  [[ -n $_clicue_cstem ]]
+}
+
+# The rest of the most recent command line that starts with what is typed.
+#
+# This is the proposal zsh-autosuggestions used to make. clicue took the ghost away from
+# it — correctly, by design value 0, since two writers for one purpose will fight — but
+# took over only HALF of the job: it proposed the next token and never the rest of a
+# remembered line. So "type a few characters, see the whole command from last time,
+# press →" stopped working, and it was reported as a regression because it is one.
+#
+# Read from the in-memory `$history`, NOT from the corpus. The corpus is built from
+# HISTFILE and is a snapshot; `$history` has the line run a minute ago in this very
+# session. zsh orders `$history` most-recent-first, so the FIRST match is the newest —
+# no scan and no sort.
+#
+# (b) quotes the buffer, or a line containing a glob character would turn the lookup
+# into a pattern match against every other line in history.
+_clicue_history_stem() {
+  typeset -g _clicue_hstem=''
+  [[ -n $LBUFFER ]] || return 1
+  local m=${history[(r)${(b)LBUFFER}*]}
+  [[ -n $m && $m != $LBUFFER ]] || return 1
+  _clicue_hstem=${m#$LBUFFER}
+  [[ -n $_clicue_hstem ]]
+}
+
+# What the ghost proposes, from whichever source has the best claim.
+#
+# ONE definition, two callers: clicue.zsh draws it, and the legend advertises `→ accept`
+# only when there is something to accept. Duplicating the rule would let the legend
+# disagree with the key.
+#
+# Precedence, and the reasoning for each:
+#   1. A cue the operator is actively navigating. They are choosing it right now, so
+#      nothing may override it — this is why the check is on _clicue_engaged.
+#   2. The most recent matching history line. This is the muscle memory, and it is
+#      usually more useful than one token: for `gi` it proposes `t status`, not `t`.
+#   3. The top-ranked cue, when history has nothing. Keeps the ghost useful on a command
+#      never run before.
+_clicue_ghost_stem() {
+  typeset -g _clicue_gstem=''
+  if (( _clicue_engaged )) && _clicue_cue_stem; then
+    _clicue_gstem=$_clicue_cstem; return 0
+  fi
+  if _clicue_history_stem; then
+    _clicue_gstem=$_clicue_hstem; return 0
+  fi
+  if _clicue_cue_stem; then
+    _clicue_gstem=$_clicue_cstem; return 0
+  fi
+  return 1
 }
 
 # Fit as many segments as the width allows. Always yields something: at absurd widths

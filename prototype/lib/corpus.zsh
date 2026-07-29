@@ -18,7 +18,7 @@ _clicue_load() {
   # association read with a subscript is an error, not an empty string — so the
   # card would break on a stale cache rather than degrade.
   typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN \
-              CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST
+              CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST CLICUE_LAST
   [[ -r $CLICUE_CACHE ]] || return 1
   source $CLICUE_CACHE
   # Compared AFTER sourcing, since the expected stamp is stored in the cache itself.
@@ -111,7 +111,7 @@ typeset -gi _clicue_gc_dropped=0
 
 _clicue_corpus_stamp() {
   local -a st st2
-  _clicue_stamp_now="v1"
+  _clicue_stamp_now="v2"   # v2 adds CLICUE_LAST (per-command recency)
   local hf=${HISTFILE:-$HOME/.zsh_history}
   if [[ -r $hf ]]; then
     # One `+` spec per call: a second is read as a FILENAME, so `+mtime +size` fails
