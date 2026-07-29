@@ -22,6 +22,12 @@ typeset -g  _clicue_cs_probe=''
 typeset -g  _clicue_cs_hassfx=''
 typeset -g  _clicue_cs_sfxval=''
 
+# ── alias resolution ─────────────────────────────────────────────────────────
+typeset -g  _clicue_realcmd=''       # what the command an operator typed actually runs
+# An ASSOCIATION. Assigning a string subscript to an undeclared name makes it a plain
+# array and fails with "invalid subscript range" — which is how this was caught.
+typeset -gA _clicue_flag_none=()     # resolved commands that document no options
+
 # Scan a compadd argument list. Extracted from the shadow below so the suite can
 # call it directly: it used to be inline, which forced the tests to carry a
 # hand-copied duplicate of the logic — a copy that would keep passing if the
@@ -228,7 +234,60 @@ _clicue_cs_build_gloss() {
 # key it appears to — the write lands somewhere the read never looks, silently,
 # and the map simply stays empty. That cost a debugging pass here; the corpus code
 # escapes it as \| for the same reason.
-_clicue_fkey() { _clicue_fk="${1}|${2}" }
+# Keys on the RESOLVED command, so `ls` and `lsd` share one cached flag set instead of
+# the alias getting an empty one of its own.
+_clicue_fkey() { _clicue_resolve_cmd $1; _clicue_fk="${_clicue_realcmd}|${2}" }
+
+# Resolve what an operator TYPED to the command whose options we should look up.
+#
+# `alias ls='lsd_with_hint'` means typing `ls -` should offer lsd's options, not ls's
+# — and with the alias in place there were no options at all, so the card simply did
+# not come back. The common cases are one hop and enormously worth following:
+# `alias g=git`, `alias k=kubectl`, `alias ll='ls -lah'`.
+#
+# Only the FIRST WORD of an expansion is taken: `ll='ls -lah'` resolves to `ls`, since
+# that is whose flag set applies. Follows at most a few hops with a seen-set, because
+# aliases can be mutually recursive and zsh does not stop you writing that.
+#
+# Stops at a function or a binary: a function's flags are not discoverable without
+# reading its body, and guessing from the body would be inventing options.
+_clicue_resolve_cmd() {
+  local c=$1
+
+  # DECLARED first, and it wins. An alias is a deliberate act, so the operator already
+  # knows what it is standing in for — asking them to say so is cheaper and more
+  # honest than inferring it:
+  #
+  #   zstyle ':clicue:emulates' ls  lsd
+  #   zstyle ':clicue:emulates' k   kubectl
+  #
+  # This is the only thing that reaches the case that motivated any of it. Following
+  # $aliases automatically gets `g=git` for free, but `ls='lsd_with_hint'` lands on a
+  # shell FUNCTION, and a function's options cannot be discovered without reading its
+  # body — which would be guessing. The mapping can express what resolution cannot.
+  local declared
+  if zstyle -s ':clicue:emulates' $c declared && [[ -n $declared ]]; then
+    # First word only, so `ls 'lsd --long'` still names the binary that documents the
+    # flags. Split into a real array first: ${${(z)x}[1]} indexes the first CHARACTER
+    # of the joined string, not the first word — it yielded `l` from `lsd`.
+    local -a dwords=( ${(z)declared} )
+    _clicue_realcmd=${dwords[1]}
+    return
+  fi
+  local -A seen=()
+  local -i hops=0
+  while (( hops < 5 )); do
+    (( ${+aliases[$c]} )) || break
+    (( ${+seen[$c]} )) && break
+    seen[$c]=1
+    local -a expansion=( ${(z)aliases[$c]} )
+    (( ${#expansion} )) || break
+    [[ ${expansion[1]} == $c ]] && break     # alias ls='ls --color' — self-referential
+    c=${expansion[1]}
+    (( hops++ ))
+  done
+  _clicue_realcmd=$c
+}
 
 _clicue_flag_stamp() {
   local p=${commands[$1]}
@@ -246,7 +305,8 @@ _clicue_flag_stamp() {
 }
 
 _clicue_flag_load() {
-  local cmd=$1
+  _clicue_resolve_cmd $1
+  local cmd=$_clicue_realcmd
   (( ${+_clicue_flag_have[$cmd]} )) && return 0
   local f=$_clicue_flagdir/${cmd}.zsh
   [[ -r $f ]] || return 1
@@ -307,7 +367,8 @@ _clicue_flag_save() {
 # is never visible. Deliberate and on demand: the alternative is guessing what a
 # flag means, and a wrong gloss is worse than none.
 _clicue_harvest_flags() {
-  local cmd=$1
+  _clicue_resolve_cmd $1
+  local cmd=$_clicue_realcmd
   (( ${+_clicue_flag_have[$cmd]} )) && return 0
   _clicue_flag_load $cmd && return 0
   _clicue_flag_have[$cmd]=1        # set first: one attempt per command per shell
@@ -365,6 +426,18 @@ _clicue_harvest_flags() {
   done
 
   _clicue_cs_words=( $swords ); _clicue_cs_descs=( $sdescs ); _clicue_cs_for=$sfor
+
+  # Did this command turn out to document nothing? Recorded, because "not fetched yet"
+  # and "fetched, and there is nothing" must not look the same on the card. An alias
+  # resolving to a shell FUNCTION lands here — a function's options are not
+  # discoverable without reading its body, and reading it would be guessing.
+  local -i found=0 fk_i
+  local fk_k
+  for fk_k in ${(k)_clicue_flag_desc}; do
+    [[ $fk_k == ${cmd}\|* ]] && { found=1; break }
+  done
+  (( found )) || _clicue_flag_none[$cmd]=1
+
   _clicue_flag_save $cmd
   return 0
 }

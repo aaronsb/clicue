@@ -42,6 +42,20 @@ zstyle ':clicue:*' enabled   yes
 # key. `rm -rf` measured top 1% here, `ps -aux` top 7%, `ls -lat` top 58%.
 zstyle ':clicue:*' familiar-percentile 0
 
+# ── aliases: say what they stand in for ──────────────────────────────────────
+# An alias is a deliberate act, so you already know what it emulates. Declaring it is
+# cheaper and more honest than having clicue infer it — and it is the only thing that
+# works when the alias points at a shell FUNCTION, whose options cannot be discovered
+# without reading its body.
+#
+#   alias ls='lsd_with_hint'   ->   clicue would resolve to the function and stop
+#   zstyle ':clicue:emulates' ls lsd   ->   and now it offers lsd's options
+#
+# Plain alias chains are followed automatically and need no declaration: `alias g=git`
+# already works. Declare the ones that wrap, parameterise, or point at a function.
+# Only the first word is used, so a value like 'lsd --long' still names the binary.
+zstyle ':clicue:emulates' ls  lsd
+
 # ── why these are fixed counts ───────────────────────────────────────────────
 # The card is always the same number of lines: tier1-rows + tier2-rows + 5.
 # ZLE paints a taller POSTDISPLAY over a shorter one instead of reflowing, so a

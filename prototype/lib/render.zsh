@@ -294,13 +294,28 @@ _clicue_render() {
   fi
 
   if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
-    reply=( $_clicue_cmd ); _clicue_tier1_n=1
+    # The placeholder spends the primary card on the command's OWN NAME, which is not
+    # a cue the operator can act on. It existed because a card with no rows at all
+    # would have rendered as an empty box; now that the explanation can open a card by
+    # itself, there is nothing left for it to do.
+    if (( ${#_clicue_explain_rows} )); then
+      reply=(); _clicue_tier1_n=0
+    else
+      reply=( $_clicue_cmd ); _clicue_tier1_n=1
+    fi
   elif [[ $_clicue_mode == arg ]]; then
     if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
       # Typing an option with no flag data yet. Rendering nothing here is what
       # reads as "this command cannot be completed" — the operator has no way to
       # know one Tab would fill the card. Say it instead.
-      if [[ $pfx == -* ]] && ! _clicue_flag_load $_clicue_cmd 2>/dev/null; then
+      # Also taken when a harvest already happened and found NOTHING — an alias
+      # resolving to a shell function lands there. Without the second test the cache
+      # file exists, the load succeeds, and the operator gets no card at all rather
+      # than being told there is nothing to show.
+      _clicue_resolve_cmd $_clicue_cmd
+      if [[ $pfx == -* ]] && \
+         { ! _clicue_flag_load $_clicue_cmd 2>/dev/null || \
+           (( ${+_clicue_flag_none[$_clicue_realcmd]} )) }; then
         _clicue_info=1; _clicue_coldflags=1; reply=( $_clicue_cmd )
         _clicue_tier1_n=1
         cands=( $reply )
@@ -362,9 +377,19 @@ _clicue_render() {
   # tier 1 and you are in the grid. Nothing to enter, nothing to remember.
   if (( _clicue_sel > t1n )); then _clicue_focus=2; else _clicue_focus=1; fi
 
+  # Read fresh on every render, so a resize takes effect on the next keystroke with
+  # no hook and no cost: zsh maintains COLUMNS on SIGWINCH itself.
+  #
+  # 80 is the width the layout is DESIGNED for and the one the assertions cover.
+  # Narrower still renders — it narrows the gloss column and drops hint segments
+  # rather than overflowing — but below about 50 there is not much left to show.
   local -i width=${COLUMNS:-80}
   (( width > 120 )) && width=120
-  (( width < 40 ))  && width=40
+  # A floor must never exceed the real terminal: drawing a 30-column card in a
+  # 24-column window wraps every line, which is worse than a cramped card. So the
+  # floor is a preference, and COLUMNS is the hard limit.
+  (( width < 30 )) && width=${COLUMNS:-30}
+  (( width < 12 )) && width=12
   local -i inner=$(( width - 2 ))
 
   # Total = 1 + r1 + 1 + r2 + hint + gloss + close. With no overflow the grid
@@ -408,7 +433,14 @@ _clicue_render() {
   for erow in $_clicue_explain_rows; do vis+=( ${erow%%$'\t'*} ); done
   for i in {1..${#vis}}; do (( ${#vis[i]} > namew )) && namew=${#vis[i]}; done
   (( namew > 28 )) && namew=28
-  (( namew < 10 )) && namew=10
+  # Capped against what is actually LEFT, not only against a constant. The name column
+  # and the gloss column both had floors, and at 32 columns their floors plus the
+  # overhead exceeded the terminal — so a row ran 6 columns past the border and
+  # wrapped. Names truncate instead; a clipped name is legible, a wrapped card is not.
+  local -i namemax=$(( inner - 7 - 10 ))
+  (( namemax < 6 )) && namemax=6
+  (( namew > namemax )) && namew=$namemax
+  (( namew < 10 && namew < namemax )) && namew=10
   # A list row is:
   #   border | marker(2) | space | gutter(1) | space | name(namew) | 2 spaces | gloss
   # so the non-gloss overhead is 1 + 2 + 1 + 1 + 1 + namew + 2 = namew + 8, and the
@@ -423,9 +455,15 @@ _clicue_render() {
   _clicue_explainrows=(); _clicue_footrow=0
   _clicue_matchlen=()
   local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
-  (( _clicue_info )) && { local REPLY; local -a dv
+  # The reduced hint is for a card with nothing to navigate. Gated on that being
+  # TRUE, not on info mode: an informational card that carries an explanation is
+  # navigable, and advertising only `dismiss` there actively misleads about what Tab
+  # and the arrows will do.
+  if (( _clicue_info )) && (( ! ${#_clicue_explain_rows} )); then
+    local REPLY; local -a dv
     zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
-    _clicue_keylabel ${dv[1]}; hint=" ${REPLY} dismiss " }
+    _clicue_keylabel ${dv[1]}; hint=" ${REPLY} dismiss "
+  fi
 
   # tier 1 first — nearest the prompt
   if (( t1n > 0 )); then
@@ -449,9 +487,19 @@ _clicue_render() {
     _clicue_emit_grid $(( t1n + 1 )) $total $r2 $inner
   fi
 
+  # Left-justified: it reads as a label on the box rather than as a right-aligned
+  # afterthought, and it is the end that gets dropped when space runs out, so the
+  # segments that survive stay in a stable position instead of sliding.
+  if (( ${#_clicue_hintparts} )) && [[ $hint == " ${(j: · :)_clicue_hintparts} " ]]; then
+    _clicue_fit_hint $inner
+    hint=$_clicue_hintfit
+  elif (( ${#hint} > inner )); then
+    # a caller-supplied hint (the info card's `Esc dismiss`) still must not overflow
+    hint=" ${hint[2,$(( inner - 1 ))]} "
+  fi
   local -i brule=$(( inner - ${#hint} ))
-  (( brule < 1 )) && brule=1
-  _clicue_lines+=( "${CLICUE_GLYPH[bl]}${(pl:$brule::$_clicue_hg:):-}${hint}${CLICUE_GLYPH[br]}" )
+  (( brule < 0 )) && brule=0
+  _clicue_lines+=( "${CLICUE_GLYPH[bl]}${hint}${(pl:$brule::$_clicue_hg:):-}${CLICUE_GLYPH[br]}" )
 
   # Gloss bar: the highlighted cue's description on its own line, so the grid
   # can stay dense without dropping descriptions.
@@ -549,12 +597,41 @@ _clicue_clear() {
 
 # Build the hint line once, from what is actually bound. Bindings vary by
 # terminal, so advertising the real ones is load-bearing rather than decorative.
+# The hint as SEGMENTS rather than one string, so a narrow terminal can drop the
+# least important from the right instead of overflowing the box. At 60 columns the
+# single-string version ran 2 columns past the border and wrapped, which mangles the
+# card — the one failure mode the whole fixed-height design exists to avoid.
+#
+# Ordered most-essential FIRST: dismiss is the escape hatch and must survive any
+# width, cycle is the primary gesture, the rest are discoverable by trying them.
 _clicue_build_hint() {
-  local REPLY lbl
+  local REPLY
   local -a av dv
   zstyle -a ':clicue:keys' accept  av || av=( '^I' )
   zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
   _clicue_keylabel ${av[1]}; local cyc=$REPLY
   _clicue_keylabel ${dv[1]}; local dis=$REPLY
-  typeset -g _clicue_hint=" ${cyc} cycle · ↑↓ browse · → accept · ⏎ insert · ${dis} dismiss "
+  typeset -ga _clicue_hintparts=(
+    "${cyc} cycle"
+    "↑↓ browse"
+    "→ accept"
+    "⏎ insert"
+    "${dis} dismiss"
+  )
+  typeset -g _clicue_hint=" ${(j: · :)_clicue_hintparts} "
+}
+
+# Fit as many segments as the width allows. Always yields something: at absurd widths
+# it falls back to the first segment truncated, never to an overflowing line.
+_clicue_fit_hint() {
+  local -i avail=$1
+  local try
+  local -i n=${#_clicue_hintparts}
+  while (( n > 0 )); do
+    try=" ${(j: · :)_clicue_hintparts[1,n]} "
+    (( ${#try} <= avail )) && { _clicue_hintfit=$try; return 0 }
+    (( n-- ))
+  done
+  _clicue_hintfit=" ${_clicue_hintparts[1][1,$(( avail > 2 ? avail - 2 : 1 ))]} "
+  return 0
 }

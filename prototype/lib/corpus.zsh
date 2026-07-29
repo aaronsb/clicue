@@ -40,7 +40,19 @@ _clicue_gloss() {
   if [[ $_clicue_mode == arg ]]; then
     if (( _clicue_info )); then
       if (( _clicue_coldflags )); then
-        _clicue_g='press Tab to load this command'"'"'s options'
+        # Three distinct states, and they must read differently. Showing the same
+        # "press Tab" line after a harvest that came back empty would send the
+        # operator round the same loop for ever.
+        _clicue_resolve_cmd $_clicue_cmd
+        if (( ${+_clicue_flag_none[$_clicue_realcmd]} )); then
+          if [[ $_clicue_realcmd != $_clicue_cmd ]]; then
+            _clicue_g="no documented options for ${_clicue_realcmd}"
+          else
+            _clicue_g='no documented options'
+          fi
+        else
+          _clicue_g='press Tab to load this command'"'"'s options'
+        fi
       else
         _clicue_g=${CLICUE_GLOSS[$name]:-'no recorded arguments'}
       fi
