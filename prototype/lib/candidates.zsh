@@ -112,19 +112,77 @@ _clicue_arg_candidates() {
     # So the whole option set is offered instead, and the card says the prefix matched
     # nothing rather than implying these are matches. The operator can then see what
     # they meant and arrow to it, which is the composition loop working as intended.
+    # ── membership is compsys's; presentation is ours ──────────────────────────
+    # Design value 5, finally honoured in flag position. When compsys has answered for
+    # THIS buffer, its words are the candidate set: it knows what is valid *here*, and
+    # the cached flag set cannot, because the cache is a snapshot taken at one canonical
+    # position and replayed at every other.
+    #
+    # [MEASURED] the gap is real and visible. `rm -r -`: compsys offers 14 options and
+    # omits `-r`, which is already on the line; the cache re-offered it. `man -a -`:
+    # same for `-a`. `tar -c -`: compsys offers NOTHING, because the cluster letters are
+    # mutually exclusive and one is chosen; the cache knows no such thing. Repeatability
+    # is the same question from the other side — some flags legitimately repeat, and
+    # only the `_arguments` spec knows which, so subtracting typed flags ourselves would
+    # have been a heuristic that is wrong in the other direction.
+    #
+    # The cache is not discarded: it still decides GROUPING and LABELS, which is what it
+    # was built for and what compsys does not provide. And before the first Tab it is
+    # still the membership source — a provisional answer with no fork, which is the
+    # whole reason the card has content in flag position at all. Compsys's answer
+    # supersedes it the moment it exists.
+    local -a src=()
+    local -i from_compsys=0
+    if [[ $_clicue_cs_for == $LBUFFER ]] && (( ${#_clicue_cs_words} )); then
+      from_compsys=1
+      for n in $_clicue_cs_words; do
+        # normalise a dash the completer consumed into IPREFIX, exactly as the raw
+        # pass below does — one representation, or dedup and insertion disagree
+        [[ $n != -* && $_clicue_cs_iprefix == -* ]] && n="${_clicue_cs_iprefix}${n}"
+        src+=( $n )
+      done
+    else
+      for fk in ${(ko)_clicue_flag_desc}; do
+        [[ $fk == ${keypfx}\|* ]] || continue
+        src+=( ${fk#*\|} )
+      done
+      # On the CACHE path only, do not re-offer an option already on the line. This is
+      # clicue's own bookkeeping over its own provisional list, not an override of
+      # compsys — compsys has not spoken, or has declined to. `tar -c -` is the case:
+      # compsys offers nothing (the cluster letters are exclusive and one is chosen),
+      # and the cache offered all seven back including the `-c` already typed.
+      #
+      # Everything except the FIRST token (the command) and the LAST one (the word under
+      # the cursor). Excluding the last would remove the very candidate being typed —
+      # `rm -r` must still offer `-r`.
+      #
+      # Known limit, and the reason this stays on the fallback path: a cluster is one
+      # token, so `rm -rf -` subtracts `-rf` and not `-r` and `-f`. Compsys gets that
+      # right, and its answer supersedes this the moment Tab produces one.
+      local tok
+      local -i ti
+      for (( ti = 2; ti < ${#_clicue_words}; ti++ )); do
+        tok=${_clicue_words[ti]}
+        [[ $tok == -* ]] && seen[$tok]=1
+      done
+    fi
+    # Sorted so the SHORT spelling of a pair is met first and becomes the row.
+    src=( ${(o)src} )
+
     for (( pass = 1; pass <= 2; pass++ )); do
       if (( pass == 2 )); then
         (( ${#hist} || ${#rest} )) && break
         [[ $pfx == -* ]] || break
+        # Compsys already answered for this buffer, so an empty result is its DECISION,
+        # not a stale cache. Overriding it with the full option set would be clicue
+        # deciding — precisely what this section stops doing.
+        (( from_compsys )) && break
         fpfx=''
         _clicue_argnomatch=1
       else
         fpfx=$pfx
       fi
-    # Sorted so the SHORT spelling of a pair is met first and becomes the row.
-    for fk in ${(ko)_clicue_flag_desc}; do
-      [[ $fk == ${keypfx}\|* ]] || continue
-      n=${fk#*\|}
+    for n in $src; do
       (( ${+seen[$n]} )) && continue
       # One row per FLAG, not per spelling. `-d` and `--dir` describing the same
       # thing were two rows saying the same sentence twice, which is what the
@@ -163,6 +221,22 @@ _clicue_arg_candidates() {
   # catch a harvest that has gone stale as the operator keeps typing — and it must
   # subtract whatever compsys consumed, or a dash-consuming completer loses every
   # candidate it offered.
+  # A prefix filter is NOT enough to tell a stale harvest from a live one. It catches
+  # the operator narrowing within the same command, which is what it was written for,
+  # and misses the case that matters: a harvest taken for a DIFFERENT command whose
+  # flags all start with a dash and therefore all pass. Measured — probing `rm -r -`
+  # and then `tar -c -` in one shell put `--no-preserve-root` and `--one-file-system`
+  # on tar's card.
+  #
+  # The harvest is usable only if the buffer it was taken for is a prefix of the current
+  # one: `git ` still answers for `git co`, and nothing answers for a line that no
+  # longer starts the same way.
+  if ! [[ -n $_clicue_cs_for && $LBUFFER == ${_clicue_cs_for}* ]]; then
+    typeset -g _clicue_arg_t1=${#hist}
+    reply=( $hist ${(o)rest} )
+    (( ${#reply} )) || return 1
+    return 0
+  fi
   local rel=$pfx
   if [[ -n $_clicue_cs_iprefix && $pfx == ${_clicue_cs_iprefix}* ]]; then
     rel=${pfx#$_clicue_cs_iprefix}

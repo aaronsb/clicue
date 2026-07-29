@@ -1104,8 +1104,46 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-section "flag position is never handed back"
+section "compsys decides membership; the cache decides presentation"
+# Design value 5 in flag position, which is where it had been quietly violated. The
+# cached flag set is a snapshot taken at ONE canonical position and replayed at every
+# other, so it cannot know what is valid HERE.
+#
+# [MEASURED] the gap was visible: `rm -r -` re-offered `-r` (already on the line) where
+# compsys omits it; `man -a -` re-offered `-a`; `tar -c -` offered all seven cluster
+# letters where compsys offers none, because one is chosen and they are exclusive.
 body=$(awk '/^_clicue_arg_candidates\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'_clicue_cs_for == $LBUFFER'* && $body == *'from_compsys=1'* ]]; then
+  ok "when compsys has answered for this buffer, its words are the candidate set"
+else
+  nope "when compsys has answered for this buffer, its words are the candidate set"
+fi
+# An empty answer from compsys is a DECISION, not a stale cache: overriding it with the
+# whole option set would be clicue deciding, which is the thing being stopped.
+if [[ $body == *'(( from_compsys )) && break'* ]]; then
+  ok "an empty answer from compsys is respected rather than overridden"
+else
+  nope "an empty answer from compsys is respected rather than overridden"
+fi
+# Repeatability is why the typed-flag subtraction is confined to the cache path: some
+# flags legitimately repeat and only the _arguments spec knows which.
+if [[ $body == *'ti < ${#_clicue_words}'* && $body == *'ti = 2'* ]]; then
+  ok "the cache path drops options already on the line, first and last token excepted"
+else
+  nope "the cache path drops options already on the line, first and last token excepted"
+fi
+# A prefix filter cannot tell a stale harvest from a live one — every flag of every
+# command starts with a dash, so they all pass it. Measured: probing `rm -r -` then
+# `tar -c -` in one shell put `--no-preserve-root` on tar's card.
+if [[ $body == *'$LBUFFER == ${_clicue_cs_for}*'* ]]; then
+  ok "a harvest is only reused for a buffer it could still be answering"
+else
+  nope "a harvest is only reused for a buffer it could still be answering" \
+       "a dash-prefixed flag set from another command passes a prefix filter intact"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "flag position is never handed back"
 # The flag map is keyed on the ALIAS-RESOLVED path, because _clicue_flag_load and
 # _clicue_fkey both resolve before touching it. Scanning it with the TYPED path meant
 # every aliased command matched nothing: `ls` emulates `lsd`, the cache held `lsd|...`,

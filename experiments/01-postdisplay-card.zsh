@@ -9,7 +9,7 @@
 #     zsh-syntax-highlighting and oh-my-posh in the same live shell?
 #
 # Usage (in a scratch shell, NOT your login shell):
-#   source /home/aaron/Projects/app/clicue/experiments/01-postdisplay-card.zsh
+#   source /path/to/clicue/experiments/01-postdisplay-card.zsh
 # then just type. Ctrl-C to clear. `clicue-exp-off` to unhook.
 
 emulate -L zsh

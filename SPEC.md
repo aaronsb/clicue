@@ -510,6 +510,45 @@ Two structural corrections came with it:
   reach the ends. All of them go through `_clicue_move`, inheriting its clamping and
   its delegate-when-not-navigating contract rather than restating either.
 
+### Resolved: compsys decides membership, the cache decides presentation **[MEASURED]**
+
+Design value 5 said compsys decides and clicue shows. In flag position clicue had been
+deciding, and the gap was measurable:
+
+| position | compsys offers | the cache offered |
+|---|---|---|
+| `rm -r -` | 14, omitting `-r` | 12, **including `-r`** |
+| `man -a -` | — | 40, **including `-a`** |
+| `tar -c -` | **0** — the cluster letters are exclusive and one is chosen | 7, all of them |
+
+The cached flag set is a snapshot taken at ONE canonical position (`cmd -`) and replayed
+at every other, so it is position-blind by construction. It cannot know that `-r` is
+already given, and it cannot know that `tar -c` forecloses `-x`.
+
+Resolution, and it did not require giving up the cache:
+
+- **When compsys has answered for this buffer, its words ARE the candidate set.** The
+  cache still supplies grouping and labels — what it was built for, and what compsys
+  does not provide. Membership and presentation were conflated; separating them is the
+  whole fix.
+- **An empty answer is a decision, not a stale cache.** `tar -c -` gets no options
+  because none are valid, and overriding that with the full set would be clicue deciding
+  again. Distinguished from the typo case (`cat -l1`, where compsys was never asked a
+  question it could answer) by whether compsys has spoken for this exact buffer.
+- **Before the first Tab the cache is still the membership source** — a provisional
+  answer with no fork, which is the only reason the card has content in flag position at
+  all. It is superseded the moment compsys speaks. On that path only, options already on
+  the line are subtracted; repeatability is precisely why that subtraction does not
+  belong on the compsys path, since only the `_arguments` spec knows which flags may
+  repeat.
+
+**A prefix filter cannot tell a stale harvest from a live one.** The old guard filtered
+compsys's words by the typed prefix and called that staleness protection. Every flag of
+every command starts with a dash, so they all pass: probing `rm -r -` and then `tar -c -`
+in one shell put `--no-preserve-root` and `--one-file-system` on tar's card. A harvest is
+now reused only for a buffer the harvested one is a prefix of — `git ` still answers for
+`git co`, and nothing answers for a line that no longer starts the same way.
+
 ### Delegating in flag position rewrites the line **[MEASURED]**
 
 `cat -l1<Tab>`. No cat option starts with `-l1`, so the candidate set was empty, the
