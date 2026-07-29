@@ -32,6 +32,16 @@ typeset -ga SRCS=( $DIR/clicue.zsh $DIR/lib/*.zsh(N) )
 typeset -g SRC=$SCRATCH/all.zsh
 cat $SRCS > $SRC
 
+# Modules whose functions are pure enough to call DIRECTLY. This is what the split
+# bought: sections below exercise the real implementations instead of carrying
+# hand-copied duplicates that would keep passing after the originals drifted.
+# 2>/dev/null because compsys.zsh ends in a `zle -C`, which needs an interactive
+# shell — the function definitions above it land regardless.
+typeset -g CLICUE_DIR=$DIR
+source $DIR/lib/theme.zsh 2>/dev/null
+source $DIR/lib/compsys.zsh 2>/dev/null
+source $DIR/lib/stats.zsh 2>/dev/null
+
 ok()   { (( PASS++ )); print -r -- "  ok   $1" }
 nope() { (( FAIL++ )); print -r -- "  FAIL $1"; [[ -n $2 ]] && print -r -- "         $2" }
 
@@ -228,31 +238,14 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "compadd shadow: option scanning"
-# The shadow's job is to find the -d display array and to notice a caller-supplied
-# -O/-A. Both are pure string work, so both are testable without compsys.
-
+# Calls the REAL _clicue_cs_scan_opts. This section used to carry a hand-copied
+# duplicate of the scan, which asserted that the COPY behaved — worthless the moment
+# the original drifted. The scan was hoisted out of the compadd shadow into its own
+# function so this could stop being a mirror; that is the whole reason it is a
+# function.
 _scan() {
-  # mirrors the scan in _clicue_capture_fn
-  local -a dsp
-  local -i i
-  local a dv probe=''
-  for (( i = 1; i <= $#; i++ )); do
-    a=${@[i]}
-    [[ $a == - || $a == -- ]] && break
-    [[ $a == -?* && $a != --* ]] || continue
-    case ${a[-1]} in
-      (d) if [[ -z $dv ]]; then
-            dv=${@[i+1]}
-            if [[ -n ${(P)dv+x} ]]; then
-              dsp=( "${(@P)dv}" )
-            else
-              dsp=( ${=${${dv#\(}%\)}} )
-            fi
-          fi ;;
-      (O|A) probe=1 ;;
-    esac
-  done
-  print -r -- "${#dsp}|${probe:-0}"
+  _clicue_cs_scan_opts "$@"
+  print -r -- "${#_clicue_cs_dsp}|${_clicue_cs_probe:-0}"
 }
 
 typeset -a disp_by_name=( 'add -- add file contents' 'rm -- remove files' )
@@ -286,6 +279,23 @@ typeset -a disp_by_name=( 'add -- add file contents' 'rm -- remove files' )
 [[ $(_scan -J -default- - -ld -x) == '0|0' ]] \
   && ok "candidate word '-ld' after the separator is not read as -d" \
   || nope "candidate word '-ld' after the separator is not read as -d" "got $(_scan -J -default- - -ld -x)"
+
+# ── the suffix declaration, which decides how an inserted match ends ────────
+_clicue_cs_scan_opts -J -default- -a words
+[[ -z $_clicue_cs_hassfx ]] \
+  && ok "no -S is reported as no declaration" \
+  || nope "no -S is reported as no declaration" "an ordinary match must get a trailing space"
+
+_clicue_cs_scan_opts -q -S '' -a words
+[[ -n $_clicue_cs_hassfx && -z $_clicue_cs_sfxval ]] \
+  && ok "-S '' is a declaration with an empty value, not an absence" \
+  || nope "-S '' is a declaration with an empty value, not an absence" \
+       "tar's clusterable letters depend on telling these apart"
+
+_clicue_cs_scan_opts -qS= -M 'r:|=*' -a words
+[[ -n $_clicue_cs_hassfx && $_clicue_cs_sfxval == '=' ]] \
+  && ok "clustered -qS= yields the suffix '='" \
+  || nope "clustered -qS= yields the suffix '='" "got [$_clicue_cs_sfxval]"
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "compadd shadow: placeholder alignment"
@@ -393,47 +403,134 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "gloss unpacking"
-# compdescribe packs display strings as "<word><padding>-- <description>".
-# clicue renders name and gloss as separate columns, so the prefix must come off.
-
-_unpack() {
-  local w=$1 d=$2 sep=${3:---}
-  if [[ $d == ${w}* ]]; then
-    d=${d#$w}
-    d=${d##[[:space:]]#}
-    [[ $d == ${sep}(|[[:space:]]*) ]] && d=${d#$sep}
-    d=${d##[[:space:]]#}
-  fi
-  d=${d%%[[:space:]]#}
-  print -r -- $d
-}
+# Calls the REAL _clicue_unpack_desc. Also previously a mirror.
+#
+# compdescribe packs display strings as "<word><padding>-- <description>" so the list
+# lines up in COMPSYS's single column. clicue renders name and gloss as separate
+# columns, so the prefix has to come off or every row shows its name twice.
+_unpack() { _clicue_unpack_desc "$1" "$2"; print -r -- $_clicue_ud }
 
 typeset -a cases=(
   'stripspace|stripspace -- filter out empty lines|filter out empty lines'
   'add|add          -- Add file contents to the index|Add file contents to the index'
   'patch-id|patch-id -- compute unique ID for patches|compute unique ID for patches'
 )
-
 for c in $cases; do
   word=${c%%|*}; disp=${${c#*|}%%|*}; want=${c##*|}
   got=$(_unpack $word $disp)
   [[ $got == $want ]] && ok "unpack [$word]" || nope "unpack [$word]" "want [$want] got [$got]"
 done
 
-# A description that does NOT repeat its word must pass through untouched.
 got=$(_unpack foo 'some description')
 [[ $got == 'some description' ]] && ok "unprefixed description passes through" \
   || nope "unprefixed description passes through" "got [$got]"
 
-# A description that legitimately begins with a dash must survive.
 got=$(_unpack foo 'foo -- --bare is implied')
 [[ $got == '--bare is implied' ]] && ok "description starting with -- survives" \
   || nope "description starting with -- survives" "got [$got]"
 
-# A word that is a prefix of its own description must not be over-stripped.
 got=$(_unpack rm 'rm -- remove files')
 [[ $got == 'remove files' ]] && ok "short word does not over-strip" \
   || nope "short word does not over-strip" "got [$got]"
+
+# Trailing padding must go: compdescribe right-pads display strings to a column
+# width, so an unstripped gloss carries invisible spaces into the card and throws
+# off every width calculation downstream.
+got=$(_unpack foo 'foo -- padded to a column   ')
+[[ $got == 'padded to a column' ]] && ok "trailing padding is stripped" \
+  || nope "trailing padding is stripped" "got [$got]"
+
+# ── spelling groups and cluster decomposition, on the real functions ────────
+# A synthetic flag set, so these assert behaviour rather than this machine's rm(1).
+typeset -gA _clicue_flag_desc=() _clicue_flag_alt=()
+_clicue_fkey demo -r; _clicue_flag_desc[$_clicue_fk]='recurse'
+_clicue_fkey demo -R; _clicue_flag_desc[$_clicue_fk]='recurse'
+_clicue_fkey demo --recursive; _clicue_flag_desc[$_clicue_fk]='recurse'
+_clicue_fkey demo -f; _clicue_flag_desc[$_clicue_fk]='force'
+_clicue_fkey demo --force; _clicue_flag_desc[$_clicue_fk]='force'
+# Keys built with _clicue_fkey, the same builder the implementation uses. Writing
+# the subscript literally did NOT produce a matching key, so every lookup returned
+# nothing and the labels silently fell back to the bare flag — which is exactly the
+# failure mode _clicue_fkey exists to prevent, reproduced in the test.
+_clicue_fkey demo -r;          _clicue_flag_alt[$_clicue_fk]='-R --recursive'
+_clicue_fkey demo -R;          _clicue_flag_alt[$_clicue_fk]='-r --recursive'
+_clicue_fkey demo --recursive; _clicue_flag_alt[$_clicue_fk]='-r -R'
+_clicue_fkey demo -f;          _clicue_flag_alt[$_clicue_fk]='--force'
+_clicue_fkey demo --force;     _clicue_flag_alt[$_clicue_fk]='-f'
+
+_clicue_flag_label demo -r
+[[ $_clicue_fl == '-R, -r, --recursive' || $_clicue_fl == '-r, -R, --recursive' ]] \
+  && ok "a three-spelling group labels short forms before long ($_clicue_fl)" \
+  || nope "a three-spelling group labels short forms before long" "got [$_clicue_fl]"
+
+_clicue_flag_label demo --force
+[[ $_clicue_fl == '-f, --force' ]] \
+  && ok "reaching a group by its long spelling still shows the short one first" \
+  || nope "reaching a group by its long spelling still shows the short one first" "got [$_clicue_fl]"
+
+_clicue_flag_canon demo --recursive
+[[ $_clicue_fc == '-r' || $_clicue_fc == '-R' ]] \
+  && ok "the canonical spelling is a short form ($_clicue_fc)" \
+  || nope "the canonical spelling is a short form" "got [$_clicue_fc] — clusters need the short one"
+
+if _clicue_decompose demo -rf; then
+  [[ ${(j: :)_clicue_parts} == '-r -f' ]] \
+    && ok "a cluster of documented letters decomposes" \
+    || nope "a cluster of documented letters decomposes" "got [${(j: :)_clicue_parts}]"
+else
+  nope "a cluster of documented letters decomposes" "refused -rf"
+fi
+
+if _clicue_decompose demo -rz; then
+  nope "a cluster with an undocumented letter is refused" "accepted -rz — z is not a flag here"
+else
+  ok "a cluster with an undocumented letter is refused"
+fi
+
+if _clicue_decompose demo -r; then
+  nope "a single flag is not treated as a cluster" "decomposed -r"
+else
+  ok "a single flag is not treated as a cluster"
+fi
+
+# ── the familiarity gate, on the real function ──────────────────────────────
+typeset -gA CLICUE_INVOKE=() CLICUE_INVOKE_PCT=() CLICUE_INVOKE_LAST=()
+# key built in a variable: an unquoted space in a subscript is a bad pattern, the
+# same class of trap as the unquoted pipe that once made every write vanish
+typeset -g ikey='demo -rf'
+CLICUE_INVOKE[$ikey]=31
+CLICUE_INVOKE_PCT[$ikey]=1
+_clicue_words=( demo -rf )
+zstyle -d ':clicue:*' familiar-percentile 2>/dev/null
+if _clicue_is_familiar; then
+  nope "the familiarity gate is off unless configured" "collapsed with no threshold set"
+else
+  ok "the familiarity gate is off unless configured"
+fi
+zstyle ':clicue:*' familiar-percentile 5
+if _clicue_is_familiar; then
+  ok "a top-1% invocation is familiar at a 5% threshold"
+else
+  nope "a top-1% invocation is familiar at a 5% threshold"
+fi
+CLICUE_INVOKE_PCT[$ikey]=58
+if _clicue_is_familiar; then
+  nope "a top-58% invocation is not familiar at 5%" "collapsed something rarely run"
+else
+  ok "a top-58% invocation is not familiar at 5%"
+fi
+zstyle -d ':clicue:*' familiar-percentile
+
+_clicue_invocation_note
+[[ $_clicue_invnote == *'31×'* && $_clicue_invnote == *'58%'* ]] \
+  && ok "the invocation note carries the count and the percentile" \
+  || nope "the invocation note carries the count and the percentile" "got [$_clicue_invnote]"
+
+_clicue_words=( demo --unseen )
+_clicue_invocation_note
+[[ -z $_clicue_invnote ]] \
+  && ok "an invocation with no history yields no note" \
+  || nope "an invocation with no history yields no note" "got [$_clicue_invnote]"
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "silent-failure guards"

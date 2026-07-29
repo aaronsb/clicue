@@ -16,6 +16,61 @@
 # current word starts, and how a match ends. This file records those decisions and
 # hands them on. It does not re-derive them.
 
+# ── outputs of the option scan ───────────────────────────────────────────────
+typeset -ga _clicue_cs_dsp=()
+typeset -g  _clicue_cs_probe=''
+typeset -g  _clicue_cs_hassfx=''
+typeset -g  _clicue_cs_sfxval=''
+
+# Scan a compadd argument list. Extracted from the shadow below so the suite can
+# call it directly: it used to be inline, which forced the tests to carry a
+# hand-copied duplicate of the logic — a copy that would keep passing if the
+# original drifted, which is the one thing a test must never do.
+#
+# Sets, for the caller:
+#   _clicue_cs_dsp     the -d display array, resolved by name or literal
+#   _clicue_cs_probe   the caller supplied its own -O/-A: this call is its internal
+#                      probe, not a presentation
+#   _clicue_cs_hassfx  a -S was given at all — distinct from -S with an empty value
+#   _clicue_cs_sfxval  that value
+_clicue_cs_scan_opts() {
+  _clicue_cs_dsp=(); _clicue_cs_probe=''; _clicue_cs_hassfx=''; _clicue_cs_sfxval=''
+  local -i i
+  local a dv
+  for (( i = 1; i <= $#; i++ )); do
+    a=${@[i]}
+    # words follow the separator; stop before a candidate that merely LOOKS like an
+    # option (completing `-ld` would otherwise read as `-d`)
+    [[ $a == - || $a == -- ]] && break
+    [[ $a == -?* && $a != --* ]] || continue
+    case ${a[-1]} in
+      # -d takes the next word as its argument, so it is necessarily last in its
+      # cluster. It arrives CLUSTERED in practice: compdescribe emits `-ld`, which an
+      # exact `== -d` test silently never matches. [MEASURED]
+      (d) if [[ -z $dv ]]; then
+            dv=${@[i+1]}
+            if [[ -n ${(P)dv+x} ]]; then
+              _clicue_cs_dsp=( "${(@P)dv}" )
+            else
+              _clicue_cs_dsp=( ${=${${dv#\(}%\)}} )   # literal (a b c) form
+            fi
+          fi ;;
+      # A caller-supplied -O/-A means this call is the completer talking to ITSELF —
+      # a "does anything match / how wide is the longest" probe. Two -O arrays do not
+      # both fill: the FIRST wins [MEASURED], so passing ours would silently steal
+      # theirs. _git computes its description column width from exactly such an
+      # array, so stealing it corrupts the layout we are trying to read.
+      (O|A) _clicue_cs_probe=1 ;;
+      # -S takes an argument, so it is last in its cluster; it may also arrive with
+      # the value attached, as -S=
+      (S) _clicue_cs_hassfx=1; _clicue_cs_sfxval=${@[i+1]} ;;
+    esac
+    [[ $a == -[A-Za-z]#S?* && $a != --* ]] && \
+      { _clicue_cs_hassfx=1; _clicue_cs_sfxval=${a#*S} }
+  done
+  return 0
+}
+
 _clicue_capture_fn() {
   compstate[insert]=''
   compstate[list]=''
@@ -29,44 +84,14 @@ _clicue_capture_fn() {
     # discarded for not starting with a dash — and Tab fell through to zsh, which
     # inserted `A` and opened its own menu. [MEASURED]
     _clicue_cs_iprefix=$IPREFIX
-    local -a w dsp
+    local -a w
     local -i i
-    local a dv probe='' sfx='' hassfx=''
-    # Scan the options for two things: the -d display array, and whether the
-    # CALLER already supplied -O/-A of its own.
-    for (( i = 1; i <= $#; i++ )); do
-      a=${@[i]}
-      # words follow the separator; stop before a candidate that merely LOOKS
-      # like an option (completing `-ld` would otherwise read as `-d`)
-      [[ $a == - || $a == -- ]] && break
-      [[ $a == -?* && $a != --* ]] || continue
-      case ${a[-1]} in
-        # -d takes the next word as its argument, so it is necessarily last in
-        # its cluster. It arrives clustered in practice: compdescribe emits
-        # `-ld`, which an exact `== -d` test silently never matches. [MEASURED]
-        (d) if [[ -z $dv ]]; then
-              dv=${@[i+1]}
-              if [[ -n ${(P)dv+x} ]]; then
-                dsp=( "${(@P)dv}" )
-              else
-                dsp=( ${=${${dv#\(}%\)}} )   # literal (a b c) form
-              fi
-            fi ;;
-        # A caller-supplied -O/-A means this call is the completer talking to
-        # ITSELF — a "does anything match / how wide is the longest" probe, not
-        # a presentation. Two -O arrays do not both fill: the FIRST wins
-        # [MEASURED], so passing ours would silently steal theirs. _git computes
-        # its description column width from exactly such an array, so stealing
-        # it corrupts the layout of the descriptions we are trying to read.
-        # Leave the call untouched and harvest nothing; the same words come back
-        # described in the grouped calls that follow.
-        (O|A) probe=1 ;;
-        # -S takes an argument, so it is last in its cluster; it may also arrive
-        # with the value attached, as -S=
-        (S) hassfx=1; sfx=${@[i+1]} ;;
-      esac
-      [[ $a == -[A-Za-z]#S?* && $a != --* ]] && { hassfx=1; sfx=${a#*S} }
-    done
+    local a
+    _clicue_cs_scan_opts "$@"
+    local -a dsp=( "${(@)_clicue_cs_dsp}" )
+    local probe=$_clicue_cs_probe
+    local sfx=$_clicue_cs_sfxval
+    local hassfx=$_clicue_cs_hassfx
 
     if [[ -n $probe ]]; then
       [[ -n $CLICUE_DEBUG ]] && print -r -- "    compadd PROBE (caller -O/-A) skipped" >> $CLICUE_DEBUG
