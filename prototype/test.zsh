@@ -16,7 +16,7 @@ setopt extended_glob
 typeset -g DIR=${0:A:h}
 typeset -gi PASS=0 FAIL=0
 # Declared once, up front. Re-declaring a set `local` in zsh prints its value.
-typeset -g k w d c body want got word disp leak bad harvest f
+typeset -g k w d c body want got word disp leak bad harvest f srcout
 typeset -g SCRATCH=${TMPDIR:-/tmp}/clicue-test.$$
 mkdir -p $SCRATCH
 trap "rm -rf $SCRATCH" EXIT
@@ -120,6 +120,45 @@ for w in _clicue_cs_build_gloss _clicue_gloss _clicue_render; do
     nope "helper $w is defined"
   fi
 done
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "registration order"
+# The grep-based check above proves a function exists SOMEWHERE in the sources. This
+# one sources the tree for real and asks zsh whether every registered widget's
+# handler is actually defined afterwards — which catches an orphaned lib file, a
+# renamed function, or a typo in a registration, none of which grep-over-concatenation
+# can distinguish from a working tree.
+#
+# What it deliberately does NOT claim: that a registration must follow its
+# definition. `zle -C` accepts an undefined name and the widget still works provided
+# the function is defined before the first keypress, which sourcing guarantees. An
+# earlier version of this section asserted the ordering and was vacuous — the mutation
+# test that was supposed to confirm it instead disproved the premise.
+typeset -g srcout=$SCRATCH/src.out
+zsh -f -c "
+  source $DIR/clicue.zsh >/dev/null 2>&1
+  for n in \${(k)functions}; do print -r -- \$n; done
+" >$srcout 2>&1
+if [[ -s $srcout ]]; then
+  ok "the tree sources and defines functions"
+else
+  nope "the tree sources and defines functions" "nothing defined — the load failed"
+fi
+
+# every zle -N name, and every zle -C handler (its THIRD argument)
+typeset -a handlers
+handlers=( ${(f)"$(grep -ho '^[[:space:]]*zle -N [A-Za-z_][A-Za-z0-9_]*' $SRCS | awk '{print $3}')"} )
+handlers+=( ${(f)"$(grep -ho '^[[:space:]]*zle -C [A-Za-z_][A-Za-z0-9_]*[[:space:]][a-z-]*[[:space:]][A-Za-z_][A-Za-z0-9_]*' $SRCS | awk '{print $5}')"} )
+bad=''
+for w in $handlers; do
+  grep -qx "$w" $srcout || bad="$bad $w"
+done
+if [[ -z $bad ]]; then
+  ok "all ${#handlers} widget handlers are defined after a real load"
+else
+  nope "all ${#handlers} widget handlers are defined after a real load" \
+       "undefined:$bad — a keypress on these would say 'no such shell function'"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "bind guards"
