@@ -213,6 +213,8 @@ _clicue_accept() {
   # again for the completion they asked for the first time. Forking to populate a
   # card that is not on screen is work with no reader.
   if (( _clicue_standdown )); then
+    [[ -n $CLICUE_DEBUG ]] && \
+      print -r -- "TAB delegate=standdown to=[${_clicue_orig_tab:-expand-or-complete}] buf=[$LBUFFER]" >> $CLICUE_DEBUG
     zle ${_clicue_orig_tab:-expand-or-complete}
     return 0
   fi
@@ -298,6 +300,12 @@ _clicue_accept() {
     zle -R
     return 0
   fi
+  # Reaching here means the card had nothing to advance through, so Tab belongs to
+  # whoever owned it. Logged because "Tab showed me the plain completion listing" is
+  # indistinguishable from "clicue is broken" without knowing WHICH condition sent it
+  # here — and the conditions are all invisible state.
+  [[ -n $CLICUE_DEBUG ]] && \
+    print -r -- "TAB delegate=nothing-to-advance vis=$_clicue_visible info=$_clicue_info cands=${#_clicue_cands} mode=$_clicue_mode to=[${_clicue_orig_tab:-expand-or-complete}] buf=[$LBUFFER]" >> $CLICUE_DEBUG
   zle ${_clicue_orig_tab:-expand-or-complete}
 }
 

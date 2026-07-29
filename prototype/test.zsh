@@ -1101,6 +1101,49 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "the split must not wipe what the modules captured"
+# keys.zsh captures state while it is being SOURCED — what owned Tab, which keys we
+# bound. A `typeset -g name=''` further down clicue.zsh then silently resets it, and
+# the consumers all have plausible fallbacks, so nothing errors and nothing looks
+# wrong. Both of these were being wiped since the modularisation:
+#
+#   _clicue_orig_tab   measured EMPTY in a real shell, so every Tab delegation ran a
+#                      hardcoded `expand-or-complete` instead of the operator's actual
+#                      completer (`complete-word` here) — visible only as the wrong
+#                      completion UI appearing, which reads as clicue misbehaving.
+#   _clicue_bound      reset after _clicue_bindall filled it, so clicue-off left every
+#                      key from that pass bound.
+typeset -gi SRCLINE=$(grep -n 'source \${CLICUE_DIR}' $DIR/clicue.zsh | head -1 | cut -d: -f1)
+if (( SRCLINE > 0 )); then
+  ok "clicue.zsh sources its modules at a known point"
+else
+  nope "clicue.zsh sources its modules at a known point"
+fi
+
+# Names the modules populate during `source`. Targeted rather than inferred: two of
+# these are filled by a FUNCTION CALLED at source time, which no static scan of
+# top-level assignments would see.
+typeset -ga CAPTURED=( _clicue_orig_tab _clicue_bound _clicue_arrow_orig _clicue_hintparts
+                       _clicue_key_accept _clicue_key_dismiss _clicue_key_maximize )
+typeset -gi WIPED=0
+typeset -g WIPEDNAME=''
+# `capname`, not `n`: line 306 declares `local -i n` at script scope, so assigning a
+# NAME to it silently yields 0 and this scan matched nothing while reporting success.
+# Exactly the variable-reuse trap this suite has recorded twice before.
+typeset -g capname late
+for capname in $CAPTURED; do
+  # a declaration of this name AFTER the source block resets it
+  late=$(awk -v n="$capname" -v s=$SRCLINE 'NR>s && $0 ~ ("^typeset .*[ \t]" n "=") {print NR}' $DIR/clicue.zsh)
+  if [[ -n $late ]]; then WIPED=1; WIPEDNAME="$capname (line $late)"; break; fi
+done
+if (( ! WIPED )); then
+  ok "nothing captured during source is re-declared after it"
+else
+  nope "nothing captured during source is re-declared after it" \
+       "$WIPEDNAME — the capture is silently discarded and the fallback hides it"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "the grid is clamped, and traversable because of it"
 # `s` offers 460-odd commands. The grid used to take everything the terminal could
 # spare, so it grew to 68 rows in an 88-row window and the 83-line card shoved the

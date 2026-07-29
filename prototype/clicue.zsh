@@ -40,6 +40,24 @@ autoload -Uz add-zle-hook-widget
 
 typeset -g CLICUE_DIR=${0:A:h}
 
+# ── state the modules WRITE while being sourced ──────────────────────────────
+# Declared before the source lines, not after, because keys.zsh captures into these
+# at source time and a `typeset -g name=''` further down this file silently wipes what
+# it captured. Both of these were being wiped, and it went unnoticed because the
+# consumers have plausible fallbacks:
+#
+#   _clicue_orig_tab   what owned Tab before us. Empty means every delegation went to
+#                      a hardcoded `expand-or-complete` instead of whatever the
+#                      operator actually had bound — silently the wrong completer.
+#   _clicue_bound      which keys we bound, so clicue-off can unbind them. Reset after
+#                      _clicue_bindall had filled it, so `clicue-off` left every key
+#                      from that pass still bound.
+#
+# The general rule for the split: a name assigned during `source` must be declared
+# BEFORE the source, or not declared here at all. [MEASURED]
+typeset -g  _clicue_orig_tab=''
+typeset -ga _clicue_bound=()
+
 # ── theme layer ──────────────────────────────────────────────────────────────
 # Sourced before anything that renders. Colours AND box glyphs live in a theme
 # file: a glyph the operator's font cannot draw looks like a malfunction, so the
@@ -77,7 +95,6 @@ typeset -ga _clicue_cands=()
 # inserted; only the label differs, so `-d, --dir` can be one row without making
 # the insertion ambiguous.
 typeset -gA _clicue_disp=()
-typeset -g  _clicue_orig_tab=''
 typeset -g  _clicue_mode=cmd       # cmd | arg
 typeset -g  _clicue_cmd=''         # in arg mode, the command being argued
 typeset -g  _clicue_pfx=''         # the partial word being completed
@@ -399,8 +416,6 @@ clicue-off() {
 # Plain Up/Down are deliberately never bound. They are load-bearing muscle
 # memory (history-substring-search here) and taking them would be exactly the
 # capture this project argues against.
-
-typeset -ga _clicue_bound=()
 
 
 
