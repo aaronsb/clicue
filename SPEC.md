@@ -60,8 +60,8 @@ file. That is the part that took decades and must not be rebuilt.
 The corpus earns its keep even where compsys already carries a gloss: compsys
 descriptions are completion metadata, not documentation — terse and inconsistent
 by design — and they will never cover locally authored tools. **[MEASURED]** 43 of
-the 172 commands actually used on this machine have no gloss from any upstream
-source.
+the ~170 commands actually used on the machine this was measured on have no gloss
+from any upstream source.
 
 ### 0. Do not integrate with a mechanism that never agreed to be integrated with
 
@@ -872,16 +872,20 @@ Per-token counts answer "which flags do I use". The whole invocation answers
 "do I know this by heart", keyed on the command plus its flag tokens only — paths
 and values are data, and including them would make every invocation unique.
 
+Measured on one developer's history. Figures are given as shape rather than as a
+transcript — the distribution is what the design rests on, and a verbatim table of what
+somebody runs and how often is a profile of them, not evidence.
+
 | Invocation | count | percentile | last |
 |---|---|---|---|
-| `rm -rf` | 31 | top 1% | today |
-| `ps -aux` | 5 | top 7% | 6d ago |
-| `curl -fsSL` | 3 | top 12% | 46d ago |
-| `ls -lat` | 1 | top 58% | today |
+| a habitual destructive one | ~30 | top 1% | today |
+| a habitual inspection one | ~5 | top 7% | days ago |
+| a download idiom | ~3 | top 12% | weeks ago |
+| a listing typed once | 1 | top 58% | today |
 
-176 distinct invocations across 1,695 history lines. Counts are deflated by
-`HIST_IGNORE_ALL_DUPS` — `rm -rf` reaching 31 *despite* dedup is the signal, not
-the number. Recency is free: `EXTENDED_HISTORY` already stamps every line, so
+Order ~180 distinct invocations across order ~1,700 history lines. Counts are deflated
+by `HIST_IGNORE_ALL_DUPS` — the top invocation reaching ~30 *despite* dedup is the
+signal, not the number. Recency is free: `EXTENDED_HISTORY` already stamps every line, so
 nothing is instrumented here either.
 
 The familiarity gate defaults to **off**. A card that quietly shows less than it
@@ -923,7 +927,7 @@ The raw gap is mostly things nobody types — `pw-encplay`,
 
 Cross-referenced against real shell history:
 
-- **172** distinct commands ever used
+- order **~170** distinct commands ever used
 - **43** of those have no description from any source
 
 Those 43 are locally authored tools no upstream corpus will ever cover: `kg`,
