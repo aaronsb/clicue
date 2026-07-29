@@ -14,6 +14,15 @@ zstyle ':clicue:*' tier1-rows 10      # cues in the primary card; overflow -> gr
 zstyle ':clicue:*' tier2-rows auto    # grid fills the terminal; or a fixed count
 zstyle ':clicue:*' enabled   yes
 
+# ── size ─────────────────────────────────────────────────────────────────────
+# Both are CAPS, not targets. The terminal is the hard limit and always wins: the
+# card is drawn at most COLUMNS-1 wide (zsh's redisplay wraps in the last column
+# rather than writing it) and never taller than the window can hold. Raising these
+# past the terminal cannot make the card bigger — it is measured against the real
+# COLUMNS and LINES on every render, so a resize takes effect on the next keystroke.
+zstyle ':clicue:*' max-width 120      # past ~120 a row of text is harder to scan
+zstyle ':clicue:*' max-lines 14       # total card height, borders included
+
 # ── argument position: what you typed, explained ─────────────────────────────
 # Past the command name, the second box stops browsing commands — that question
 # is already answered — and enumerates the properties on the line instead:

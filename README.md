@@ -95,8 +95,16 @@ zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
 ## Status
 
 Working prototype, in daily use by its author. Not packaged, not versioned, no
-install script. `prototype/test.zsh` holds 160 in-process assertions; run it after
+install script. `prototype/test.zsh` holds 167 in-process assertions; run it after
 any change.
+
+The card sizes itself to the terminal on every render — no SIGWINCH hook, since zsh
+maintains `COLUMNS` and `LINES` already, so a resize takes effect on the next
+keystroke. `max-width` (default 120) and `max-lines` (default 14) are *caps*: the
+terminal is the hard limit and always wins, and the card is drawn at most
+`COLUMNS-1` wide because zsh's redisplay wraps in the last column rather than
+writing it. Resizing while a card is already on screen leaves the terminal to reflow
+the old one until you next press a key.
 
 - [SPEC.md](SPEC.md) — design values and every measured finding, tagged by
   confidence. Read design values 0, 1 and 5 first; they were learned expensively and

@@ -449,6 +449,39 @@ grow or shrink in response to state**, so every layout decision must be made
 against a fixed budget rather than to fit content. It stacks with the
 single-tenancy finding below.
 
+### The card may be COLUMNS-1 wide, never COLUMNS **[MEASURED]**
+
+zsh's redisplay **will not write into the last column** — it wraps there instead. A
+card drawn exactly `$COLUMNS` wide therefore has the closing border of *every* row
+pushed onto a line of its own, which reads as a total malfunction rather than as a
+cramped card. In a real 104-column pty the 104-character top border came back as 103
+characters on one row with the 104th on the next.
+
+This is the same class as the constant-height constraint above and stacks with it: the
+budget must be measured against the terminal, and the terminal always wins.
+
+Two things kept it hidden, both worth remembering:
+
+- **A cap accidentally supplied the missing column.** `max-width` clamps to 120, and
+  the author's terminal is 121 columns — leaving exactly one column of slack. Every
+  width that was *not* clamped was broken. A constant that makes one configuration
+  correct by coincidence will make every other configuration wrong silently.
+- **A preferred minimum was allowed to win last.** `(( width < 30 )) && width=$COLUMNS`
+  was written to stop a floor exceeding the terminal, and did the opposite. A clamp
+  ordering rule follows: *the terminal's limit is applied after every preference, never
+  before.* The height had the identical latent defect — a fixed 14 lines in a 12-row
+  window — fixed the same way.
+
+**The assertions could not have caught this, and the method matters more than the fix.**
+They measure the rendered string, which is 104 characters whether that is correct or
+catastrophic; the length that mangles the display and the length that fits are the same
+number. Only a *screen* distinguishes them. It was diagnosed by running zsh on a pty of
+a known size and replaying the captured output through a minimal ANSI grid interpreter
+— which is the same lesson recorded in the method note: rendering the card and looking
+at it catches what inspecting state cannot. The regression assertions consequently test
+the **budget** (`_clicue_layout_width`, `_clicue_layout_height` — extracted for exactly
+this reason) rather than the output.
+
 ### POSTDISPLAY is single-tenant **[MEASURED]** — the strongest evidence yet
 
 The composability contract works for two of the three shared resources ZLE

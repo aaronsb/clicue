@@ -987,6 +987,89 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "the card never exceeds the terminal"
+# The bug this section exists for: the card was drawn COLUMNS wide, and zsh's
+# redisplay refuses to write the last column — it wraps there — so every row's closing
+# border was pushed onto a line of its own and the card read as a total malfunction.
+#
+# It survived a long time for two reasons worth keeping in front of whoever reads this:
+# the max-width cap happened to supply the missing column at a 121-column terminal, and
+# the old assertions measured the RENDERED STRING, which is 104 characters whether that
+# is correct or catastrophic. The invariant is about the BUDGET, so that is what is
+# asserted here. A rendered-length assertion cannot express it.
+source $DIR/lib/render.zsh 2>/dev/null
+zstyle -d ':clicue:*' max-width 2>/dev/null
+zstyle -d ':clicue:*' max-lines 2>/dev/null
+
+typeset -gi WFAIL=0 WBAD=0
+for c in 20 32 40 47 60 65 80 100 104 110 120 121 122 200; do
+  _clicue_layout_width $c
+  (( _clicue_lw <= c - 1 )) || { WFAIL=1; WBAD=$c; break }
+done
+if (( ! WFAIL )); then
+  ok "the width is at most COLUMNS-1 at every width tried"
+else
+  nope "the width is at most COLUMNS-1 at every width tried" \
+       "COLUMNS=$WBAD gave ${_clicue_lw}; zsh wraps in the last column"
+fi
+
+# The floor must not be honoured by drawing wider than the window. That is how the
+# original bug got in: `(( width < 30 )) && width=$COLUMNS` let a preference win LAST.
+_clicue_layout_width 20
+if (( _clicue_lw == 19 )); then
+  ok "a narrow terminal gets a narrow card, not a preferred minimum"
+else
+  nope "a narrow terminal gets a narrow card, not a preferred minimum" "got ${_clicue_lw}"
+fi
+
+# A cap, not a target.
+_clicue_layout_width 200
+if (( _clicue_lw == 120 )); then
+  ok "a very wide terminal caps rather than following the window"
+else
+  nope "a very wide terminal caps rather than following the window" "got ${_clicue_lw}"
+fi
+zstyle ':clicue:*' max-width 90
+_clicue_layout_width 200
+if (( _clicue_lw == 90 )); then
+  ok "the cap is configurable"
+else
+  nope "the cap is configurable" "got ${_clicue_lw}"
+fi
+zstyle -d ':clicue:*' max-width
+
+# Height is the same discipline, and had the same latent defect: a fixed 14 lines in a
+# 12-row window draws the card off the bottom of the screen.
+typeset -gi HTFAIL=0 HTBAD=0
+for r in 11 14 20 24 30 44 88; do
+  _clicue_layout_height $r
+  (( _clicue_lh <= r - 6 || _clicue_lh == 5 )) || { HTFAIL=1; HTBAD=$r; break }
+done
+if (( ! HTFAIL )); then
+  ok "the height is bounded by the window at every height tried"
+else
+  nope "the height is bounded by the window at every height tried" \
+       "LINES=$HTBAD gave ${_clicue_lh}"
+fi
+_clicue_layout_height 88
+if (( _clicue_lh == 14 )); then
+  ok "a tall terminal still gets the configured height, not the whole window"
+else
+  nope "a tall terminal still gets the configured height, not the whole window" "got ${_clicue_lh}"
+fi
+
+# Both are read from the terminal on EVERY render — that is what makes a resize take
+# effect on the next keystroke with no SIGWINCH hook. Inline arithmetic in the render
+# body is what drifted; the named units are what the assertions above can reach.
+body=$(awk '/^_clicue_render\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'_clicue_layout_width'* && $body == *'_clicue_layout_height'* ]] \
+   && [[ $body != *'width=${COLUMNS'* ]]; then
+  ok "the render body asks for the layout budget instead of recomputing it"
+else
+  nope "the render body asks for the layout budget instead of recomputing it"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "the legend names the next action"
 # Calls the REAL _clicue_hint_segments and _clicue_fit_hint. The point of the change
 # is that the legend is DERIVED from state, so a test that hand-built the expected

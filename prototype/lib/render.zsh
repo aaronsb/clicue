@@ -249,6 +249,60 @@ _clicue_emit_grid() {
   return 0
 }
 
+# ── how big may the card be ──────────────────────────────────────────────────
+# Both read the terminal fresh on every render, so a resize takes effect on the next
+# keystroke with no hook and no cost: zsh maintains COLUMNS and LINES on SIGWINCH
+# itself. Extracted from _clicue_render so the one rule that matters in each — never
+# larger than the terminal — is testable by arithmetic. It cannot be tested by
+# measuring the rendered card, because the length that mangles the display and the
+# length that fits are the SAME NUMBER; only a screen can tell them apart, and the
+# assertions do not have one.
+
+# The card's outer width, in columns.
+_clicue_layout_width() {
+  local -i cols=${1:-${COLUMNS:-80}}
+  # COLUMNS **minus one**, never COLUMNS. zsh's redisplay will not write into the last
+  # column — it wraps there instead — so a card exactly COLUMNS wide has the closing
+  # border of EVERY row pushed onto a line of its own. That is the display mangling the
+  # fixed-height design exists to prevent, and it reads as a total malfunction rather
+  # than as a cramped card.
+  #
+  # [MEASURED] in a real 104-column pty the 104-character top border came back as 103
+  # characters on one row with the 104th on the next. The off-by-one survived a long
+  # time because the max-width cap happened to supply the missing column at the
+  # author's usual 121-column terminal: 121 capped to 120 leaves exactly one column of
+  # slack. Every width that was NOT capped was broken.
+  typeset -gi _clicue_lw=$(( cols - 1 ))
+  # A cap, not a target: past about 120 columns a row of text is harder to scan than a
+  # narrower one, so the card stops growing rather than following a very wide window.
+  local -i maxwidth=120
+  zstyle -s ':clicue:*' max-width maxwidth 2>/dev/null || maxwidth=120
+  (( _clicue_lw > maxwidth )) && _clicue_lw=$maxwidth
+  # No floor above the terminal. A preferred minimum can only ever be honoured by
+  # drawing wider than the window, which wraps every line — worse than cramped. 12 is
+  # not a preference but the arithmetic limit: below it `inner` goes non-positive.
+  (( _clicue_lw < 12 )) && _clicue_lw=12
+  return 0
+}
+
+# The card's total height, in rows.
+_clicue_layout_height() {
+  local -i rows=${1:-${LINES:-24}}
+  typeset -gi _clicue_lh=14
+  zstyle -s ':clicue:*' max-lines _clicue_lh 2>/dev/null || _clicue_lh=14
+  (( _clicue_lh < 8 )) && _clicue_lh=8
+  # Never taller than the window can hold. Same discipline as the width, and the same
+  # latent defect: a preferred minimum that exceeds the terminal is not a minimum, it
+  # is a card drawn off the bottom of the screen. Applied AFTER the floor — a floor
+  # allowed to win last is exactly how the width bug survived. The reserve covers the
+  # prompt's own rows and the line being typed.
+  local -i vfit=$(( rows - 6 ))
+  (( _clicue_lh > vfit )) && _clicue_lh=$vfit
+  # 1 border + one row + hint + gloss + close. Not a preference; the emitter's floor.
+  (( _clicue_lh < 5 )) && _clicue_lh=5
+  return 0
+}
+
 _clicue_render() {
   local pfx=$1
   local -a cands
@@ -374,9 +428,8 @@ _clicue_render() {
   #
   # both tiers:  1 border + r1 + 1 border + r2 + hint + gloss + close = r1+r2+5
   # tier 1 only: 1 border + r1 + hint + gloss + close                 = r1+4
-  local -i maxlines=14
-  zstyle -s ':clicue:*' max-lines maxlines 2>/dev/null || maxlines=14
-  (( maxlines < 8 )) && maxlines=8
+  _clicue_layout_height
+  local -i maxlines=$_clicue_lh
   local -i total=${#cands}
   # primary card holds a fixed number of cues; the overflow becomes the grid
   local -i t1rows=10
@@ -402,19 +455,8 @@ _clicue_render() {
   # tier 1 and you are in the grid. Nothing to enter, nothing to remember.
   if (( _clicue_sel > t1n )); then _clicue_focus=2; else _clicue_focus=1; fi
 
-  # Read fresh on every render, so a resize takes effect on the next keystroke with
-  # no hook and no cost: zsh maintains COLUMNS on SIGWINCH itself.
-  #
-  # 80 is the width the layout is DESIGNED for and the one the assertions cover.
-  # Narrower still renders — it narrows the gloss column and drops hint segments
-  # rather than overflowing — but below about 50 there is not much left to show.
-  local -i width=${COLUMNS:-80}
-  (( width > 120 )) && width=120
-  # A floor must never exceed the real terminal: drawing a 30-column card in a
-  # 24-column window wraps every line, which is worse than a cramped card. So the
-  # floor is a preference, and COLUMNS is the hard limit.
-  (( width < 30 )) && width=${COLUMNS:-30}
-  (( width < 12 )) && width=12
+  _clicue_layout_width
+  local -i width=$_clicue_lw
   local -i inner=$(( width - 2 ))
 
   # Total = 1 + r1 + 1 + r2 + hint + gloss + close. With no overflow the grid
