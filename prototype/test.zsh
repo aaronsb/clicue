@@ -961,6 +961,32 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "the two lower boxes coexist"
+# They were alternatives, and the explanation won — so `ffmpeg -i x -ab` showed 10 of
+# 185 options and NO browser, while the 1/185 counter said plainly there were 175 more.
+# The boxes answer different questions and one must not silently displace the other.
+body=$(awk '/^_clicue_render\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body != *'elif (( total > t1n ))'* ]]; then
+  ok "the grid is not an else-branch of the explanation"
+else
+  nope "the grid is not an else-branch of the explanation" \
+       "an explanation would hide the overflow browser"
+fi
+# The explanation is bounded and allocated first; the grid takes the remainder.
+if [[ $body == *'ecap'* && $body == *'gr='* ]]; then
+  ok "the explanation is bounded and the grid takes what remains"
+else
+  nope "the explanation is bounded and the grid takes what remains"
+fi
+# Budgeted against rows tier 1 will ACTUALLY draw: its allocation absorbs the grid's
+# share when there is no overflow, which starved the explanation to one row.
+if [[ $body == *'maxlines - t1n - 5'* ]]; then
+  ok "the explanation budget uses actual tier-1 rows, not its allocation"
+else
+  nope "the explanation budget uses actual tier-1 rows, not its allocation"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "cache lifecycle"
 # The corpus went a long time with NO staleness check: _clicue_load sourced whatever
 # was on disk and trusted it, so it rotted as history grew and packages changed.

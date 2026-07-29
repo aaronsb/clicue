@@ -473,18 +473,38 @@ _clicue_render() {
   # In argument position the second box explains the line instead of browsing
   # commands. The grid stays for command position, where "what else is named like
   # this" is still the live question.
+  # BOTH, when both apply. These used to be alternatives, and the explanation won —
+  # so `ffmpeg -i potato.file -ab` showed 10 of 185 options and no browser at all,
+  # even though the 1/185 counter said plainly that there were 175 more. The two boxes
+  # answer different questions ("what else could go here" and "what have I already
+  # said"), and having one silently displace the other loses the answer the operator
+  # was reaching for.
+  #
+  # The explanation is BOUNDED and small — one row per flag already typed — so it is
+  # allocated first and the grid takes whatever remains. Order on screen puts the grid
+  # directly under tier 1, because the selection flows continuously from one into the
+  # other; the explanation sits below both, as context rather than as a picker.
+  local -i er=0
   if (( ${#_clicue_explain_rows} )); then
-    # Its own allocation. r2 is the CANDIDATE overflow, which is zero when a
-    # complete invocation leaves nothing further to propose — and a zero
-    # allocation drew the box header with no rows under it.
-    local -i er=${#_clicue_explain_rows}
-    (( er > r2 )) && (( r2 > 0 )) && er=$r2
-    (( er > maxlines - 6 )) && er=$(( maxlines - 6 ))
-    (( er < 1 )) && er=1
+    er=${#_clicue_explain_rows}
+    # Budgeted against the rows tier 1 will ACTUALLY draw, not against its
+    # allocation: with no overflow r1 absorbs the grid's whole share, which starved
+    # the explanation down to a single row and hid the rest of what was typed.
+    local -i ecap=$(( maxlines - t1n - 5 ))
+    (( ecap < 1 )) && ecap=1
+    (( er > ecap )) && er=$ecap
+  fi
+
+  local -i gr=$(( r2 - er ))
+  (( er > 0 )) && (( gr-- ))          # the explanation's own border
+  (( gr < 0 )) && gr=0
+
+  if (( total > t1n && gr > 0 )); then
+    _clicue_emit_grid $(( t1n + 1 )) $total $gr $inner
+  fi
+  if (( er > 0 )); then
     _clicue_invocation_note
     _clicue_emit_explain $er $namew $inner "$_clicue_invnote"
-  elif (( total > t1n )); then
-    _clicue_emit_grid $(( t1n + 1 )) $total $r2 $inner
   fi
 
   # Left-justified: it reads as a label on the box rather than as a right-aligned
