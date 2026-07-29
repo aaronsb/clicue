@@ -836,13 +836,18 @@ done
 # Every theme must define every key the renderer reads, or the card renders with a
 # region_highlight spec zsh rejects and no indication why.
 typeset -ga TKEYS=( border accent text gloss selbg seltext hint ghost badge badgefg )
-typeset -ga GKEYS=( tl tr bl br jl jr v h sel nosel )
+typeset -ga GKEYS=( tl tr bl br jl jr v h sel nosel
+                    k_alias k_function k_builtin k_system k_history k_flag k_sub k_none )
 # Sourced, not grepped: a theme may put several pairs on one line, and what matters
 # is the resulting association, not the formatting.
 for f in $THEMES; do
+  # Through the real loader, which merges over the ASCII base. Sourcing the theme in
+  # isolation was stricter than the design: a theme that only changes the accent
+  # colour is legal, and the renderer reads the MERGED result.
   bad=$(zsh -fc "
-    typeset -gA CLICUE_THEME=() CLICUE_GLYPH=()
-    source $f
+    CLICUE_DIR=$DIR
+    source $DIR/lib/theme.zsh
+    _clicue_theme_load ${f:t:r} >/dev/null 2>&1
     for k in $TKEYS; do [[ -n \${CLICUE_THEME[\$k]} ]] || print -n \" THEME[\$k]\"; done
     for k in $GKEYS; do (( \${+CLICUE_GLYPH[\$k]} )) || print -n \" GLYPH[\$k]\"; done
   " 2>/dev/null)
@@ -860,6 +865,25 @@ for f in $THEMES; do
     ok "theme ${f:t:r} keeps sel and nosel the same width"
   else
     nope "theme ${f:t:r} keeps sel and nosel the same width" "got $body"
+  fi
+done
+
+# Every gutter glyph must be exactly ONE column. A two-column codepoint — anything
+# East Asian Wide, or an emoji — shifts the whole row, and the span offsets are
+# computed in columns.
+for f in $THEMES; do
+  bad=$(zsh -fc "
+    CLICUE_DIR=$DIR
+    source $DIR/lib/theme.zsh
+    _clicue_theme_load ${f:t:r} >/dev/null 2>&1
+    for k in k_alias k_function k_builtin k_system k_history k_flag k_sub k_none; do
+      (( \${#CLICUE_GLYPH[\$k]} == 1 )) || print -n \" \$k\"
+    done
+  " 2>/dev/null)
+  if [[ -z $bad ]]; then
+    ok "theme ${f:t:r} gutter glyphs are one column each"
+  else
+    nope "theme ${f:t:r} gutter glyphs are one column each" "wrong width:$bad"
   fi
 done
 
@@ -897,6 +921,43 @@ if [[ -z $bad ]]; then
   ok "glyph padding uses the (p) flag so the parameter expands"
 else
   nope "glyph padding uses the (p) flag so the parameter expands" "$bad"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "the source gutter and matched-prefix emphasis"
+
+body=$(awk '/^_clicue_kind_glyph\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ -n $body ]]; then
+  ok "a kind-to-glyph resolver exists"
+else
+  nope "a kind-to-glyph resolver exists"
+fi
+# An unknown kind must fall through to a blank, not to a guess. A wrong source marker
+# is a confident lie about where a suggestion came from.
+if [[ $body == *'k_none'* ]]; then
+  ok "an unknown kind gets a blank gutter rather than a guessed glyph"
+else
+  nope "an unknown kind gets a blank gutter rather than a guessed glyph"
+fi
+
+# matchlen must be an ASSOCIATION: a plain array with sparse integer indices fills
+# the gaps with empty strings, so ${+arr[n]} is true for every index up to the highest
+# set, and the prefix would be emphasised on rows that do not match it.
+if grep -q 'typeset -gA _clicue_matchlen' $SRC; then
+  ok "matched-prefix lengths are held in an association, not a sparse array"
+else
+  nope "matched-prefix lengths are held in an association, not a sparse array" \
+       "a sparse array reports every index as set"
+fi
+
+# Emphasis applies only when the DISPLAYED name starts with what was typed: a grouped
+# label reached by its long spelling does not, and bolding its first characters would
+# emphasise the wrong thing.
+body=$(awk '/^_clicue_emit_box\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'$name == ${_clicue_pfx}*'* ]]; then
+  ok "emphasis is gated on the displayed name matching the prefix"
+else
+  nope "emphasis is gated on the displayed name matching the prefix"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

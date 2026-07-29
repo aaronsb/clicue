@@ -16,6 +16,29 @@
 # would mangle itself.
 
 # $1 lo  $2 hi  $3 window-top  $4 label  $5 maxrows  $6 namew  $7 glossw  $8 inner
+# Which gutter glyph names this cue's origin.
+#
+# Only kinds that can be determined RELIABLY get a glyph. Guessing here would be
+# worse than a blank column: a wrong source marker is a confident lie about where a
+# suggestion came from, and the operator has no way to check it.
+_clicue_kind_glyph() {
+  local ent=$1 kind=$2
+  if [[ $kind == arg ]]; then
+    # in argument position the useful distinction is option vs subcommand
+    if [[ $ent == -* ]]; then _clicue_kg=${CLICUE_GLYPH[k_flag]}
+    else                     _clicue_kg=${CLICUE_GLYPH[k_sub]}
+    fi
+    return
+  fi
+  case $kind in
+    (alias)    _clicue_kg=${CLICUE_GLYPH[k_alias]} ;;
+    (function) _clicue_kg=${CLICUE_GLYPH[k_function]} ;;
+    (builtin)  _clicue_kg=${CLICUE_GLYPH[k_builtin]} ;;
+    (system)   _clicue_kg=${CLICUE_GLYPH[k_system]} ;;
+    (*)        _clicue_kg=${CLICUE_GLYPH[k_none]} ;;
+  esac
+}
+
 _clicue_emit_box() {
   local -i lo=$1 hi=$2 top=$3 maxrows=$5 namew=$6 glossw=$7 inner=$8
   local label=$4
@@ -45,7 +68,17 @@ _clicue_emit_box() {
     nmcol=${(r:$namew:)${name[1,$namew]}}
     (( ${#g} > glossw )) && g="${g[1,$(( glossw - 1 ))]}…"
     gcol=${(r:$glossw:)g}
-    _clicue_lines+=( "${CLICUE_GLYPH[v]}${marker} ${nmcol}  ${gcol}${CLICUE_GLYPH[v]}" )
+    _clicue_kind_glyph $ent $kind
+    # How much of this name the operator has already typed. Recorded per LINE, the
+    # same way grid rows are, because the span pass walks rendered lines and has no
+    # other way back to the candidate. Only when the DISPLAYED name starts with the
+    # prefix: a grouped label reached by its long spelling (`-d, --dir` matched via
+    # `--d`) does not begin with what was typed, and bolding the first two characters
+    # there would emphasise the wrong thing.
+    if [[ -n $_clicue_pfx && $name == ${_clicue_pfx}* ]]; then
+      _clicue_matchlen[$(( ${#_clicue_lines} + 1 ))]=${#_clicue_pfx}
+    fi
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}${marker} ${_clicue_kg} ${nmcol}  ${gcol}${CLICUE_GLYPH[v]}" )
   done
   # Deliberately NOT padded to the allocation. The card shows as many cues as
   # exist and no blank filler. This makes the card's height vary with the
@@ -376,12 +409,19 @@ _clicue_render() {
   for i in {1..${#vis}}; do (( ${#vis[i]} > namew )) && namew=${#vis[i]}; done
   (( namew > 28 )) && namew=28
   (( namew < 10 )) && namew=10
-  local -i glossw=$(( inner - namew - 5 ))
+  # A list row is:
+  #   border | marker(2) | space | gutter(1) | space | name(namew) | 2 spaces | gloss
+  # so the non-gloss overhead is 1 + 2 + 1 + 1 + 1 + namew + 2 = namew + 8, and the
+  # closing border takes one more. Written out because getting this wrong by one
+  # pushed the right border a column past the top border — visible immediately, but
+  # only if you look at the rendered card rather than at the state.
+  local -i glossw=$(( inner - namew - 7 ))
   (( glossw < 10 )) && glossw=10
 
   _clicue_lines=()
   _clicue_gridrows=(); _clicue_selline=0
   _clicue_explainrows=(); _clicue_footrow=0
+  _clicue_matchlen=()
   local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
   (( _clicue_info )) && { local REPLY; local -a dv
     zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
@@ -466,8 +506,17 @@ _clicue_render() {
     else
       specs+=( "$pos $(( pos + 1 )) fg=${CLICUE_THEME[border]}" )
       specs+=( "$(( pos + len - 1 )) $(( pos + len )) fg=${CLICUE_THEME[border]}" )
-      specs+=( "$(( pos + 4 )) $(( pos + 4 + namew )) fg=${CLICUE_THEME[accent]},bold" )
-      specs+=( "$(( pos + 6 + namew )) $(( pos + len - 1 )) fg=${CLICUE_THEME[gloss]}" )
+      # the gutter glyph sits between marker and name, dimmed: it is orientation,
+      # not content, and should not compete with the cue itself
+      specs+=( "$(( pos + 4 )) $(( pos + 5 )) fg=${CLICUE_THEME[hint]}" )
+      # The part already typed is emphasised and the remainder is ordinary text, so
+      # the eye lands on what is NEW about each candidate rather than re-reading the
+      # prefix it just typed on every row.
+      specs+=( "$(( pos + 6 )) $(( pos + 6 + namew )) fg=${CLICUE_THEME[text]}" )
+      if (( ${+_clicue_matchlen[$i]} )); then
+        specs+=( "$(( pos + 6 )) $(( pos + 6 + _clicue_matchlen[$i] )) fg=${CLICUE_THEME[accent]},bold" )
+      fi
+      specs+=( "$(( pos + 8 + namew )) $(( pos + len - 1 )) fg=${CLICUE_THEME[gloss]}" )
       [[ $ln == "${CLICUE_GLYPH[v]} ${CLICUE_GLYPH[sel]}"* ]] && \
         specs+=( "$pos $(( pos + len )) fg=${CLICUE_THEME[seltext]},bg=${CLICUE_THEME[selbg]}" )
     fi

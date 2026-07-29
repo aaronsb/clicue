@@ -26,4 +26,7 @@ CLICUE_GLYPH+=(
   jl '├'  jr '┤'
   v  '│'  h  '─'
   sel '▸' nosel ' '
+
+  # source gutter — one column each, from ranges present in ordinary terminal fonts
+  k_alias '≈'  k_function 'ƒ'  k_builtin '◆'  k_system '▪'  k_history '↺'  k_flag '·'  k_sub '›'  k_none ' '
 )

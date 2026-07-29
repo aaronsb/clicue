@@ -28,4 +28,10 @@ CLICUE_GLYPH+=(
   jl '+'  jr '+'
   v  '|'  h  '-'
   sel '>' nosel ' '
+
+  # source gutter, 7-bit only. plain is the reference fallback, so it states every
+  # glyph explicitly rather than inheriting from the base — someone reading this file
+  # to learn the vocabulary should see all of it.
+  k_alias '=' k_function 'f' k_builtin '*' k_system '$'
+  k_history 'h' k_flag '-' k_sub '>' k_none ' '
 )

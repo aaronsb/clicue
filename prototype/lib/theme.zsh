@@ -52,6 +52,19 @@ typeset -gA _clicue_glyph_base=(
   h       '-'      # horizontal rule
   sel     '>'      # selection marker
   nosel   ' '      # its width must match `sel`, or every row shifts
+  # ── source gutter ──────────────────────────────────────────────────────────
+  # One glyph naming where a cue came from. ASCII in the base, because a glyph the
+  # font cannot draw is indistinguishable from a rendering fault. Every one of these
+  # must be EXACTLY one column wide: a two-column glyph shifts the whole row, and an
+  # East Asian Wide or emoji codepoint is two columns in most terminals.
+  k_alias    '='
+  k_function 'f'
+  k_builtin  '*'
+  k_system   '$'
+  k_history  'h'
+  k_flag     '-'
+  k_sub      '>'
+  k_none     ' '
 )
 
 typeset -g _clicue_theme_name=''
@@ -74,7 +87,10 @@ typeset -g _clicue_hg='-'
 typeset -ga _clicue_theme_keys=(
   border accent text gloss selbg seltext hint ghost badge badgefg
 )
-typeset -ga _clicue_glyph_keys=( tl tr bl br jl jr v h sel nosel )
+typeset -ga _clicue_glyph_keys=(
+  tl tr bl br jl jr v h sel nosel
+  k_alias k_function k_builtin k_system k_history k_flag k_sub k_none
+)
 
 # Load a theme by name, merged over the base. Returns non-zero and leaves the base
 # in place if the file is missing or incomplete — a half-applied theme is worse
@@ -101,6 +117,15 @@ _clicue_theme_load() {
   if (( ${#CLICUE_GLYPH[sel]} != ${#CLICUE_GLYPH[nosel]} )); then
     print -u2 "clicue: theme '${name}': sel and nosel differ in width — rows will not align"
   fi
+
+  # A gutter glyph wider than one column shifts every row after it, and the span
+  # offsets are computed in columns.
+  local gk
+  for gk in k_alias k_function k_builtin k_system k_history k_flag k_sub k_none; do
+    if (( ${#CLICUE_GLYPH[$gk]} != 1 )); then
+      print -u2 "clicue: theme '${name}': GLYPH[$gk] must be exactly one column wide"
+    fi
+  done
 
   local k
   local -a missing=()

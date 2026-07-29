@@ -165,6 +165,11 @@ typeset -ga _clicue_lines=()
 typeset -ga _clicue_gridrows=()    # indices into _clicue_lines that are grid rows
 typeset -ga _clicue_explain_rows=()  # "label\tdescription" for the typed line
 typeset -ga _clicue_explainrows=()   # indices into _clicue_lines that are explain rows
+# Line index -> how many leading characters of that row's name the operator has typed.
+# An ASSOCIATION, not an array: with a plain array a sparse integer index fills the
+# gaps with empty strings, so ${+arr[n]} reports true for every index up to the
+# highest one set — which would emphasise the prefix on rows that do not match it.
+typeset -gA _clicue_matchlen=()
 typeset -g  _clicue_footrow=0        # index of the invocation-stats footer, if any
 typeset -g  _clicue_expanded=0       # operator asked for the full explanation
 typeset -g  _clicue_expcmd=''        # command the expansion applies to
