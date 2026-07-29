@@ -184,6 +184,13 @@ typeset -g  _clicue_focus=1        # 1 = tier 1 list, 2 = tier 2 grid (a MODE)
 typeset -g  _clicue_gridtop=0      # first index shown in the grid page
 typeset -g  _clicue_grid_rows=1    # rows in the current grid, for 2D nav
 typeset -g  _clicue_grid_cols=1
+typeset -gi _clicue_grid_page=0    # items on the visible page — what PgUp/PgDn move by
+typeset -gi _clicue_grid_lo=0      # first and last index the grid holds, so the paging
+typeset -gi _clicue_grid_hi=0      # keys can land on a page edge instead of an item
+# The grid is clamped to a third of the window by default. This is the operator saying
+# "give me the whole window anyway" — per LINE, not per command: the reason to maximise
+# is the size of the list you are looking at, and that survives another keystroke.
+typeset -gi _clicue_maxed=0
 
 
 _clicue_pre_redraw() {
@@ -365,6 +372,7 @@ _clicue_line_finish() {
   _clicue_clear; _clicue_reset_sel; _clicue_ghost=''
   _clicue_suppressed=0; _clicue_info=0
   _clicue_lastbuf=$'\0'
+  _clicue_maxed=0
 }
 
 clicue-off() {

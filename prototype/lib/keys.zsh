@@ -33,6 +33,7 @@ _clicue_keylabel() {
     '^I') REPLY='Tab' ;;
     '^[') REPLY='Esc' ;;
     '^G') REPLY='^G' ;;
+    '^['[a-z]) REPLY="Alt+${(U)1[3]}" ;;
     *)    REPLY=$1 ;;
   esac
 }
@@ -46,7 +47,8 @@ _clicue_bindall() {
       scroll-up   _clicue_scroll_up \
       accept      _clicue_accept \
       dismiss     _clicue_dismiss \
-      expand      _clicue_expand
+      expand      _clicue_expand \
+      maximize    _clicue_maximize
   do
     seqs=()
     zstyle -a ':clicue:keys' $action seqs
@@ -62,6 +64,7 @@ _clicue_bindall() {
         accept)      seqs=( '^I' ) ;;
         dismiss)     seqs=( '^[' ) ;;
         expand)      seqs=( '^[e' ) ;;
+        maximize)    seqs=( '^[m' ) ;;
       esac
     fi
     for k in $seqs; do
@@ -103,6 +106,55 @@ _clicue_move() {
 _clicue_scroll_down() { _clicue_move 1;  return 0 }
 
 _clicue_scroll_up()   { _clicue_move -1; return 0 }
+
+# ── paging and the ends ──────────────────────────────────────────────────────
+# Tier 1 and the grid are ONE selection, so these move the SELECTION rather than
+# scrolling a viewport under it. That keeps one mental model: wherever the highlight
+# goes, the window follows, which is already how the arrows behave.
+#
+# A page is whatever the grid is currently showing, published by the renderer rather
+# than chosen here. A PageDown that moves by a number of its own invention would
+# disagree with the visible page and with the `page 2/5` counter, and the operator
+# would lose their place rather than advance it.
+_clicue_page_size() {
+  typeset -gi _clicue_ps=${_clicue_grid_page:-0}
+  # Before the grid has rendered (or with no grid at all) a page is tier 1.
+  (( _clicue_ps > 0 )) || _clicue_ps=${_clicue_t1n:-1}
+  (( _clicue_ps < 1 )) && _clicue_ps=1
+  return 0
+}
+
+_clicue_page_down() {
+  _clicue_page_size
+  _clicue_move $_clicue_ps || zle ${_clicue_orig_pgdn:-.end-of-buffer-or-history}
+  return 0
+}
+
+_clicue_page_up() {
+  _clicue_page_size
+  _clicue_move -$_clicue_ps || zle ${_clicue_orig_pgup:-.beginning-of-buffer-or-history}
+  return 0
+}
+
+# _clicue_move clamps to the ends of the list, so "go to the end" is one enormous
+# move rather than separate arithmetic that could disagree with it.
+_clicue_first_cue() {
+  _clicue_move -${#_clicue_cands} || zle ${_clicue_orig_bol:-.beginning-of-line}
+  return 0
+}
+
+_clicue_last_cue() { _clicue_move ${#_clicue_cands}; return 0 }
+
+# Give the grid the whole window, or take it back. The clamp exists to stop the card
+# shoving the scrollback away; this is the operator overriding that for a list worth
+# the room. Deliberate and reversible is a different thing from surprising, which is
+# why the clamp is the default and this is a key.
+_clicue_maximize() {
+  (( _clicue_visible )) || return 0
+  _clicue_maxed=$(( ! _clicue_maxed ))
+  zle -R
+  return 0
+}
 
 # Open a collapsed explanation. Sticky for the rest of the line: an operator who
 # asked for the detail once should not have to keep asking as they keep typing.
@@ -321,7 +373,13 @@ _clicue_accept_ghost() {
   return 0
 }
 
-_clicue_end_of_line() { _clicue_accept_ghost || zle ${_clicue_orig_eol:-.end-of-line} }
+# While NAVIGATING, End means the end of the LIST — the same modal-only-while-engaged
+# rule the arrows already follow, and the reason it is safe to take a key this
+# load-bearing. Untouched, it still accepts the proposal exactly as before.
+_clicue_end_of_line() {
+  (( _clicue_visible && _clicue_engaged )) && { _clicue_last_cue; return 0 }
+  _clicue_accept_ghost || zle ${_clicue_orig_eol:-.end-of-line}
+}
 
 _clicue_arrow_down()  { _clicue_move  1     || zle ${_clicue_arrow_orig[B]:-.down-line-or-history} }
 
@@ -358,6 +416,35 @@ _clicue_install_arrows() {
     [[ -z $_clicue_orig_eol ]] && typeset -g _clicue_orig_eol=$w
     bindkey $e _clicue_end_of_line
   done
+
+  # Page keys and Home are BORROWED the same way the arrows are: they navigate the card
+  # while it is being navigated and delegate to whatever owned them otherwise. Listed
+  # here rather than in _clicue_bindall because what matters about a borrowed key is
+  # capturing the original, and that is the pattern this function exists for.
+  #
+  # ^A is deliberately NOT taken. Home's escape sequences are unambiguous, but ^A is
+  # beginning-of-line in every shell the operator has ever used and reaching for it
+  # mid-card is a plausible thing to want. A key this load-bearing is not worth the
+  # convenience of a second binding for the same action.
+  local -A borrow=(
+    '^[[6~' _clicue_page_down   '^[[5~' _clicue_page_up
+    '^[[H'  _clicue_first_cue   '^[[1~' _clicue_first_cue   '^[OH' _clicue_first_cue
+  )
+  local -A origvar=(
+    _clicue_page_down _clicue_orig_pgdn
+    _clicue_page_up   _clicue_orig_pgup
+    _clicue_first_cue _clicue_orig_bol
+  )
+  local seq fn ov
+  for seq fn in ${(kv)borrow}; do
+    w=${${(z)$(bindkey $seq)}[2]}
+    [[ -n $w && $w != _clicue_* ]] && {
+      ov=${origvar[$fn]}
+      [[ -z ${(P)ov} ]] && typeset -g $ov=$w
+    }
+    bindkey $seq $fn
+    _clicue_bound+=( $seq )
+  done
 }
 
 _clicue_install_yields() {
@@ -390,6 +477,11 @@ zle -N _clicue_scroll_up
 zle -N _clicue_accept
 zle -N _clicue_dismiss
 zle -N _clicue_expand
+zle -N _clicue_maximize
+zle -N _clicue_page_down
+zle -N _clicue_page_up
+zle -N _clicue_first_cue
+zle -N _clicue_last_cue
 zle -N _clicue_end_of_line
 zle -N _clicue_arrow_down
 zle -N _clicue_arrow_up

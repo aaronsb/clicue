@@ -40,15 +40,26 @@ startup.
 |---|---|
 | `Tab` | advance your position in the candidate space: cycle the primary card, or insert the cue when it is already the whole answer |
 | `↑` `↓` | walk the selection once you have started cycling; continues into the second box |
-| `←` `→` | jump a grid column; `→` also accepts the ghost-text proposal |
+| `←` `→` | jump a grid column; outside the grid, `→` accepts the ghost-text proposal |
+| `PgUp` `PgDn` | move by one visible page of the grid |
+| `Home` `End` | first and last cue. `End` still accepts the ghost when you are not navigating |
 | `Enter` | put the highlighted cue on the line — **not** run it |
 | `Esc` | dismiss for the current line |
 | `Alt+E` | expand a collapsed explanation |
+| `Alt+M` | give the grid the whole window, or take it back |
 
 The card's bottom border carries a legend, and it lists only what will actually work
-on the card in front of you — so it says `Tab cycle` or `Tab insert` depending on
-which the next press will do, and a card that is pure explanation offers nothing but
+on the card in front of you. So it says `Tab cycle` or `Tab insert` depending on which
+the next press will do; it names the arrows and `Enter` only once you have engaged the
+card with `Tab`, because until then they belong to history and to running the line; and
+inside the grid it says `←→↑↓ navigate`, because all four arrows navigate there and
+none of them touches the ghost. A card that is pure explanation offers nothing but
 `Esc dismiss`. Narrow the terminal and segments drop, but the way out never does.
+
+The second box is **clamped to a third of the window** (at least 10 rows) so a
+460-candidate list cannot shove your scrollback off the screen, and it tells you where
+you are — `all 447 on system · page 3/11`. `Alt+M` trades that back for the whole
+window when a list is worth the room.
 
 Unmodified `↑`/`↓` always reach command history. That is enforced in code, not merely
 intended. No bare printable character is ever bound — binding `q` as an alternate
@@ -95,16 +106,16 @@ zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
 ## Status
 
 Working prototype, in daily use by its author. Not packaged, not versioned, no
-install script. `prototype/test.zsh` holds 167 in-process assertions; run it after
+install script. `prototype/test.zsh` holds 198 in-process assertions; run it after
 any change.
 
 The card sizes itself to the terminal on every render — no SIGWINCH hook, since zsh
 maintains `COLUMNS` and `LINES` already, so a resize takes effect on the next
-keystroke. `max-width` (default 120) and `max-lines` (default 14) are *caps*: the
-terminal is the hard limit and always wins, and the card is drawn at most
-`COLUMNS-1` wide because zsh's redisplay wraps in the last column rather than
-writing it. Resizing while a card is already on screen leaves the terminal to reflow
-the old one until you next press a key.
+keystroke. `max-width` (default 120) and `max-lines` (default `auto` — the window
+less the prompt) are *caps*: the terminal is the hard limit and always wins, and the
+card is drawn at most `COLUMNS-1` wide because zsh's redisplay wraps in the last
+column rather than writing it. Resizing while a card is already on screen leaves the
+terminal to reflow the old one until you next press a key.
 
 - [SPEC.md](SPEC.md) — design values and every measured finding, tagged by
   confidence. Read design values 0, 1 and 5 first; they were learned expensively and

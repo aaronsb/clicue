@@ -39,9 +39,28 @@ _clicue_kind_glyph() {
   esac
 }
 
+# A box label that cannot overflow its border. `rule = inner - ${#label}` clamped at 1
+# keeps the RULE positive but says nothing about the label, so a label longer than the
+# box produced a line wider than the card — the wrap that mangles the whole display.
+# Latent until the grid label started carrying a page counter, which is exactly the
+# kind of growth that finds it. Truncation is silent because a clipped label still
+# reads, where a wrapped card does not.
+_clicue_fit_label() {
+  local lbl=$1
+  local -i inner=$2 keep
+  if (( ${#lbl} > inner - 1 )); then
+    keep=$(( inner - 2 ))
+    (( keep < 1 )) && keep=1
+    lbl="${lbl[1,$keep]} "
+  fi
+  _clicue_label=$lbl
+  return 0
+}
+
 _clicue_emit_box() {
   local -i lo=$1 hi=$2 top=$3 maxrows=$5 namew=$6 glossw=$7 inner=$8
   local label=$4
+  _clicue_fit_label "$label" $inner; label=$_clicue_label
   (( top < lo )) && top=$lo
   local -i bot=$(( top + maxrows - 1 ))
   (( bot > hi )) && bot=$hi
@@ -117,6 +136,7 @@ _clicue_emit_explain() {
 
   local label=' typed '
   (( collapsed )) && label=' typed · collapsed '
+  _clicue_fit_label "$label" $inner; label=$_clicue_label
   local -i rule=$(( inner - ${#label} ))
   (( rule < 1 )) && rule=1
   # ├ joins the box above; ╭ opens one. With a complete invocation there are no
@@ -205,15 +225,30 @@ _clicue_emit_grid() {
   fi
   _clicue_grid_rows=$rows
   _clicue_grid_cols=$ncols
+  # Published so the paging keys move by exactly what is on screen rather than by a
+  # number of their own. A PageDown that disagrees with the visible page is worse than
+  # no PageDown: the operator loses their place instead of advancing it.
+  typeset -gi _clicue_grid_page=$page
+  typeset -gi _clicue_grid_lo=$lo _clicue_grid_hi=$hi
 
   local -i shown=$(( hi - _clicue_gridtop + 1 ))
   (( shown > page )) && shown=$page
+  # Where am I in the whole list? A grid that pages needs to say so, or the operator
+  # cannot tell a full list from the first slice of one. Pages are 1-based and derived
+  # from the SAME page size the keys move by, so the counter and the keys cannot
+  # disagree.
+  local -i npages=$(( (n + page - 1) / page ))
+  local -i curpage=$(( (_clicue_gridtop - lo) / page + 1 ))
+  local pg=''
+  (( npages > 1 )) && pg=" · page ${curpage}/${npages}"
+
   # Label says what the box actually holds. "on system" is a command-position
   # sentence; in argument position these are the remaining options for one command.
-  local label=" all ${n} on system "
-  [[ $_clicue_mode == arg ]] && label=" ${n} more "
+  local label=" all ${n} on system${pg} "
+  [[ $_clicue_mode == arg ]] && label=" ${n} more${pg} "
 
-  (( _clicue_focus == 2 )) && label=" browsing ${n} — $(( _clicue_sel - lo + 1 ))/${n} "
+  (( _clicue_focus == 2 )) && label=" browsing $(( _clicue_sel - lo + 1 ))/${n}${pg} "
+  _clicue_fit_label "$label" $inner; label=$_clicue_label
   local -i rule=$(( inner - ${#label} ))
   (( rule < 1 )) && rule=1
   _clicue_lines+=( "${CLICUE_GLYPH[tl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[tr]}" )
@@ -285,17 +320,32 @@ _clicue_layout_width() {
   return 0
 }
 
-# The card's total height, in rows.
+# The card's total height, in rows — a ceiling on 1 + r1 + 1 + r2 + hint + gloss +
+# close, enforced in _clicue_render rather than merely consulted.
+#
+# It used to default to 14 and bound only the explanation pane, while the card's real
+# height was `tier1-rows + tier2-rows + 5` with tier2 sized to fill the window. So the
+# documented total budget was not a budget at all, and no combination of row settings
+# was prevented from drawing a card taller than the terminal. Deriving the default from
+# the window makes the setting mean what it says and makes the shove structurally
+# impossible rather than merely unlikely.
 _clicue_layout_height() {
   local -i rows=${1:-${LINES:-24}}
-  typeset -gi _clicue_lh=14
-  zstyle -s ':clicue:*' max-lines _clicue_lh 2>/dev/null || _clicue_lh=14
+  local cfg=auto
+  zstyle -s ':clicue:*' max-lines cfg 2>/dev/null || cfg=auto
+  typeset -gi _clicue_lh
+  if [[ $cfg == auto || -z $cfg ]]; then
+    # The reserve covers the prompt's own rows and the line being typed.
+    _clicue_lh=$(( rows - 6 ))
+  else
+    _clicue_lh=$cfg
+  fi
   (( _clicue_lh < 8 )) && _clicue_lh=8
   # Never taller than the window can hold. Same discipline as the width, and the same
   # latent defect: a preferred minimum that exceeds the terminal is not a minimum, it
   # is a card drawn off the bottom of the screen. Applied AFTER the floor — a floor
-  # allowed to win last is exactly how the width bug survived. The reserve covers the
-  # prompt's own rows and the line being typed.
+  # allowed to win last is exactly how the width bug survived. This also caps an
+  # explicit max-lines, so a configured 40 in a 24-row window still fits.
   local -i vfit=$(( rows - 6 ))
   (( _clicue_lh > vfit )) && _clicue_lh=$vfit
   # 1 border + one row + hint + gloss + close. Not a preference; the emitter's floor.
@@ -435,14 +485,34 @@ _clicue_render() {
   local -i t1rows=10
   zstyle -s ':clicue:*' tier1-rows t1rows 2>/dev/null || t1rows=10
   (( t1rows < 1 )) && t1rows=1
-  # The grid expands to whatever the terminal can spare — a fixed row count
-  # wasted most of a tall window. Overhead: 3 borders + hint + gloss + the
-  # prompt's own lines, kept generous so the card never pushes the prompt off.
+  # ── the grid is CLAMPED, not filled ────────────────────────────────────────
+  # It used to take everything the terminal could spare (`LINES - t1rows - 10`), which
+  # sounds generous and is not: typing `s` offers 460-odd commands, the grid grew to 68
+  # rows in an 88-row window, and the resulting 83-line card shoved the scrollback off
+  # the screen — including the output of the command the operator had just run. A
+  # guidance surface that destroys the context it is meant to support has inverted its
+  # own purpose.
+  #
+  # A THIRD of the window, floored at 10 rows so it stays useful in a small one, and
+  # still bounded by what the window can spare because the terminal always wins. The
+  # rest of the list is reachable by paging, which the grid already did — what was
+  # missing was a way to page deliberately and a counter saying there was more.
   local t2cfg=auto
   zstyle -s ':clicue:*' tier2-rows t2cfg 2>/dev/null || t2cfg=auto
+  local -i spare=$(( ${LINES:-24} - t1rows - 10 ))
   local -i t2rows
+  typeset -gi _clicue_canmax=0
   if [[ $t2cfg == auto ]]; then
-    t2rows=$(( ${LINES:-24} - t1rows - 10 ))
+    local -i clamped=$(( ${LINES:-24} / 3 ))
+    (( clamped < 10 )) && clamped=10
+    (( clamped > spare )) && clamped=$spare
+    # Would maximising actually add rows? In a small window the clamp and the spare
+    # meet, and Alt+M cannot do anything — so the legend must not offer it. Same rule
+    # as everywhere else in the legend: advertise the gesture only where it is real.
+    _clicue_canmax=$(( spare > clamped ))
+    # When maximised the shove is the operator's own explicit choice, which is a
+    # different thing from a surprise. It is also still bounded by the budget below.
+    if (( _clicue_maxed )); then t2rows=$spare; else t2rows=$clamped; fi
   else
     t2rows=$t2cfg
   fi
@@ -467,6 +537,23 @@ _clicue_render() {
     r1=$t1rows; r2=$t2rows
   else
     r1=$(( t1rows + t2rows + 1 )); r2=0
+  fi
+
+  # ── the budget is enforced, not assumed ────────────────────────────────────
+  # Whatever the row preferences add up to, the card fits the window. Without this the
+  # total was simply `tier1-rows + tier2-rows + 5` and nothing stopped it exceeding
+  # LINES — which is how a 68-row grid in an 88-row terminal became an 83-line card.
+  #
+  # The grid gives up rows FIRST: it is the browsable overflow and it pages, so a row
+  # taken from it costs a scroll, while a row taken from tier 1 removes a history-ranked
+  # cue from the place the operator looks first.
+  local -i over=$(( r1 + r2 + 5 - maxlines ))
+  if (( over > 0 )); then
+    local -i cut=$over
+    (( cut > r2 )) && cut=$r2
+    (( r2 -= cut )); (( over -= cut ))
+    (( over > 0 )) && (( r1 -= over ))
+    (( r1 < 1 )) && r1=1
   fi
 
   # clamp selection across the whole list, then slide whichever window holds it
@@ -686,8 +773,11 @@ _clicue_build_hint() {
   local -a av dv
   zstyle -a ':clicue:keys' accept  av || av=( '^I' )
   zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
+  local -a mv
+  zstyle -a ':clicue:keys' maximize mv || mv=( '^[m' )
   _clicue_keylabel ${av[1]}; typeset -g _clicue_key_accept=$REPLY
   _clicue_keylabel ${dv[1]}; typeset -g _clicue_key_dismiss=$REPLY
+  _clicue_keylabel ${mv[1]}; typeset -g _clicue_key_maximize=$REPLY
   # A sane full-width default, so anything that renders before the first
   # _clicue_hint_segments still has a legend.
   typeset -ga _clicue_hintparts=(
@@ -727,18 +817,53 @@ _clicue_hint_segments() {
     return 0
   fi
 
+  # Inside the grid the legend is a DIFFERENT legend, because the keys mean different
+  # things there. `→ accept` was plainly wrong: _clicue_arrow_right tries the grid move
+  # first, so in the grid Right navigates and never touches the ghost. All four arrows
+  # navigate, and this is where paging earns its keys — the grid is clamped, so a long
+  # list is pages deep and the operator needs to be told how to cross it.
+  if (( _clicue_focus == 2 )); then
+    local -a mxseg=()
+    if (( _clicue_canmax || _clicue_maxed )); then
+      local mxv=taller
+      (( _clicue_maxed )) && mxv=shorter
+      mxseg=( "${_clicue_key_maximize:-Alt+M} ${mxv}" )
+    fi
+    local -a pgseg=()
+    # A single-page grid has no pages to turn, so it does not claim otherwise.
+    (( _clicue_grid_page > 0 && ${#_clicue_cands} - _clicue_grid_lo + 1 > _clicue_grid_page )) \
+      && pgseg=( "PgUp/PgDn page" )
+    _clicue_hintparts=(
+      "←→↑↓ navigate" $pgseg "Home/End ends" $mxseg "⏎ insert" "${dis} dismiss"
+    )
+    return 0
+  fi
+
+  # ── two gestures that do NOT work until the card is engaged ────────────────
+  # The arrows and Enter both require _clicue_engaged, which only Tab sets. Before the
+  # first Tab, ↑↓ reach command history and Enter RUNS THE LINE — both correct, and
+  # both the opposite of what the legend was claiming.
+  #
+  # `⏎ insert` is the one that mattered enough to find this: advertising it on a card
+  # the operator has not engaged invites them to press Enter expecting text to be
+  # placed on the line, and execute the command instead. A legend that is merely inert
+  # costs confidence; one that names the wrong outcome for a destructive key costs more
+  # than that. Gated on the state the keys themselves test.
+  local -a engaged_only=()
+  (( _clicue_engaged )) && engaged_only=( "⏎ insert" )
+
   if _clicue_tab_inserts; then
     # The cue IS what is typed: nothing to cycle, nothing to browse, and no ghost to
     # accept. Tab and Enter do the same single thing here, and saying so beats
     # advertising four gestures of which three are inert.
-    _clicue_hintparts=( "${acc} insert" "⏎ insert" "${dis} dismiss" )
+    _clicue_hintparts=( "${acc} insert" $engaged_only "${dis} dismiss" )
     return 0
   fi
 
   _clicue_hintparts=( "${acc} cycle" )
-  (( ${#_clicue_cands} > 1 )) && _clicue_hintparts+=( "↑↓ browse" )
+  (( _clicue_engaged )) && (( ${#_clicue_cands} > 1 )) && _clicue_hintparts+=( "↑↓ browse" )
   _clicue_ghost_stem && _clicue_hintparts+=( "→ accept" )
-  _clicue_hintparts+=( "⏎ insert" "${dis} dismiss" )
+  _clicue_hintparts+=( $engaged_only "${dis} dismiss" )
   return 0
 }
 

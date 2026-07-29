@@ -1051,11 +1051,42 @@ else
   nope "the height is bounded by the window at every height tried" \
        "LINES=$HTBAD gave ${_clicue_lh}"
 fi
+# max-lines used to default to 14 and bound only the explanation pane, while the card's
+# real height was tier1-rows + tier2-rows + 5 with tier2 sized to FILL the window. The
+# documented total budget was not a budget. It derives from the window now.
 _clicue_layout_height 88
-if (( _clicue_lh == 14 )); then
-  ok "a tall terminal still gets the configured height, not the whole window"
+if (( _clicue_lh == 82 )); then
+  ok "the height budget derives from the window by default"
 else
-  nope "a tall terminal still gets the configured height, not the whole window" "got ${_clicue_lh}"
+  nope "the height budget derives from the window by default" "got ${_clicue_lh}"
+fi
+# An explicit setting is honoured — and still capped by the window, so a configured 40
+# in a 24-row terminal cannot draw off the bottom of the screen.
+zstyle ':clicue:*' max-lines 20
+_clicue_layout_height 88
+(( _clicue_lh == 20 )) && _clicue_layout_height 24
+if (( _clicue_lh == 18 )); then
+  ok "an explicit height is honoured but never exceeds the window"
+else
+  nope "an explicit height is honoured but never exceeds the window" "got ${_clicue_lh}"
+fi
+zstyle -d ':clicue:*' max-lines
+
+# The budget must be ENFORCED on the row totals, not merely consulted. Without this the
+# height was whatever tier1-rows + tier2-rows happened to add up to.
+body=$(awk '/^_clicue_render\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $body == *'r1 + r2 + 5 - maxlines'* ]]; then
+  ok "the row totals are cut to fit the budget"
+else
+  nope "the row totals are cut to fit the budget" \
+       "a budget nothing checks is a comment, not a constraint"
+fi
+# The grid gives up rows before tier 1 does: it pages, so a row costs a scroll there
+# and a ranked cue here.
+if [[ $body == *'cut > r2'* && $body == *'r2 -= cut'* ]]; then
+  ok "the grid gives up rows before tier 1 does"
+else
+  nope "the grid gives up rows before tier 1 does"
 fi
 
 # Both are read from the terminal on EVERY render — that is what makes a resize take
@@ -1068,6 +1099,100 @@ if [[ $body == *'_clicue_layout_width'* && $body == *'_clicue_layout_height'* ]]
 else
   nope "the render body asks for the layout budget instead of recomputing it"
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "the grid is clamped, and traversable because of it"
+# `s` offers 460-odd commands. The grid used to take everything the terminal could
+# spare, so it grew to 68 rows in an 88-row window and the 83-line card shoved the
+# scrollback — including the output of the command just run — off the screen. A guidance
+# surface that destroys the context it exists to support has inverted its own purpose.
+source $DIR/lib/render.zsh 2>/dev/null
+source $DIR/lib/keys.zsh 2>/dev/null
+body=$(awk '/^_clicue_render\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+# Checks the clamp is USED, not merely computed: a mutation that dropped the assignment
+# left the arithmetic in place and this assertion still passed.
+if [[ $body == *'clamped=$(( ${LINES:-24} / 3 ))'* && $body == *'clamped < 10'* ]] \
+   && [[ $body == *'t2rows=$clamped'* ]]; then
+  ok "the grid is a third of the window, floored at 10 rows"
+else
+  nope "the grid is a third of the window, floored at 10 rows"
+fi
+if [[ $body == *'clamped > spare'* ]]; then
+  ok "and is still bounded by what the window can spare"
+else
+  nope "and is still bounded by what the window can spare"
+fi
+if [[ $body == *'_clicue_maxed'* ]]; then
+  ok "the operator can override the clamp deliberately"
+else
+  nope "the operator can override the clamp deliberately"
+fi
+
+# Clamping only works if the rest of the list stays reachable. A page is what the
+# renderer is SHOWING, published rather than invented here: a PageDown moving by a
+# number of its own would disagree with the visible page and with the `page 2/11`
+# counter, and the operator would lose their place instead of advancing it.
+typeset -gi _clicue_grid_page=42 _clicue_t1n=10
+_clicue_page_size
+if (( _clicue_ps == 42 )); then
+  ok "a page is what the grid is showing"
+else
+  nope "a page is what the grid is showing" "got ${_clicue_ps}"
+fi
+_clicue_grid_page=0
+_clicue_page_size
+if (( _clicue_ps == 10 )); then
+  ok "with no grid rendered yet, a page is tier 1"
+else
+  nope "with no grid rendered yet, a page is tier 1" "got ${_clicue_ps}"
+fi
+
+# Every traversal key goes through _clicue_move, so all of them inherit its clamping to
+# the list ends AND its "not navigating -> delegate" contract for free. Arithmetic of
+# their own would be a second place for the ends to be got wrong.
+for w in _clicue_page_down _clicue_page_up _clicue_first_cue _clicue_last_cue; do
+  fnbody=$(awk -v n="^${w}\\\\(\\\\)" '$0 ~ n {f=1} f{print} f&&/^}/{exit}' $SRC)
+  if [[ $fnbody == *_clicue_move* ]]; then
+    ok "${w#_clicue_} moves the selection rather than reimplementing the ends"
+  else
+    nope "${w#_clicue_} moves the selection rather than reimplementing the ends"
+  fi
+done
+
+# End is load-bearing (it accepts the ghost, as autosuggestions did). Taking it for
+# navigation is only safe under the same modal-only-while-engaged rule the arrows use.
+fnbody=$(awk '/^_clicue_end_of_line\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $fnbody == *'_clicue_engaged'* && $fnbody == *'_clicue_accept_ghost'* ]]; then
+  ok "End navigates only while engaged, and still accepts the ghost otherwise"
+else
+  nope "End navigates only while engaged, and still accepts the ghost otherwise"
+fi
+# ^A is beginning-of-line in every shell the operator has ever used. Home's escape
+# sequences are unambiguous; ^A is not worth a second binding for the same action.
+if [[ $(awk '/^_clicue_install_arrows\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) != *"'^A'"* ]]; then
+  ok "^A is left alone"
+else
+  nope "^A is left alone" "beginning-of-line is not ours to take"
+fi
+
+# A label that outgrows its box produces a line wider than the card — the wrap that
+# mangles the display. Latent until the grid label started carrying a page counter,
+# which is exactly the kind of growth that finds it.
+_clicue_fit_label " browsing 123456/123456 · page 100/100 " 20
+if (( ${#_clicue_label} <= 19 )); then
+  ok "a label too long for the box is truncated, not allowed to wrap it"
+else
+  nope "a label too long for the box is truncated, not allowed to wrap it" \
+       "${#_clicue_label} > 19: [$_clicue_label]"
+fi
+for e in _clicue_emit_box _clicue_emit_grid _clicue_emit_explain; do
+  fnbody=$(awk -v n="^${e}\\\\(\\\\)" '$0 ~ n {f=1} f{print} f&&/^}/{exit}' $SRC)
+  if [[ $fnbody == *_clicue_fit_label* ]]; then
+    ok "${e#_clicue_emit_} labels go through the fit"
+  else
+    nope "${e#_clicue_emit_} labels go through the fit"
+  fi
+done
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "the legend names the next action"
@@ -1125,6 +1250,80 @@ else
   nope "the legend and the key share the predicate rather than restating it" \
        "a legend that says cycle while the key inserts is worse than no legend"
 fi
+
+# Two gestures require _clicue_engaged, which only Tab sets: before the first Tab the
+# arrows reach command history and Enter RUNS THE LINE. Advertising `⏎ insert` there
+# invited the operator to press Enter expecting text and execute the command instead —
+# a legend naming the wrong outcome for a destructive key, which is worse than an inert
+# one.
+typeset -gi _clicue_engaged=0
+_clicue_explain_rows=()
+hseg gi 0 git gitk gio
+if [[ $REPLY != *'⏎ insert'* && $REPLY != *browse* ]]; then
+  ok "an unengaged card advertises neither the arrows nor Enter"
+else
+  nope "an unengaged card advertises neither the arrows nor Enter" "$REPLY"
+fi
+_clicue_engaged=1
+hseg gi 0 git gitk gio
+if [[ $REPLY == *'⏎ insert'* && $REPLY == *browse* ]]; then
+  ok "an engaged card advertises both"
+else
+  nope "an engaged card advertises both" "$REPLY"
+fi
+# Same gate on the one-cue card, where Enter is the only other key named.
+hseg org 0 org
+if [[ $REPLY == *'⏎ insert'* ]]; then
+  _clicue_engaged=0
+  hseg org 0 org
+  if [[ $REPLY != *'⏎ insert'* ]]; then
+    ok "the gate applies to the insert card too"
+  else
+    nope "the gate applies to the insert card too" "$REPLY"
+  fi
+else
+  nope "the gate applies to the insert card too" "engaged form lacked it: $REPLY"
+fi
+_clicue_engaged=1
+
+# In the grid ALL FOUR arrows navigate. `→ accept` was plainly wrong there:
+# _clicue_arrow_right tries the grid move first and never reaches the ghost.
+typeset -gi _clicue_focus=2 _clicue_grid_page=42 _clicue_grid_lo=11 _clicue_canmax=1
+hseg s 0 ${(s: :)"$(print -r -- ${(l:200:: a :)})"}
+if [[ $REPLY == *'←→↑↓ navigate'* && $REPLY != *'→ accept'* ]]; then
+  ok "the grid legend says all four arrows navigate, and drops the ghost accept"
+else
+  nope "the grid legend says all four arrows navigate, and drops the ghost accept" "$REPLY"
+fi
+if [[ $REPLY == *'PgUp/PgDn page'* && $REPLY == *'Home/End ends'* ]]; then
+  ok "the grid legend names the traversal keys it depends on"
+else
+  nope "the grid legend names the traversal keys it depends on" "$REPLY"
+fi
+# Maximising is offered only where it would change something.
+_clicue_canmax=0; typeset -gi _clicue_maxed=0
+hseg s 0 a b c d e f g h i j k l m n o p q r s t u v w x y z
+if [[ $REPLY != *taller* ]]; then
+  ok "maximising is not offered in a window too small to grow into"
+else
+  nope "maximising is not offered in a window too small to grow into" "$REPLY"
+fi
+_clicue_canmax=1
+hseg s 0 a b c d e f g h i j k l m n o p q r s t u v w x y z
+if [[ $REPLY == *'taller'* ]]; then
+  ok "and is offered where it would"
+else
+  nope "and is offered where it would" "$REPLY"
+fi
+# A single-page grid has no pages to turn.
+_clicue_grid_page=500
+hseg s 0 a b c d e f g h i j k l m n o p q r s t u v w x y z
+if [[ $REPLY != *'PgUp/PgDn'* ]]; then
+  ok "a single-page grid does not claim to have pages"
+else
+  nope "a single-page grid does not claim to have pages" "$REPLY"
+fi
+_clicue_focus=1; _clicue_grid_page=0; _clicue_grid_lo=0
 
 # A complete invocation has nothing left to propose: the card is pure explanation, and
 # every navigation gesture on it is inert.

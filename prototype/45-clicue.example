@@ -11,17 +11,25 @@
 # ── behaviour ────────────────────────────────────────────────────────────────
 zstyle ':clicue:*' min-input 1        # chars before the card appears
 zstyle ':clicue:*' tier1-rows 10      # cues in the primary card; overflow -> grid
-zstyle ':clicue:*' tier2-rows auto    # grid fills the terminal; or a fixed count
+zstyle ':clicue:*' tier2-rows auto    # auto = a third of the window, min 10 rows
 zstyle ':clicue:*' enabled   yes
 
 # ── size ─────────────────────────────────────────────────────────────────────
-# Both are CAPS, not targets. The terminal is the hard limit and always wins: the
-# card is drawn at most COLUMNS-1 wide (zsh's redisplay wraps in the last column
-# rather than writing it) and never taller than the window can hold. Raising these
-# past the terminal cannot make the card bigger — it is measured against the real
-# COLUMNS and LINES on every render, so a resize takes effect on the next keystroke.
+# CAPS, not targets. The terminal is the hard limit and always wins: the card is
+# drawn at most COLUMNS-1 wide (zsh's redisplay wraps in the last column rather
+# than writing it) and never taller than max-lines, which itself never exceeds
+# the window. Raising these past the terminal cannot make the card bigger — both
+# are measured against the real COLUMNS and LINES on every render, so a resize
+# takes effect on the next keystroke.
 zstyle ':clicue:*' max-width 120      # past ~120 a row of text is harder to scan
-zstyle ':clicue:*' max-lines 14       # total card height, borders included
+zstyle ':clicue:*' max-lines auto     # auto = the window less the prompt; or a count
+
+# `tier2-rows auto` clamps the grid rather than letting it fill the window. Typing
+# `s` offers 460-odd commands, and an unclamped grid grew to 68 rows in an 88-row
+# terminal — an 83-line card that shoved the scrollback, including the output of the
+# command just run, off the screen. The rest of the list is reached by paging
+# (PgUp/PgDn, Home/End) and the box says which page you are on. Alt+M gives it the
+# whole window when a list is worth the room.
 
 # ── argument position: what you typed, explained ─────────────────────────────
 # Past the command name, the second box stops browsing commands — that question
@@ -66,11 +74,15 @@ zstyle ':clicue:*' familiar-percentile 0
 zstyle ':clicue:emulates' ls  lsd
 
 # ── why these are fixed counts ───────────────────────────────────────────────
-# The card is always the same number of lines: tier1-rows + tier2-rows + 5.
-# ZLE paints a taller POSTDISPLAY over a shorter one instead of reflowing, so a
-# card that grew or shrank while typing would mangle itself. Both boxes pad to
-# their allocation, and when there is no overflow the primary card absorbs the
-# grid's border and rows so the total is identical either way.
+# The card holds a constant number of lines while you type: ZLE paints a taller
+# POSTDISPLAY over a shorter one instead of reflowing, so a card that grew or shrank
+# between keystrokes would mangle itself. Both boxes divide one budget and pad into
+# it, and when there is no overflow the primary card absorbs the grid's border and
+# rows so the total is identical either way.
+#
+# The budget is `tier1-rows + tier2-rows + 5`, cut to max-lines if that is smaller.
+# It changes only when the terminal is resized or you press Alt+M — both of which
+# redraw the whole card, so neither can mangle it.
 #
 # The primary card holds the top N ranked cues — history first, then everything
 # else alphabetically. Anything past N flows into the grid.
@@ -84,7 +96,18 @@ zstyle ':clicue:emulates' ls  lsd
 #   ↑ ↓      once you have started cycling, walk the selection. Off the end of
 #            the primary card it continues straight into the grid.
 #   ← →      jump a grid column. Meaningful only inside the grid, so Right keeps
-#            working as the autosuggestion accept everywhere else.
+#            working as the autosuggestion accept everywhere else. Inside the
+#            grid it does NOT accept — all four arrows navigate there, which is
+#            what the legend says once the selection crosses into it.
+#   PgUp     move by one VISIBLE page of the grid. A page is what is on screen,
+#   PgDn     published by the renderer, so the keys and the `page 3/11` counter
+#            cannot disagree about how far one press goes.
+#   Home     first and last cue. End keeps accepting the ghost when you are not
+#   End      navigating — the same modal-only-while-engaged rule as the arrows,
+#            which is what makes it safe to take a key this load-bearing. ^A is
+#            deliberately left alone.
+#   Alt+M    give the grid the whole window, or take it back. Offered only when
+#            it would change something, and reset at the end of the line.
 #   Enter    put the highlighted cue on the command line — NOT run it. Choosing
 #            from a card is composition, not execution; you still decide when to
 #            run. Untouched, Enter executes exactly as always.

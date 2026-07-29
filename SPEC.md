@@ -482,6 +482,54 @@ at it catches what inspecting state cannot. The regression assertions consequent
 the **budget** (`_clicue_layout_width`, `_clicue_layout_height` — extracted for exactly
 this reason) rather than the output.
 
+### A guidance surface must not destroy the context it supports **[MEASURED]**
+
+Typing `s` offers 460-odd commands. The grid took whatever the terminal could spare
+(`LINES - tier1-rows - 10`), which sounds generous and is not: it grew to 68 rows in an
+88-row window, and the resulting 83-line card shoved the scrollback — *including the
+output of the command the operator had just run* — off the screen. The tool that exists
+to help you compose the next command had erased the evidence you were composing it
+from.
+
+The grid is now clamped to **a third of the window, floored at 10 rows**, still bounded
+by what the window can spare. `Alt+M` trades it back for the whole window, because a
+deliberate and reversible shove is a different thing from a surprising one.
+
+Two structural corrections came with it:
+
+- **`max-lines` did not do what it documented.** It defaulted to 14 and bounded only
+  the explanation pane, while the card's real height was `tier1-rows + tier2-rows + 5`
+  with tier2 sized to fill the window — so the "fixed total line budget" was not a
+  budget, and no combination of row settings was prevented from drawing a card taller
+  than the terminal. It now derives from the window and is *enforced* on the row
+  totals, with the grid giving up rows before tier 1 does (the grid pages, so a row
+  costs a scroll there and a ranked cue here).
+- **A clamped list must stay traversable, and say where you are.** `PgUp`/`PgDn` move
+  by the page the renderer is *showing* — published rather than invented by the keys,
+  so a press cannot disagree with the `page 3/11` counter it sits under. `Home`/`End`
+  reach the ends. All of them go through `_clicue_move`, inheriting its clamping and
+  its delegate-when-not-navigating contract rather than restating either.
+
+### Two legend claims that were false, one of them dangerously **[MEASURED]**
+
+Found by reading the rendered legend against what the widgets actually test, after the
+operator reported that `→ accept` was wrong inside the grid — which it was, because
+`_clicue_arrow_right` tries the grid move first and never reaches the ghost.
+
+The other two were worse, and neither had been noticed:
+
+- **`↑↓ browse` before the card is engaged.** The arrows require `_clicue_engaged`,
+  which only Tab sets. Until then they reach command history.
+- **`⏎ insert` before the card is engaged.** Enter requires the same flag, so before
+  Tab it **runs the line**. The legend was inviting the operator to press Enter
+  expecting text to be placed on the command line, and execute the command instead.
+
+This sharpens design value 1. An inert advertised gesture costs confidence; one that
+names the *wrong outcome for a destructive key* costs more than that. The rule is
+therefore not "list the keys" but **every segment is gated on the state its own widget
+tests** — including `Alt+M`, which is offered only where maximising would change
+something, and `PgUp/PgDn`, which is offered only when there is more than one page.
+
 ### POSTDISPLAY is single-tenant **[MEASURED]** — the strongest evidence yet
 
 The composability contract works for two of the three shared resources ZLE
