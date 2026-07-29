@@ -82,14 +82,16 @@ _clicue_arg_candidates() {
   # Without this the card would be empty until Tab, and an empty card is how
   # zsh's raw listing got on screen in the first place.
   if [[ $pfx == -* ]] || (( _clicue_optctx )); then
-    _clicue_flag_load $cmd 2>/dev/null
+    # keyed on the path the cursor is in, so `gh org <Tab>` offers org's options
+    local lookup=${_clicue_cmdpath:-$cmd}
+    _clicue_flag_load $lookup 2>/dev/null
     # ALL declared here, outside the loop. Re-declaring a set `local` inside a loop
     # body prints its value — `sp=--help` and friends leaked straight onto the
     # terminal. Third time this exact gotcha has bitten this file.
     local fk alt canon sp
     # Sorted so the SHORT spelling of a pair is met first and becomes the row.
     for fk in ${(ko)_clicue_flag_desc}; do
-      [[ $fk == ${cmd}\|* ]] || continue
+      [[ $fk == ${lookup}\|* ]] || continue
       n=${fk#*\|}
       (( ${+seen[$n]} )) && continue
       # One row per FLAG, not per spelling. `-d` and `--dir` describing the same
@@ -98,7 +100,7 @@ _clicue_arg_candidates() {
       # candidate — it is what the operator is typing — and the long form rides
       # along in the label.
       [[ -n $pfx && $n != ${pfx}* ]] && continue
-      _clicue_fkey $cmd $n
+      _clicue_fkey $lookup $n
       alt=${_clicue_flag_alt[$_clicue_fk]}
       if [[ -z $alt ]]; then
         seen[$n]=1; rest+=( $n ); continue
@@ -106,7 +108,7 @@ _clicue_arg_candidates() {
       # One row for the whole group. The row is keyed on the spelling that gets
       # inserted, and every other spelling is marked seen so it cannot also appear
       # on its own row.
-      _clicue_flag_canon $cmd $n
+      _clicue_flag_canon $lookup $n
       canon=$_clicue_fc
       # when a prefix is being typed, honour it over the canonical short form —
       # typing `--rec` must not silently insert `-r`
@@ -114,7 +116,7 @@ _clicue_arg_candidates() {
       (( ${+seen[$canon]} )) && continue
       seen[$n]=1; seen[$canon]=1
       for sp in ${=alt}; do seen[$sp]=1; done
-      _clicue_flag_label $cmd $n
+      _clicue_flag_label $lookup $n
       _clicue_disp[$canon]=$_clicue_fl
       rest+=( $canon )
     done

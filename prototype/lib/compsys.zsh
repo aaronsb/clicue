@@ -23,6 +23,7 @@ typeset -g  _clicue_cs_hassfx=''
 typeset -g  _clicue_cs_sfxval=''
 
 # ── alias resolution ─────────────────────────────────────────────────────────
+typeset -g  _clicue_realpath=''      # command path with its head alias-resolved
 typeset -g  _clicue_realcmd=''       # what the command an operator typed actually runs
 # An ASSOCIATION. Assigning a string subscript to an undeclared name makes it a plain
 # array and fails with "invalid subscript range" — which is how this was caught.
@@ -236,7 +237,16 @@ _clicue_cs_build_gloss() {
 # escapes it as \| for the same reason.
 # Keys on the RESOLVED command, so `ls` and `lsd` share one cached flag set instead of
 # the alias getting an empty one of its own.
-_clicue_fkey() { _clicue_resolve_cmd $1; _clicue_fk="${_clicue_realcmd}|${2}" }
+# Resolve a path's HEAD through aliases and leave the subcommands alone: `ls` may be an
+# alias, `org` never is.
+_clicue_resolve_path() {
+  local -a parts=( ${(s.:.)1} )
+  _clicue_resolve_cmd ${parts[1]}
+  parts[1]=$_clicue_realcmd
+  _clicue_realpath=${(j.:.)parts}
+}
+
+_clicue_fkey() { _clicue_resolve_path $1; _clicue_fk="${_clicue_realpath}|${2}" }
 
 # Resolve what an operator TYPED to the command whose options we should look up.
 #
@@ -304,9 +314,12 @@ _clicue_flag_stamp() {
   _clicue_fstamp="v${_clicue_flag_fmt}:${_clicue_fstamp}"
 }
 
+# $1 is a command PATH, colon-separated: `gh`, `gh:org`, `gh:org:list`. A flag belongs
+# to the path it was documented at — `--limit` is an option of `gh org list`, not of
+# `gh` — so keying on the head command could never find it.
 _clicue_flag_load() {
-  _clicue_resolve_cmd $1
-  local cmd=$_clicue_realcmd
+  _clicue_resolve_path $1
+  local cmd=$_clicue_realpath
   (( ${+_clicue_flag_have[$cmd]} )) && return 0
   local f=$_clicue_flagdir/${cmd}.zsh
   [[ -r $f ]] || return 1
@@ -367,8 +380,8 @@ _clicue_flag_save() {
 # is never visible. Deliberate and on demand: the alternative is guessing what a
 # flag means, and a wrong gloss is worse than none.
 _clicue_harvest_flags() {
-  _clicue_resolve_cmd $1
-  local cmd=$_clicue_realcmd
+  _clicue_resolve_path $1
+  local cmd=$_clicue_realpath
   (( ${+_clicue_flag_have[$cmd]} )) && return 0
   _clicue_flag_load $cmd && return 0
   _clicue_flag_have[$cmd]=1        # set first: one attempt per command per shell
@@ -378,12 +391,24 @@ _clicue_harvest_flags() {
   local -a swords=( $_clicue_cs_words ) sdescs=( $_clicue_cs_descs )
   local sfor=$_clicue_cs_for
 
-  BUFFER="$cmd -"; CURSOR=${#BUFFER}
-  {
-    zle _clicue_capture 2>/dev/null
-  } always {
-    BUFFER=$sbuf; CURSOR=$scur
-  }
+  # TWO synthesised positions, because compsys answers a different question at each:
+  # `gh ` yields subcommands, `gh -` yields flags. Both belong to this path, and a
+  # comprehension pane that can explain `--limit` but not `list` is half a feature.
+  local spaced=${cmd//:/ }
+  local -a harvested_w=() harvested_d=()
+  local pos
+  for pos in "$spaced " "$spaced -"; do
+    BUFFER=$pos; CURSOR=${#BUFFER}
+    {
+      zle _clicue_capture 2>/dev/null
+    } always {
+      BUFFER=$sbuf; CURSOR=$scur
+    }
+    harvested_w+=( $_clicue_cs_words )
+    harvested_d+=( $_clicue_cs_descs )
+  done
+  _clicue_cs_words=( $harvested_w )
+  _clicue_cs_descs=( $harvested_d )
 
   local -A byd=()
   local -i i
@@ -395,7 +420,10 @@ _clicue_harvest_flags() {
     # the flag it actually is. Without this, tar's cache stayed permanently empty
     # and the card never got past "press Tab to load".
     [[ $w != -* && $_clicue_cs_iprefix == -* ]] && w="${_clicue_cs_iprefix}${w}"
-    [[ $w == -* ]] || continue
+    # Subcommands are kept too, not only flags. `gh org list --limit 10` needs `org`
+    # and `list` explained as much as it needs `--limit`, and the harvest at `gh ` is
+    # exactly where their descriptions live.
+    [[ -n $w ]] || continue
     # unpacked against the ORIGINAL word: compdescribe packed the display string
     # around `A`, not around `-A`, so stripping by the normalised name left the
     # whole `A  -- append to an archive` sitting in the gloss column
@@ -488,7 +516,7 @@ _clicue_flag_canon() {
 # option — and inventing properties the operator never asked about is exactly the
 # kind of added information design value 4 rules out.
 _clicue_decompose() {
-  local cmd=$1 tok=$2
+  local cmd=$1 tok=$2   # cmd may be a PATH; _clicue_fkey handles both
   _clicue_parts=()
   # Plain glob on purpose: `##` would need EXTENDED_GLOB, which this function does
   # not set, and an unsupported operator matches literally rather than failing —

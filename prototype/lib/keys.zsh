@@ -166,7 +166,24 @@ _clicue_accept() {
     # Learn the command's documented flag set too. This is what lets the second
     # box explain `-lat`. It forks at most once per command ever — the result is
     # cached on disk against the binary's mtime.
-    [[ -n $_clicue_cmd ]] && _clicue_harvest_flags $_clicue_cmd
+    # Every ANCESTOR path, not just the current one.
+    #
+    # The current path is what composition needs; the ancestors are what comprehension
+    # needs. `gh org list --limit 10` cannot explain `org` from `gh org list`'s option
+    # set — `org` is documented one level up. Harvesting only the deepest path left the
+    # earlier tokens permanently unexplained.
+    #
+    # Costs one fork per level, once per path per binary version, and each is cached.
+    # Depth is small in practice: three levels is a lot for a CLI.
+    if [[ -n ${_clicue_cmdpath:-$_clicue_cmd} ]]; then
+      local -a _hp=( ${(s.:.)${_clicue_cmdpath:-$_clicue_cmd}} )
+      local _acc=''
+      local _seg
+      for _seg in $_hp; do
+        _acc=${_acc:+${_acc}:}${_seg}
+        _clicue_harvest_flags $_acc
+      done
+    fi
     if [[ -n $CLICUE_DEBUG ]]; then
       print -r -- "  COMPSYS words=${#_clicue_cs_words} descs=${#_clicue_cs_descs} glossed=${#_clicue_cs_gloss}" >> $CLICUE_DEBUG
       local _dn

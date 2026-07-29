@@ -68,6 +68,7 @@ typeset -g  _clicue_top=1          # first visible row (window start)
 typeset -g  _clicue_engaged=0      # has the operator actually used the card?
 typeset -g  _clicue_visible=0
 typeset -g  _clicue_standdown=1   # clicue deliberately yielded this position
+typeset -g  _clicue_cmdpath=''    # command path the cursor is inside
 typeset -g  _clicue_optctx=0      # the line already carries an option token
 typeset -g  _clicue_coldflags=0   # option typed, flag set not harvested yet
 typeset -g  _clicue_lastbuf=$'\0'
@@ -250,6 +251,17 @@ _clicue_pre_redraw() {
     # ── argument position ───────────────────────────────────────────────────
     _clicue_mode=arg
     _clicue_cmd=${words[1]}
+    # The command PATH the cursor sits in: `gh org list` is a different place from
+    # `gh`, and its options are different. Built from the non-flag tokens BEFORE the
+    # one being typed — a flag never changes what the next token means, a subcommand
+    # always does.
+    _clicue_cmdpath=${words[1]}
+    local _pw
+    local -i _pi
+    for (( _pi = 2; _pi < ${#words} + trailing; _pi++ )); do
+      _pw=${words[_pi]}
+      [[ -n $_pw && $_pw != -* ]] && _clicue_cmdpath="${_clicue_cmdpath}:${_pw}"
+    done
     # is the operator already composing options?
     _clicue_optctx=0
     local _ow

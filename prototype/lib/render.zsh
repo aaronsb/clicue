@@ -266,19 +266,47 @@ _clicue_render() {
   #
   # Only populated once the command's flag set is known — that needs a compsys
   # fork, so it arrives on the first Tab and from the on-disk cache thereafter.
+  # ── comprehension: what does this line SAY ────────────────────────────────
+  # Driven by the TOKENS, not by the cursor. That is what makes a pasted command
+  # explain itself with no paste detection, no bracketed-paste hook and no new mode:
+  # a pasted line is just a line, and this pane reads lines.
+  #
+  # Walks left to right maintaining the command PATH, because a token's meaning depends
+  # on where it sits — `list` means something under `gh org` and nothing under `gh`.
+  # Subcommands extend the path; flags do not.
   _clicue_explain_rows=()
   if [[ $_clicue_mode == arg ]] && (( ${#_clicue_words} > 1 )); then
-    # cheap: reads the cache file at most once per command per shell
-    _clicue_flag_load $_clicue_cmd 2>/dev/null
+    local epath=${_clicue_words[1]}
     local -a eparts
-    local etok ef
+    local etok ef edesc
     local -A eseen=()
-    for etok in ${_clicue_words[2,-1]}; do
-      [[ $etok == -* ]] || continue
-      _clicue_fkey $_clicue_cmd $etok
-      if [[ -n ${_clicue_flag_desc[$_clicue_fk]} ]]; then
+    _clicue_flag_load $epath 2>/dev/null
+    local -i ei
+    for (( ei = 2; ei <= ${#_clicue_words}; ei++ )); do
+      etok=${_clicue_words[ei]}
+      [[ -n $etok ]] || continue
+      _clicue_fkey $epath $etok
+      edesc=${_clicue_flag_desc[$_clicue_fk]}
+
+      if [[ $etok != -* ]]; then
+        # A subcommand, if this path documents it. Anything else is a VALUE — a
+        # filename, a number, an argument to the flag before it — and clicue has
+        # nothing true to say about those, so it says nothing rather than guessing.
+        if [[ -n $edesc ]] && (( ! ${+eseen[$etok]} )); then
+          eseen[$etok]=1
+          _clicue_flag_label $epath $etok
+          _clicue_explain_rows+=( "${_clicue_fl}"$'\t'"${edesc}" )
+        fi
+        # Descend regardless of whether it was documented: an undocumented
+        # subcommand still changes what the NEXT token means.
+        epath="${epath}:${etok}"
+        _clicue_flag_load $epath 2>/dev/null
+        continue
+      fi
+
+      if [[ -n $edesc ]]; then
         eparts=( $etok )
-      elif _clicue_decompose $_clicue_cmd $etok; then
+      elif _clicue_decompose $epath $etok; then
         eparts=( $_clicue_parts )
       else
         continue
@@ -286,17 +314,21 @@ _clicue_render() {
       for ef in $eparts; do
         (( ${+eseen[$ef]} )) && continue
         eseen[$ef]=1
-        _clicue_flag_label $_clicue_cmd $ef
-        _clicue_fkey $_clicue_cmd $ef
+        _clicue_flag_label $epath $ef
+        _clicue_fkey $epath $ef
         _clicue_explain_rows+=( "${_clicue_fl}"$'\t'"${_clicue_flag_desc[$_clicue_fk]}" )
       done
     done
   fi
 
+  # ── composition: what can go HERE ─────────────────────────────────────────
+  # Driven by the cursor. Restored after being deleted by an edit anchored on a REGION
+  # rather than on exact boundaries — the mode dispatch sat between the two anchors and
+  # went with them, so every card came back empty. Third time that shape has cost
+  # something in this project; the rule is exact strings, never spans.
   if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
     # The placeholder spends the primary card on the command's OWN NAME, which is not
-    # a cue the operator can act on. It existed because a card with no rows at all
-    # would have rendered as an empty box; now that the explanation can open a card by
+    # a cue the operator can act on. Now that the explanation can open a card by
     # itself, there is nothing left for it to do.
     if (( ${#_clicue_explain_rows} )); then
       reply=(); _clicue_tier1_n=0
@@ -305,16 +337,11 @@ _clicue_render() {
     fi
   elif [[ $_clicue_mode == arg ]]; then
     if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
-      # Typing an option with no flag data yet. Rendering nothing here is what
-      # reads as "this command cannot be completed" — the operator has no way to
-      # know one Tab would fill the card. Say it instead.
-      # Also taken when a harvest already happened and found NOTHING — an alias
-      # resolving to a shell function lands there. Without the second test the cache
-      # file exists, the load succeeds, and the operator gets no card at all rather
-      # than being told there is nothing to show.
+      # Typing an option with no flag data yet. Rendering nothing here is what reads as
+      # "this command cannot be completed" — say it instead.
       _clicue_resolve_cmd $_clicue_cmd
       if [[ $pfx == -* ]] && \
-         { ! _clicue_flag_load $_clicue_cmd 2>/dev/null || \
+         { ! _clicue_flag_load ${_clicue_cmdpath:-$_clicue_cmd} 2>/dev/null || \
            (( ${+_clicue_flag_none[$_clicue_realcmd]} )) }; then
         _clicue_info=1; _clicue_coldflags=1; reply=( $_clicue_cmd )
         _clicue_tier1_n=1
@@ -322,8 +349,6 @@ _clicue_render() {
         _clicue_cands=( $cands )
       elif (( ${#_clicue_explain_rows} )); then
         # A COMPLETE invocation is exactly the case with nothing left to propose.
-        # `rm -rf` matches no further candidate, so the card used to vanish at the
-        # moment the operator had typed something worth explaining.
         reply=()
       elif [[ -n $pfx ]]; then
         return 1
