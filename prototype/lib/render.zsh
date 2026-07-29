@@ -1,0 +1,511 @@
+#!/usr/bin/env zsh
+# clicue — the card
+#
+# Turns a candidate list into lines of text plus region_highlight spans. Reads the
+# theme; never contains a literal box glyph, because the glyph set has to be
+# swappable for terminals whose font cannot draw it.
+#
+# Two boxes, one selection. Tier 1 (nearest the prompt) is what this operator
+# actually invokes — it has history behind it. Tier 2 is either the overflow of the
+# candidate list as a column grid, or, in argument position, an explanation of what
+# is already on the line. The selection flows out of the bottom of tier 1 straight
+# into the grid, so there is no mode to switch and no second keybinding to learn.
+#
+# Height is a fixed budget both boxes pad into. ZLE paints a taller POSTDISPLAY over
+# a shorter one rather than reflowing, so a card that changed height while typing
+# would mangle itself.
+
+# $1 lo  $2 hi  $3 window-top  $4 label  $5 maxrows  $6 namew  $7 glossw  $8 inner
+_clicue_emit_box() {
+  local -i lo=$1 hi=$2 top=$3 maxrows=$5 namew=$6 glossw=$7 inner=$8
+  local label=$4
+  (( top < lo )) && top=$lo
+  local -i bot=$(( top + maxrows - 1 ))
+  (( bot > hi )) && bot=$hi
+  (( top > bot )) && return 1
+
+  local -i rule=$(( inner - ${#label} ))
+  (( rule < 1 )) && rule=1
+  _clicue_lines+=( "${CLICUE_GLYPH[tl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[tr]}" )
+
+  local -i emitted=0
+  local -i i
+  local ent name kind g nmcol gcol marker
+  for (( i = top; i <= bot; i++ )); do
+    (( emitted++ ))
+    ent=${_clicue_cands[i]}
+    name=${_clicue_disp[$ent]:-$ent}
+    kind=${_clicue_kind[$ent]:-system}
+    [[ $_clicue_mode == arg ]] && kind=arg
+    # $ent, NOT $name: the description is keyed on the real token. Looking it up
+    # by the display label silently returned nothing for every paired row.
+    _clicue_gloss $ent $kind; g=$_clicue_g
+    marker=" ${CLICUE_GLYPH[nosel]}"
+    (( i == _clicue_sel )) && marker=" ${CLICUE_GLYPH[sel]}"
+    nmcol=${(r:$namew:)${name[1,$namew]}}
+    (( ${#g} > glossw )) && g="${g[1,$(( glossw - 1 ))]}…"
+    gcol=${(r:$glossw:)g}
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}${marker} ${nmcol}  ${gcol}${CLICUE_GLYPH[v]}" )
+  done
+  # Deliberately NOT padded to the allocation. The card shows as many cues as
+  # exist and no blank filler. This makes the card's height vary with the
+  # candidate count, which re-tests an earlier inference (that ZLE paints a
+  # taller POSTDISPLAY over a shorter one rather than reflowing) — that was
+  # never isolated, only worked around. If display mangling returns while
+  # typing, the inference was right and padding must come back.
+  return 0
+}
+
+# Tier 2 in argument position: what the operator has ALREADY typed, enumerated.
+#
+# Once the invocation is past the command name there is no reason to keep hunting
+# for similarly-named commands — that question is answered. The useful question is
+# what the thing on the line actually does, so the same real estate becomes one
+# row per property:
+#
+#   -l, --long        Display extended file metadata as a table
+#   -a, --all         Do not ignore entries starting with .
+#   -t, --timesort    Sort by time modified
+#
+# Rows are `label<TAB>description`. Not selectable: this box is an explanation of
+# the line, not a picker. The selection stays in tier 1 where it composes.
+#   $1 maxrows  $2 namew  $3 inner  $4 footer
+_clicue_emit_explain() {
+  local -i maxrows=$1 namew=$2 inner=$3
+  local footer=$4
+  (( ${#_clicue_explain_rows} )) || return 1
+
+  # An invocation in the top percentile of the operator's own history is one they
+  # know. Collapse to the evidence line and say how to open it — a REDUCED view,
+  # never a silently different one, and the expand key is named on the row so a
+  # collapsed box cannot be mistaken for a broken one.
+  local -i collapsed=0
+  if (( ! _clicue_expanded )) && _clicue_is_familiar; then collapsed=1; fi
+
+  local label=' typed '
+  (( collapsed )) && label=' typed · collapsed '
+  local -i rule=$(( inner - ${#label} ))
+  (( rule < 1 )) && rule=1
+  # ├ joins the box above; ╭ opens one. With a complete invocation there are no
+  # candidates and therefore no box above, and the card was drawn with no top edge.
+  if (( ${#_clicue_lines} )); then
+    _clicue_lines+=( "${CLICUE_GLYPH[jl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[jr]}" )
+  else
+    _clicue_lines+=( "${CLICUE_GLYPH[tl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[tr]}" )
+  fi
+
+  if (( collapsed )); then
+    local REPLY ekey
+    local -a ev
+    zstyle -a ':clicue:keys' expand ev || ev=( '^[e' )
+    _clicue_keylabel ${ev[1]}; ekey=$REPLY
+    local note=${footer:-"${#_clicue_explain_rows} properties"}
+    local line="${note}  ·  ${ekey} to expand"
+    local -i crule=$(( inner - ${#line} - 3 ))
+    (( crule < 1 )) && crule=1
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${line}${(l:$crule:: :):-}${CLICUE_GLYPH[v]}" )
+    _clicue_footrow=${#_clicue_lines}
+    return 0
+  fi
+
+  # left column matches tier 1's width so the two boxes line up
+  local -i lw=$namew
+  local row nm ds
+  local -i i=0 dw
+  for row in $_clicue_explain_rows; do
+    (( ++i > maxrows )) && break
+    nm=${row%%$'\t'*}
+    ds=${row#*$'\t'}
+    (( ${#nm} > lw )) && nm="${nm[1,$lw]}"
+    dw=$(( inner - lw - 5 ))
+    (( dw < 10 )) && dw=10
+    (( ${#ds} > dw )) && ds="${ds[1,$(( dw - 1 ))]}…"
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${(r:$lw:)nm}  ${(r:$dw:)ds}${CLICUE_GLYPH[v]}" )
+    _clicue_explainrows+=( ${#_clicue_lines} )
+  done
+  if [[ -n $footer ]]; then
+    local -i frule=$(( inner - ${#footer} - 3 ))
+    (( frule < 1 )) && frule=1
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${footer}${(l:$frule:: :):-}${CLICUE_GLYPH[v]}" )
+    _clicue_footrow=${#_clicue_lines}
+  fi
+  return 0
+}
+
+# Tier 2 as a column grid (column-major, like zsh's own listing) plus a
+# one-line gloss bar for whatever is highlighted. Hundreds of candidates in a
+# single scrolling column is poor UX; a grid shows an order of magnitude more at
+# a glance and the gloss bar keeps the description without stealing a column.
+#   $1 lo  $2 hi  $3 maxrows  $4 inner
+_clicue_emit_grid() {
+  local -i lo=$1 hi=$2 maxrows=$3 inner=$4
+  local -i n=$(( hi - lo + 1 ))
+  (( n > 0 )) || return 1
+
+  local -i i w=0
+  for (( i = lo; i <= hi; i++ )); do
+    (( ${#_clicue_cands[i]} > w )) && w=${#_clicue_cands[i]}
+  done
+  (( w > 28 )) && w=28
+  local -i colw=$(( w + 2 ))
+  # tier 1 rows put names 3 columns in (│ + 2-char marker + space); match it so
+  # the grid's first column lines up with the primary card's names
+  local -i gutter=3
+  local -i avail=$(( inner - gutter ))
+  (( avail < colw )) && avail=$colw
+  local -i ncols=$(( avail / colw ))
+  (( ncols < 1 )) && ncols=1
+  # LAYOUT rows come from the content (so few items spread across columns rather
+  # than stacking in one); the box is then PADDED to the full allocation so the
+  # card's total height stays invariant. Two different numbers.
+  local -i rows=$(( (n + ncols - 1) / ncols ))
+  (( rows > maxrows )) && rows=$maxrows
+  (( rows < 1 )) && rows=1
+  local -i page=$(( rows * ncols ))
+
+  # keep the selection on the visible page
+  (( _clicue_gridtop < lo )) && _clicue_gridtop=$lo
+  if (( _clicue_sel >= lo && _clicue_sel <= hi )); then
+    while (( _clicue_sel >= _clicue_gridtop + page )); do (( _clicue_gridtop += page )); done
+    while (( _clicue_sel < _clicue_gridtop )); do (( _clicue_gridtop -= page )); done
+    (( _clicue_gridtop < lo )) && _clicue_gridtop=$lo
+  fi
+  _clicue_grid_rows=$rows
+  _clicue_grid_cols=$ncols
+
+  local -i shown=$(( hi - _clicue_gridtop + 1 ))
+  (( shown > page )) && shown=$page
+  # Label says what the box actually holds. "on system" is a command-position
+  # sentence; in argument position these are the remaining options for one command.
+  local label=" all ${n} on system "
+  [[ $_clicue_mode == arg ]] && label=" ${n} more "
+
+  (( _clicue_focus == 2 )) && label=" browsing ${n} — $(( _clicue_sel - lo + 1 ))/${n} "
+  local -i rule=$(( inner - ${#label} ))
+  (( rule < 1 )) && rule=1
+  _clicue_lines+=( "${CLICUE_GLYPH[tl]}${label}${(pl:$rule::$_clicue_hg:):-}${CLICUE_GLYPH[tr]}" )
+
+  local -i r c idx off
+  local row nm cell
+  for (( r = 0; r < rows; r++ )); do
+    row=''
+    off=0
+    for (( c = 0; c < ncols; c++ )); do
+      idx=$(( _clicue_gridtop + c * rows + r ))
+      if (( idx > hi )) || (( idx - _clicue_gridtop >= page )); then
+        row+=${(r:$colw:)}
+        continue
+      fi
+      nm=${_clicue_cands[idx]}
+      cell=${(r:$colw:)${nm[1,$w]}}
+      if (( idx == _clicue_sel )); then
+        cell="${CLICUE_GLYPH[sel]}${${(r:$(( colw - 1 )):)${nm[1,$w]}}}"
+        # remember exactly where this cell lands so only IT gets the selection
+        # highlight — colouring the whole row would imply the row is the unit
+        _clicue_selline=$(( ${#_clicue_lines} + 1 ))
+        _clicue_selcol=$(( 1 + gutter + off ))
+        _clicue_selw=$colw
+      fi
+      row+=$cell
+      (( off += colw ))
+    done
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}${(r:$gutter:)}${${(r:$avail:)row}}${CLICUE_GLYPH[v]}" )
+    _clicue_gridrows+=( ${#_clicue_lines} )
+  done
+  # not padded either — see the note in _clicue_emit_box
+  return 0
+}
+
+_clicue_render() {
+  local pfx=$1
+  local -a cands
+  local -a reply
+  typeset -g _clicue_tier1_n=0
+  # cleared per render, or a label from the previous command would outlive it
+  _clicue_disp=()
+  _clicue_coldflags=0
+
+  # ── what is already on the line, explained ────────────────────────────────
+  # Built before the empty-candidate bail, because a COMPLETE invocation is
+  # exactly the case with nothing left to propose. `ls -lat` matches no further
+  # candidate, so the card used to vanish at the moment the operator had typed
+  # something worth explaining.
+  #
+  # Only populated once the command's flag set is known — that needs a compsys
+  # fork, so it arrives on the first Tab and from the on-disk cache thereafter.
+  _clicue_explain_rows=()
+  if [[ $_clicue_mode == arg ]] && (( ${#_clicue_words} > 1 )); then
+    # cheap: reads the cache file at most once per command per shell
+    _clicue_flag_load $_clicue_cmd 2>/dev/null
+    local -a eparts
+    local etok ef
+    local -A eseen=()
+    for etok in ${_clicue_words[2,-1]}; do
+      [[ $etok == -* ]] || continue
+      _clicue_fkey $_clicue_cmd $etok
+      if [[ -n ${_clicue_flag_desc[$_clicue_fk]} ]]; then
+        eparts=( $etok )
+      elif _clicue_decompose $_clicue_cmd $etok; then
+        eparts=( $_clicue_parts )
+      else
+        continue
+      fi
+      for ef in $eparts; do
+        (( ${+eseen[$ef]} )) && continue
+        eseen[$ef]=1
+        _clicue_flag_label $_clicue_cmd $ef
+        _clicue_fkey $_clicue_cmd $ef
+        _clicue_explain_rows+=( "${_clicue_fl}"$'\t'"${_clicue_flag_desc[$_clicue_fk]}" )
+      done
+    done
+  fi
+
+  if [[ $_clicue_mode == arg ]] && (( _clicue_info )); then
+    reply=( $_clicue_cmd ); _clicue_tier1_n=1
+  elif [[ $_clicue_mode == arg ]]; then
+    if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
+      # Typing an option with no flag data yet. Rendering nothing here is what
+      # reads as "this command cannot be completed" — the operator has no way to
+      # know one Tab would fill the card. Say it instead.
+      if [[ $pfx == -* ]] && ! _clicue_flag_load $_clicue_cmd 2>/dev/null; then
+        _clicue_info=1; _clicue_coldflags=1; reply=( $_clicue_cmd )
+        _clicue_tier1_n=1
+        cands=( $reply )
+        _clicue_cands=( $cands )
+      elif (( ${#_clicue_explain_rows} )); then
+        # A COMPLETE invocation is exactly the case with nothing left to propose.
+        # `rm -rf` matches no further candidate, so the card used to vanish at the
+        # moment the operator had typed something worth explaining.
+        reply=()
+      elif [[ -n $pfx ]]; then
+        return 1
+      else
+        _clicue_info=1; reply=( $_clicue_cmd )
+      fi
+    fi
+    # history-derived args are tier 1; compsys-derived fill the grid
+    _clicue_tier1_n=${_clicue_arg_t1:-${#reply}}
+  else
+    _clicue_candidates $pfx
+  fi
+  cands=( $reply )
+
+  # An explanation alone is enough to justify the card.
+  (( ${#cands} || ${#_clicue_explain_rows} )) || return 1
+  _clicue_cands=( $cands )
+
+  # ── height budget ──────────────────────────────────────────────────────────
+  # The card is a FIXED number of lines, always. ZLE paints a taller POSTDISPLAY
+  # over a shorter one rather than reflowing, so any variation as the operator
+  # types mangles the display. Both boxes divide one budget and pad into it.
+  #
+  # both tiers:  1 border + r1 + 1 border + r2 + hint + gloss + close = r1+r2+5
+  # tier 1 only: 1 border + r1 + hint + gloss + close                 = r1+4
+  local -i maxlines=14
+  zstyle -s ':clicue:*' max-lines maxlines 2>/dev/null || maxlines=14
+  (( maxlines < 8 )) && maxlines=8
+  local -i total=${#cands}
+  # primary card holds a fixed number of cues; the overflow becomes the grid
+  local -i t1rows=10
+  zstyle -s ':clicue:*' tier1-rows t1rows 2>/dev/null || t1rows=10
+  (( t1rows < 1 )) && t1rows=1
+  # The grid expands to whatever the terminal can spare — a fixed row count
+  # wasted most of a tall window. Overhead: 3 borders + hint + gloss + the
+  # prompt's own lines, kept generous so the card never pushes the prompt off.
+  local t2cfg=auto
+  zstyle -s ':clicue:*' tier2-rows t2cfg 2>/dev/null || t2cfg=auto
+  local -i t2rows
+  if [[ $t2cfg == auto ]]; then
+    t2rows=$(( ${LINES:-24} - t1rows - 10 ))
+  else
+    t2rows=$t2cfg
+  fi
+  (( t2rows < 2 )) && t2rows=2
+
+  local -i t1n=$t1rows
+  (( t1n > total )) && t1n=$total
+  typeset -g _clicue_t1n=$t1n
+  # Focus follows the selection rather than a toggle: scroll past the end of
+  # tier 1 and you are in the grid. Nothing to enter, nothing to remember.
+  if (( _clicue_sel > t1n )); then _clicue_focus=2; else _clicue_focus=1; fi
+
+  local -i width=${COLUMNS:-80}
+  (( width > 120 )) && width=120
+  (( width < 40 ))  && width=40
+  local -i inner=$(( width - 2 ))
+
+  # Total = 1 + r1 + 1 + r2 + hint + gloss + close. With no overflow the grid
+  # box vanishes and tier 1 absorbs its border AND its rows, so the line count
+  # is identical either way.
+  local -i r1 r2
+  if (( total > t1n )); then
+    r1=$t1rows; r2=$t2rows
+  else
+    r1=$(( t1rows + t2rows + 1 )); r2=0
+  fi
+
+  # clamp selection across the whole list, then slide whichever window holds it
+  (( _clicue_sel < 1 )) && _clicue_sel=1
+  (( _clicue_sel > total )) && _clicue_sel=$total
+  if (( _clicue_sel <= t1n )); then
+    (( _clicue_sel < _clicue_top1 )) && _clicue_top1=$_clicue_sel
+    (( _clicue_sel > _clicue_top1 + r1 - 1 )) && _clicue_top1=$(( _clicue_sel - r1 + 1 ))
+    (( _clicue_top1 < 1 )) && _clicue_top1=1
+  else
+    (( _clicue_top2 < t1n + 1 )) && _clicue_top2=$(( t1n + 1 ))
+    (( _clicue_sel < _clicue_top2 )) && _clicue_top2=$_clicue_sel
+    (( _clicue_sel > _clicue_top2 + r2 - 1 )) && _clicue_top2=$(( _clicue_sel - r2 + 1 ))
+  fi
+
+  # name column sized over both visible windows
+  local -i namew=0 i
+  local -a vis=()
+  # Measured over DISPLAY labels, not raw tokens: a paired row shows `-f, --force`
+  # and sizing on `-f` truncated it to `-f, --forc`.
+  (( t1n > 0 )) && for (( i = _clicue_top1; i <= t1n && i < _clicue_top1 + r1; i++ )) vis+=( ${_clicue_disp[${cands[i]}]:-${cands[i]}} )
+  if (( total > t1n )); then
+    local -i t2=$_clicue_top2
+    (( t2 < t1n + 1 )) && t2=$(( t1n + 1 ))
+    for (( i = t2; i <= total && i < t2 + r2; i++ )) vis+=( ${_clicue_disp[${cands[i]}]:-${cands[i]}} )
+  fi
+  # The explain box shares this column so the two boxes line up, so its labels
+  # have to be measured too — otherwise a card with no candidates at all sizes to
+  # the 10-column minimum and clips every explanation.
+  local erow
+  for erow in $_clicue_explain_rows; do vis+=( ${erow%%$'\t'*} ); done
+  for i in {1..${#vis}}; do (( ${#vis[i]} > namew )) && namew=${#vis[i]}; done
+  (( namew > 28 )) && namew=28
+  (( namew < 10 )) && namew=10
+  local -i glossw=$(( inner - namew - 5 ))
+  (( glossw < 10 )) && glossw=10
+
+  _clicue_lines=()
+  _clicue_gridrows=(); _clicue_selline=0
+  _clicue_explainrows=(); _clicue_footrow=0
+  local hint=${_clicue_hint:-' Tab accept · Esc dismiss '}
+  (( _clicue_info )) && { local REPLY; local -a dv
+    zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
+    _clicue_keylabel ${dv[1]}; hint=" ${REPLY} dismiss " }
+
+  # tier 1 first — nearest the prompt
+  if (( t1n > 0 )); then
+    _clicue_emit_box 1 $t1n $_clicue_top1 " ${_clicue_sel}/${total} " \
+                     $r1 $namew $glossw $inner
+  fi
+  # In argument position the second box explains the line instead of browsing
+  # commands. The grid stays for command position, where "what else is named like
+  # this" is still the live question.
+  if (( ${#_clicue_explain_rows} )); then
+    # Its own allocation. r2 is the CANDIDATE overflow, which is zero when a
+    # complete invocation leaves nothing further to propose — and a zero
+    # allocation drew the box header with no rows under it.
+    local -i er=${#_clicue_explain_rows}
+    (( er > r2 )) && (( r2 > 0 )) && er=$r2
+    (( er > maxlines - 6 )) && er=$(( maxlines - 6 ))
+    (( er < 1 )) && er=1
+    _clicue_invocation_note
+    _clicue_emit_explain $er $namew $inner "$_clicue_invnote"
+  elif (( total > t1n )); then
+    _clicue_emit_grid $(( t1n + 1 )) $total $r2 $inner
+  fi
+
+  local -i brule=$(( inner - ${#hint} ))
+  (( brule < 1 )) && brule=1
+  _clicue_lines+=( "${CLICUE_GLYPH[bl]}${(pl:$brule::$_clicue_hg:):-}${hint}${CLICUE_GLYPH[br]}" )
+
+  # Gloss bar: the highlighted cue's description on its own line, so the grid
+  # can stay dense without dropping descriptions.
+  #
+  # Rendered UNCONDITIONALLY, even when the selection sits in tier 1 and the
+  # description is already visible there. It was previously gated on the
+  # selection being in the grid, which meant Alt+Down grew the card by two lines
+  # mid-redraw — and ZLE mishandles a POSTDISPLAY that changes height, drawing
+  # the taller card over the shorter one instead of below it. Constant height is
+  # the fix.
+  if (( ${#_clicue_cands} )); then
+    local gname=${_clicue_cands[_clicue_sel]}
+    local gdisp=${_clicue_disp[$gname]:-$gname}
+    local gkind=${_clicue_kind[$gname]:-system}
+    [[ $_clicue_mode == arg ]] && gkind=arg
+    _clicue_gloss $gname $gkind
+    local -i gw=$(( inner - namew - 5 ))
+    (( gw < 10 )) && gw=10
+    local gg=$_clicue_g
+    (( ${#gg} > gw )) && gg="${gg[1,$(( gw - 1 ))]}…"
+    _clicue_lines+=( "${CLICUE_GLYPH[v]}   ${(r:$namew:)${gdisp[1,$namew]}}  ${(r:$gw:)gg}${CLICUE_GLYPH[v]}" )
+    _clicue_lines+=( "${CLICUE_GLYPH[bl]}${(pl:$inner::$_clicue_hg:):-}${CLICUE_GLYPH[br]}" )
+  fi
+
+  _clicue_text=$'\n'${(F)_clicue_lines}
+
+  # highlight spans over the assembled card
+  local -a specs=()
+  local -i pos=1 len i=0
+  local ln
+  local -A isgrid=()
+  for i in ${_clicue_gridrows}; do isgrid[$i]=1; done
+  i=0
+  for ln in $_clicue_lines; do
+    (( i++ ))
+    len=${#ln}
+    # NOTE: this pass identifies a row by matching the RENDERED line, so it has to
+    # be told the themed glyphs too. Fragile, and known to be — it is why the glyph
+    # set is validated at load rather than trusted.
+    if [[ $ln == (${CLICUE_GLYPH[tl]}|${CLICUE_GLYPH[bl]}|${CLICUE_GLYPH[jl]})* ]]; then
+      specs+=( "$pos $(( pos + len )) fg=${CLICUE_THEME[border]}" )
+    elif (( ${+isgrid[$i]} )); then
+      # A grid row is N cells of the SAME kind — every column is a command name.
+      # Applying the list layout's name/gloss spans here was tinting columns 2+
+      # with the description colour, as though they were descriptions.
+      specs+=( "$pos $(( pos + 1 )) fg=${CLICUE_THEME[border]}" )
+      specs+=( "$(( pos + len - 1 )) $(( pos + len )) fg=${CLICUE_THEME[border]}" )
+      specs+=( "$(( pos + 1 )) $(( pos + len - 1 )) fg=${CLICUE_THEME[accent]}" )
+      if (( _clicue_selline == i )); then
+        specs+=( "$(( pos + _clicue_selcol )) $(( pos + _clicue_selcol + _clicue_selw )) fg=${CLICUE_THEME[seltext]},bg=${CLICUE_THEME[selbg]},bold" )
+      fi
+    else
+      specs+=( "$pos $(( pos + 1 )) fg=${CLICUE_THEME[border]}" )
+      specs+=( "$(( pos + len - 1 )) $(( pos + len )) fg=${CLICUE_THEME[border]}" )
+      specs+=( "$(( pos + 4 )) $(( pos + 4 + namew )) fg=${CLICUE_THEME[accent]},bold" )
+      specs+=( "$(( pos + 6 + namew )) $(( pos + len - 1 )) fg=${CLICUE_THEME[gloss]}" )
+      [[ $ln == "${CLICUE_GLYPH[v]} ${CLICUE_GLYPH[sel]}"* ]] && \
+        specs+=( "$pos $(( pos + len )) fg=${CLICUE_THEME[seltext]},bg=${CLICUE_THEME[selbg]}" )
+    fi
+    (( pos += len + 1 ))
+  done
+  _clicue_spans=( $specs )
+  return 0
+}
+
+# Strip only the CARD, deliberately leaving our ghost stem in place. The yield
+# wrappers use this: zsh-autosuggestions then accepts whatever precedes the
+# card, which is our stem — so Right Arrow accepts the highlighted cue.
+_clicue_clear_card() {
+  _clicue_visible=0
+  region_highlight=( ${region_highlight:#*memo=clicue*} )
+  if [[ -n $_clicue_card && $POSTDISPLAY == *"$_clicue_card" ]]; then
+    POSTDISPLAY=${POSTDISPLAY%"$_clicue_card"}
+  fi
+  _clicue_card=''
+}
+
+# Strip card AND ghost — used before re-rendering, so stems do not accumulate.
+_clicue_clear() {
+  _clicue_clear_card
+  if [[ -n $_clicue_ghost && $POSTDISPLAY == *"$_clicue_ghost" ]]; then
+    POSTDISPLAY=${POSTDISPLAY%"$_clicue_ghost"}
+  fi
+  _clicue_ghost=''
+}
+
+# Build the hint line once, from what is actually bound. Bindings vary by
+# terminal, so advertising the real ones is load-bearing rather than decorative.
+_clicue_build_hint() {
+  local REPLY lbl
+  local -a av dv
+  zstyle -a ':clicue:keys' accept  av || av=( '^I' )
+  zstyle -a ':clicue:keys' dismiss dv || dv=( '^[' )
+  _clicue_keylabel ${av[1]}; local cyc=$REPLY
+  _clicue_keylabel ${dv[1]}; local dis=$REPLY
+  typeset -g _clicue_hint=" ${cyc} cycle · ↑↓ browse · → accept · ⏎ insert · ${dis} dismiss "
+}
