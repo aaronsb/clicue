@@ -187,6 +187,24 @@ _clicue_accept() {
     fi
   fi
 
+  # A token that is ALREADY the whole answer: accept it and move on, rather than
+  # cycling a one-item list.
+  #
+  # Reported for gh, and it is the shape of every nested CLI. `gh org<Tab>` offers
+  # exactly one candidate — `org`, which is what is already typed — so cycling did
+  # nothing visible and there was no way forward, even though `gh org ` has
+  # subcommands waiting. Same for `gh<Tab>` when gh is the only command by that name.
+  # Accepting inserts the token's declared suffix (usually a space), and the next
+  # redraw shows the level below. This is what zsh's own completion does with
+  # accept-exact, and the operator reasonably expects it.
+  if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} == 1 )) \
+     && [[ -n $_clicue_pfx && ${_clicue_cands[1]} == $_clicue_pfx ]]; then
+    _clicue_sel=1
+    _clicue_engaged=1
+    _clicue_insert
+    return 0
+  fi
+
   if (( _clicue_visible && ! _clicue_info )) && (( ${#_clicue_cands} )); then
     _clicue_engaged=1
     local -i lim=${_clicue_t1n:-0}
