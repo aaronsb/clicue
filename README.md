@@ -31,7 +31,8 @@ source /path/to/clicue/prototype/clicue.zsh
 into your `conf.d` and edit. **All `zstyle` settings must come before the `source`
 line**, because keys are bound at source time.
 
-Startup cost is ~2 ms; the corpus loads lazily on the first card.
+Loading clicue costs ~5 ms; the corpus loads lazily on the first card, not at
+startup.
 
 ## Keys
 
@@ -69,7 +70,7 @@ always safe.
 
 | File | What | Rebuild |
 |---|---|---|
-| `corpus.zsh` | glosses, history frequency, invocation statistics | `clicue-rebuild` |
+| `corpus.zsh` | glosses, history frequency, invocation statistics | automatic when stale, in the background |
 | `flags/<cmd>.zsh` | a command's documented options, harvested from compsys | automatic on first use |
 
 Both are versioned and invalidated automatically. The corpus is stamped with the
@@ -89,7 +90,7 @@ zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
 ## Status
 
 Working prototype, in daily use by its author. Not packaged, not versioned, no
-install script. `prototype/test.zsh` holds ~100 in-process assertions; run it after
+install script. `prototype/test.zsh` holds 139 in-process assertions; run it after
 any change.
 
 - [SPEC.md](SPEC.md) — design values and every measured finding, tagged by
