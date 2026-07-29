@@ -510,6 +510,43 @@ Two structural corrections came with it:
   reach the ends. All of them go through `_clicue_move`, inheriting its clamping and
   its delegate-when-not-navigating contract rather than restating either.
 
+### Delegating in flag position rewrites the line **[MEASURED]**
+
+`cat -l1<Tab>`. No cat option starts with `-l1`, so the candidate set was empty, the
+card bailed, and Tab handed the line to the operator's completer — which drew zsh's own
+uncoloured listing *and changed the buffer to* `cat -A`.
+
+Two conclusions, one of them stronger than the UI-consistency argument that has driven
+this before:
+
+- **A leading dash is never a filename, so Tab does not delegate there at all.** The
+  earlier fix established clicue owns flag position; this closes the hole where an
+  empty candidate set reopened it. Delegation there is not a cosmetic fallback, it is
+  destructive: it silently discards what the operator typed. Design value 1 bites
+  harder when the thing damaged is the line rather than the display.
+- **A prefix that matches nothing is a typo, not an absence of information.** clicue
+  already holds the command's whole documented option set, so it offers that — with the
+  card saying `nothing matches -l1` rather than implying these are matches. The
+  operator sees what they meant and arrows to it, which is the composition loop doing
+  its job instead of a dead end.
+
+### An aliased command found none of its own options **[MEASURED]**
+
+Reported as `ls -<Tab>` failing to bring up a card at all, and guessed to be a missing
+`emulates` declaration. It was not: the declaration was present and correct.
+
+The flag map is keyed on the **alias-resolved** path — `_clicue_flag_load` and
+`_clicue_fkey` both resolve before touching it, so `ls` (declared to emulate `lsd`)
+stores `lsd|--long`. The candidate scan compared against the **typed** path and looked
+for `ls|`, matching nothing. So every aliased command found zero options and the card
+bailed with `render-failed`, while unaliased `cat -` drew a full card — which is
+exactly what made it read as an alias-configuration problem rather than a key-format
+one.
+
+The general shape, worth more than the fix: **when one side of a map resolves a key and
+the other side does not, the failure is silent and looks like missing data.** Both sides
+now go through `_clicue_resolve_path`.
+
 ### Two legend claims that were false, one of them dangerously **[MEASURED]**
 
 Found by reading the rendered legend against what the widgets actually test, after the

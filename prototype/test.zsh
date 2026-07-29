@@ -700,7 +700,10 @@ else
   nope "the row inserts the canonical short spelling"
 fi
 # A typed prefix must win over the canonical form: typing --rec must not insert -r.
-if [[ $body == *'canon != ${pfx}*'* ]]; then
+# `fpfx` is the EFFECTIVE prefix — $pfx on the first pass, empty on the second, which
+# runs only when nothing matched what was typed. The invariant is unchanged: while a
+# prefix is in play it decides the spelling.
+if [[ $body == *'canon != ${fpfx}*'* ]]; then
   ok "a typed prefix overrides the canonical spelling"
 else
   nope "a typed prefix overrides the canonical spelling" \
@@ -1098,6 +1101,44 @@ if [[ $body == *'_clicue_layout_width'* && $body == *'_clicue_layout_height'* ]]
   ok "the render body asks for the layout budget instead of recomputing it"
 else
   nope "the render body asks for the layout budget instead of recomputing it"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "flag position is never handed back"
+body=$(awk '/^_clicue_arg_candidates\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+# The flag map is keyed on the ALIAS-RESOLVED path, because _clicue_flag_load and
+# _clicue_fkey both resolve before touching it. Scanning it with the TYPED path meant
+# every aliased command matched nothing: `ls` emulates `lsd`, the cache held `lsd|...`,
+# the scan looked for `ls|`. Measured: `ls -` bailed with render-failed while `cat -`
+# drew a full card — which is what made it look like an alias-config problem.
+if [[ $body == *'_clicue_resolve_path'* && $body == *'fk == ${keypfx}\|*'* ]]; then
+  ok "the flag scan uses the same resolved key the map is written with"
+else
+  nope "the flag scan uses the same resolved key the map is written with" \
+       "an aliased command finds zero options and the card bails"
+fi
+
+# An option prefix matching nothing is a typo, not a reason to hand the line to a
+# completer. Measured: `cat -l1<Tab>` delegated to complete-word, which REWROTE the
+# line to `cat -A`. Losing what was typed is worse than any card.
+if [[ $body == *'pass == 2'* && $body == *'_clicue_argnomatch=1'* ]]; then
+  ok "a prefix that matches nothing offers the whole option set instead"
+else
+  nope "a prefix that matches nothing offers the whole option set instead"
+fi
+# and the card says so, rather than implying these are matches
+if [[ $(awk '/^_clicue_render\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'nothing matches'* ]]; then
+  ok "and the card says nothing matched, rather than implying these did"
+else
+  nope "and the card says nothing matched, rather than implying these did"
+fi
+# The backstop: even with no candidates at all, Tab must not delegate in flag
+# position. A leading dash is never a filename.
+if [[ $(awk '/^_clicue_accept\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'_clicue_pfx == -*'* ]]; then
+  ok "Tab holds the line in flag position instead of delegating"
+else
+  nope "Tab holds the line in flag position instead of delegating" \
+       "delegation there rewrites the line"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

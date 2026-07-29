@@ -106,7 +106,7 @@ zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
 ## Status
 
 Working prototype, in daily use by its author. Not packaged, not versioned, no
-install script. `prototype/test.zsh` holds 200 in-process assertions; run it after
+install script. `prototype/test.zsh` holds 204 in-process assertions; run it after
 any change.
 
 The card sizes itself to the terminal on every render — no SIGWINCH hook, since zsh

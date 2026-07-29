@@ -616,7 +616,12 @@ _clicue_render() {
 
   # tier 1 first — nearest the prompt
   if (( t1n > 0 )); then
-    _clicue_emit_box 1 $t1n $_clicue_top1 " ${_clicue_sel}/${total} " \
+    # When the typed option prefix matched nothing, the card is showing the command's
+    # WHOLE option set — useful, but it must not imply these are matches. Saying so is
+    # what makes offering them honest rather than confusing.
+    local t1label=" ${_clicue_sel}/${total} "
+    (( _clicue_argnomatch )) && t1label=" ${_clicue_sel}/${total} · nothing matches ${_clicue_pfx} "
+    _clicue_emit_box 1 $t1n $_clicue_top1 "$t1label" \
                      $r1 $namew $glossw $inner
   fi
   # In argument position the second box explains the line instead of browsing

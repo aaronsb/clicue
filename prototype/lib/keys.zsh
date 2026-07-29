@@ -300,6 +300,21 @@ _clicue_accept() {
     zle -R
     return 0
   fi
+  # Flag position is NOT delegated, even with nothing to advance through. A leading
+  # dash is never a filename, and handing the line to a completer here does not merely
+  # draw the wrong UI: measured, `cat -l1<Tab>` had zsh's completion rewrite the line
+  # to `cat -A`. Silently losing what the operator typed is worse than any card, and
+  # worse than doing nothing.
+  #
+  # Reaching this point in flag position now means the command has no documented
+  # options at all — which is exactly what the informational card on screen says. Doing
+  # nothing agrees with it.
+  if [[ $_clicue_mode == arg && $_clicue_pfx == -* ]]; then
+    [[ -n $CLICUE_DEBUG ]] && \
+      print -r -- "TAB held=flag-position cands=${#_clicue_cands} info=$_clicue_info buf=[$LBUFFER]" >> $CLICUE_DEBUG
+    return 0
+  fi
+
   # Reaching here means the card had nothing to advance through, so Tab belongs to
   # whoever owned it. Logged because "Tab showed me the plain completion listing" is
   # indistinguishable from "clicue is broken" without knowing WHICH condition sent it

@@ -89,6 +89,7 @@ typeset -g  _clicue_standdown=1   # clicue deliberately yielded this position
 typeset -g  _clicue_cmdpath=''    # command path the cursor is inside
 typeset -g  _clicue_optctx=0      # the line already carries an option token
 typeset -g  _clicue_coldflags=0   # option typed, flag set not harvested yet
+typeset -gi _clicue_argnomatch=0  # option prefix matched no documented flag
 typeset -g  _clicue_lastbuf=$'\0'
 typeset -ga _clicue_cands=()
 # Candidate -> what to SHOW for it. The candidate stays the exact token that gets

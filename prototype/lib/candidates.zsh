@@ -81,17 +81,49 @@ _clicue_arg_candidates() {
   # cheap enough for a keystroke, and the first Tab for a command is what fills it.
   # Without this the card would be empty until Tab, and an empty card is how
   # zsh's raw listing got on screen in the first place.
+  typeset -g _clicue_argnomatch=0
   if [[ $pfx == -* ]] || (( _clicue_optctx )); then
     # keyed on the path the cursor is in, so `gh org <Tab>` offers org's options
     local lookup=${_clicue_cmdpath:-$cmd}
     _clicue_flag_load $lookup 2>/dev/null
+    # The flag map is keyed on the ALIAS-RESOLVED path — _clicue_flag_load and
+    # _clicue_fkey both resolve before they touch it — so the scan below must compare
+    # against the resolved head too. Comparing the typed path meant an aliased command
+    # matched NOTHING: `ls` is declared to emulate `lsd`, the cache held `lsd|--long`,
+    # and the scan looked for `ls|`. So `ls -` found zero options and the card bailed,
+    # while `cat -` worked, which is what made it read as an alias bug rather than a
+    # key-format one. [MEASURED]
+    _clicue_resolve_path $lookup
+    local keypfx=$_clicue_realpath
     # ALL declared here, outside the loop. Re-declaring a set `local` inside a loop
     # body prints its value — `sp=--help` and friends leaked straight onto the
     # terminal. Third time this exact gotcha has bitten this file.
-    local fk alt canon sp
+    local fk alt canon sp fpfx
+    local -i pass
+    # TWO passes. The second drops the prefix filter, and only runs when the first
+    # matched nothing at all.
+    #
+    # An option prefix that matches nothing is a TYPO, not a reason to hand the line
+    # back to a completer. A leading dash is never a filename, and delegating here
+    # does not merely show the wrong UI: measured, `cat -l1<Tab>` had zsh's own
+    # completion REWRITE the line to `cat -A`. Losing what you typed is a worse
+    # outcome than any card.
+    #
+    # So the whole option set is offered instead, and the card says the prefix matched
+    # nothing rather than implying these are matches. The operator can then see what
+    # they meant and arrow to it, which is the composition loop working as intended.
+    for (( pass = 1; pass <= 2; pass++ )); do
+      if (( pass == 2 )); then
+        (( ${#hist} || ${#rest} )) && break
+        [[ $pfx == -* ]] || break
+        fpfx=''
+        _clicue_argnomatch=1
+      else
+        fpfx=$pfx
+      fi
     # Sorted so the SHORT spelling of a pair is met first and becomes the row.
     for fk in ${(ko)_clicue_flag_desc}; do
-      [[ $fk == ${lookup}\|* ]] || continue
+      [[ $fk == ${keypfx}\|* ]] || continue
       n=${fk#*\|}
       (( ${+seen[$n]} )) && continue
       # One row per FLAG, not per spelling. `-d` and `--dir` describing the same
@@ -99,7 +131,7 @@ _clicue_arg_candidates() {
       # description-pairing was for in the first place. The short form is the
       # candidate — it is what the operator is typing — and the long form rides
       # along in the label.
-      [[ -n $pfx && $n != ${pfx}* ]] && continue
+      [[ -n $fpfx && $n != ${fpfx}* ]] && continue
       _clicue_fkey $lookup $n
       alt=${_clicue_flag_alt[$_clicue_fk]}
       if [[ -z $alt ]]; then
@@ -112,13 +144,14 @@ _clicue_arg_candidates() {
       canon=$_clicue_fc
       # when a prefix is being typed, honour it over the canonical short form —
       # typing `--rec` must not silently insert `-r`
-      [[ -n $pfx && $canon != ${pfx}* ]] && canon=$n
+      [[ -n $fpfx && $canon != ${fpfx}* ]] && canon=$n
       (( ${+seen[$canon]} )) && continue
       seen[$n]=1; seen[$canon]=1
       for sp in ${=alt}; do seen[$sp]=1; done
       _clicue_flag_label $lookup $n
       _clicue_disp[$canon]=$_clicue_fl
       rest+=( $canon )
+    done
     done
   fi
 
