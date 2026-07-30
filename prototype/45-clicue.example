@@ -90,11 +90,14 @@ zstyle ':clicue:*' familiar-percentile 0
 zstyle ':clicue:emulates' ls  lsd
 
 # ── why these are fixed counts ───────────────────────────────────────────────
-# The card holds a constant number of lines while you type: ZLE paints a taller
-# POSTDISPLAY over a shorter one instead of reflowing, so a card that grew or shrank
-# between keystrokes would mangle itself. Both boxes divide one budget and pad into
-# it, and when there is no overflow the primary card absorbs the grid's border and
-# rows so the total is identical either way.
+# The card's height DOES vary as you type — measured, from 29 lines to 3 and back
+# across one `git commit` sequence — and that is safe because POSTDISPLAY is emptied
+# and rebuilt on every redraw, so ZLE erases what is no longer there. An earlier
+# version of this comment claimed constant height was a hard requirement; the real
+# requirement is the clear.
+#
+# The budget below is therefore a UX bound, not a rendering one: it stops the card
+# shoving your scrollback off the screen.
 #
 # The budget is `tier1-rows + tier2-rows + 5`, cut to max-lines if that is smaller.
 # It changes only when the terminal is resized or you press Alt+M — both of which

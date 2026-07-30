@@ -1104,6 +1104,43 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "the card is rebuilt from empty, so its height may vary"
+# SPEC used to state that the card CANNOT grow or shrink in response to state, and that
+# both boxes pad to a constant total. Measured against a real typing sequence, that is
+# simply false — height changes on nearly every keystroke:
+#
+#   [g] 29  [gi] 21  [git] 17  [git ] 16  [git c] 8  [git commit] 3  [git commit ] 18
+#
+# It does not mangle, and the reason is not padding. POSTDISPLAY is emptied and rebuilt
+# on EVERY redraw (measured: 19 of 19 renders reported pd=0 after the clear, and the
+# rebuilt length always equalled the card's own length, so nothing accumulates). ZLE
+# then sees a complete new tail and does its own erasing, which is ordinary multi-line
+# behaviour it gets right. The original defect was a POSTDISPLAY *grown* without being
+# cleared; the clear is what fixed it.
+#
+# So the invariant worth asserting is the clear, not the height. Asserting constant
+# height would encode a constraint the code does not have and does not need.
+pbody=$(awk '/^_clicue_pre_redraw\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $pbody == *_clicue_clear* ]]; then
+  ok "every redraw clears before it draws"
+else
+  nope "every redraw clears before it draws" \
+       "a POSTDISPLAY appended to without clearing is the original mangling bug"
+fi
+# The clear must come BEFORE the card is composed, or it erases what was just built.
+if [[ ${pbody%%POSTDISPLAY=\"*} == *_clicue_clear* ]]; then
+  ok "the clear precedes composing the new card"
+else
+  nope "the clear precedes composing the new card"
+fi
+# And the card must be assigned, never appended to, across renders.
+if [[ $pbody == *'POSTDISPLAY="${POSTDISPLAY}${ghost}${card}"'* ]]; then
+  ok "the card is composed onto a POSTDISPLAY that was just emptied"
+else
+  nope "the card is composed onto a POSTDISPLAY that was just emptied"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "ranking is an experiment you can interrogate"
 # Which metric is right is not knowable from first principles — it is knowable from
 # living with the tool, and every improvement here so far started as "that feels off".

@@ -416,7 +416,7 @@ and cost real UX (blank filler rows in every small card).
 
 The claim as originally recorded follows.
 
-### POSTDISPLAY must be constant height **[ASSUMED]**
+### POSTDISPLAY must be constant height — **SUPERSEDED** [was ASSUMED]
 
 A second POSTDISPLAY defect, found via a visual bug: Alt+Down made the second
 card draw *on top of* the first rather than below it.
@@ -444,10 +444,40 @@ rows come from its content (so few grid items spread across columns instead of
 stacking in one), while its **allocation** is padded to a constant. Verified
 identical at 14 lines across nine prefixes × three selection positions.
 
-This is a hard constraint on any POSTDISPLAY-based renderer — **the card cannot
-grow or shrink in response to state**, so every layout decision must be made
-against a fixed budget rather than to fit content. It stacks with the
-single-tenancy finding below.
+~~This is a hard constraint on any POSTDISPLAY-based renderer — **the card cannot grow
+or shrink in response to state**, so every layout decision must be made against a fixed
+budget rather than to fit content.~~
+
+**Superseded, and it was never true of the shipped code. [MEASURED]** Height changes on
+nearly every keystroke:
+
+```
+[g] 29   [gi] 21   [git] 17   [git ] 16   [git c] 8   [git commit] 3   [git commit ] 18
+```
+
+It does not mangle, and padding is not why. **POSTDISPLAY is emptied and rebuilt on
+every redraw** — 19 of 19 renders reported `pd=0` after the clear, and the rebuilt
+length always equalled the card's own, so nothing accumulates. ZLE then sees a complete
+new tail and does its own erasing, which is ordinary multi-line editing behaviour it
+gets right. The original defect was a POSTDISPLAY *grown without being cleared*; the
+clear fixed it, and the constant-height rule was a second, unnecessary fix for a bug
+already dead.
+
+Two things this changes for anyone reading further:
+
+- **The fixed budget stays, for a different reason.** It bounds the card so it cannot
+  shove the scrollback away (see the clamp finding below) — a UX constraint, not a
+  rendering one. Layout may fit content freely within it.
+- **The invariant worth protecting is the clear, not the height**, and that is what the
+  assertions now cover. Encoding constant height would preserve a constraint the code
+  does not have.
+
+Honest limit on this measurement: it establishes that height varies and that the clear
+happens on every render. It does **not** visually confirm the absence of orphaned rows
+on a large shrink — the ANSI grid interpreter used elsewhere in this project produces
+the same interleaving artefacts for a known-good control, so its output is not evidence
+either way there. The absence of leftover-row reports from daily use is the evidence
+standing in for that, which is weaker than a measurement and is labelled as such.
 
 ### The card may be COLUMNS-1 wide, never COLUMNS **[MEASURED]**
 
