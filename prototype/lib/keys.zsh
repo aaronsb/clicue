@@ -219,6 +219,21 @@ _clicue_accept() {
     return 0
   fi
 
+  # A card may be shown and STILL not own Tab. `cd `, `pushd `, `popd `, `source ` —
+  # path-centric commands that document no options — have nothing for clicue to
+  # enumerate, so the keystroke belongs to compsys and the operator's muscle memory,
+  # while the card stays on screen naming the command.
+  #
+  # Checked BEFORE the harvest, which is the whole point: after it, the press had
+  # already paid for a fork that produced 34 directories nothing would display, and the
+  # directory list arrived on the second press over the top of an unrelated card.
+  if (( _clicue_yieldtab )); then
+    [[ -n $CLICUE_DEBUG ]] && \
+      print -r -- "TAB yield=nothing-to-enumerate to=[${_clicue_orig_tab:-expand-or-complete}] buf=[$LBUFFER]" >> $CLICUE_DEBUG
+    zle ${_clicue_orig_tab:-expand-or-complete}
+    return 0
+  fi
+
   # In argument position, Tab is where the expensive engine earns its keep:
   # compsys forks (git branch, docker ps) so it cannot run per keystroke, but on
   # demand it yields the authoritative flag/subcommand set WITH real descriptions.

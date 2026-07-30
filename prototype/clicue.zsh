@@ -86,6 +86,7 @@ typeset -g  _clicue_top=1          # first visible row (window start)
 typeset -g  _clicue_engaged=0      # has the operator actually used the card?
 typeset -g  _clicue_visible=0
 typeset -g  _clicue_standdown=1   # clicue deliberately yielded this position
+typeset -gi _clicue_yieldtab=0    # card is shown, but Tab belongs to compsys
 typeset -g  _clicue_cmdpath=''    # command path the cursor is inside
 typeset -g  _clicue_optctx=0      # the line already carries an option token
 typeset -g  _clicue_coldflags=0   # option typed, flag set not harvested yet
@@ -220,6 +221,7 @@ _clicue_pre_redraw() {
   # short, a menuselect keymap) delegates instantly, but merely having no
   # candidates YET must not — that is what dumped zsh's raw listing on screen.
   _clicue_standdown=1
+  _clicue_yieldtab=0
   [[ -n $CLICUE_DEBUG ]] && print -r -- "ENTER buf=[$LBUFFER] pd=${#POSTDISPLAY} card=${#_clicue_card} ghost=[$_clicue_ghost] sup=$_clicue_suppressed vis=$_clicue_visible" >> $CLICUE_DEBUG
   _clicue_clear
   [[ -n $CLICUE_DEBUG ]] && print -r -- "  AFTERCLEAR pd=${#POSTDISPLAY}" >> $CLICUE_DEBUG
@@ -333,6 +335,25 @@ _clicue_pre_redraw() {
           :
         else
           _clicue_info=1
+          # ...and Tab yields on the FIRST press.
+          #
+          # The line above this used to be the whole story, and the comment claimed the
+          # position "still yields to compsys" while the code drew a card and kept Tab.
+          # Measured, `cd <Tab>` therefore cost: one fork for 34 directories nothing
+          # would display, a five-line card saying only the command's own name, and THEN
+          # a hand-off — so the directory list arrived on the second press, over the top
+          # of a card that had nothing to do with it.
+          #
+          # `cd`, `pushd`, `popd` and `source` are the entire class this affects: they
+          # are the only path-centric commands that document no options at all, so there
+          # is nothing for clicue to enumerate and zsh's own lister is better at what
+          # remains. Yielding costs one press of muscle memory and gains nothing.
+          #
+          # The CARD stays. Losing it the moment a space is typed was the most jarring
+          # thing about an earlier build, and a card that yields Tab is not the same as
+          # no card — it still names the command and its gloss while the operator types
+          # a path. Only the keystroke is handed back.
+          _clicue_yieldtab=1
         fi
       fi
     fi

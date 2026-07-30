@@ -1782,5 +1782,33 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 print -r -- ""
+# ─────────────────────────────────────────────────────────────────────────────
+section "a card may be shown and still not own Tab"
+# `cd `, `pushd `, `popd `, `source ` — the only path-centric commands that document no
+# options at all, measured across 40 of them. Nothing for clicue to enumerate, so the
+# keystroke belongs to compsys and to muscle memory. The card stays: losing it the
+# moment a space is typed was the most jarring thing about an earlier build.
+abody=$(awk '/^_clicue_accept\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC)
+if [[ $abody == *'(( _clicue_yieldtab ))'* ]]; then
+  ok "Tab checks for a yielded position"
+else
+  nope "Tab checks for a yielded position"
+fi
+# BEFORE the harvest, which is the entire point. After it, the press had already paid
+# for a fork producing 34 directories nothing would display. [MEASURED: 1 fork -> 0]
+if [[ ${abody%%_clicue_capture*} == *_clicue_yieldtab* ]]; then
+  ok "and does so before paying for a fork"
+else
+  nope "and does so before paying for a fork" \
+       "yielding after the harvest keeps the cost and loses the press anyway"
+fi
+# The flag is per-render state, so it must be cleared on entry or a yield leaks into
+# the next position.
+if [[ $(awk '/^_clicue_pre_redraw\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'_clicue_yieldtab=0'* ]]; then
+  ok "the yield is cleared on every redraw rather than latching"
+else
+  nope "the yield is cleared on every redraw rather than latching"
+fi
+
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))
