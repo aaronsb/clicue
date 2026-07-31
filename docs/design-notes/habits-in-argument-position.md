@@ -209,6 +209,30 @@ because the host was discarded before the map was written.
   once grew to 68 rows in an 88-row window and shoved away the output of the command
   just run. Full option sets at empty prefix push more candidates through that clamp.
 
+### The window's seed still scales, and the alternatives are worse **[MEASURED]**
+
+Lookups are flat, but the one-off seed is not: `${(v)history}` materialises every value
+before `[1,win]` slices it, so seeding costs 0.5 ms at 2k entries and 7.1 ms at 50k.
+Three ways to bound the *read* rather than the slice were measured:
+
+| history | `${(v)history}[1,2000]` | `tail -n 2000 $HISTFILE` | `fc -ln -2000` |
+|---|---|---|---|
+| 2,000 | **0.51 ms** | 1.80 ms | 2.48 ms |
+| 20,000 | 2.86 ms | **1.81 ms** | 21.46 ms |
+| 50,000 | 7.10 ms | **2.15 ms** | 54.32 ms |
+
+`fc -l` is the one that looks purpose-built and is worst — it walks from the start and
+pays a subshell. Indexing `$history[$i]` for the newest N is worse still: the per-access
+cost grows with history size, which is the same trap that made a newest-first walk
+quadratic.
+
+`tail` is genuinely flat, and it is not adopted. It loses below ~15k entries, it costs a
+fork where there is currently none, and `HISTFILE` escapes multi-line entries in a way
+`$history` does not. The seed is paid once, lazily, on the first argument-position card.
+
+Revisit if a history passes ~20k entries; the crossover is the decision point, not the
+absolute number.
+
 ### The opt-out is a constraint on this feature, not a footnote
 
 The search window must be read from `$history` and never from `$BUFFER`. README, SPEC,
