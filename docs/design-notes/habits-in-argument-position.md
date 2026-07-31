@@ -1,7 +1,7 @@
 # Habits belong in argument position, and recency is what ranks them
 
-> Status: **proposal, partly implemented.** The measurements are real. Sections marked
-> **Implemented** have landed; the rest has not.
+> Status: **implemented.** The measurements are real and the decision below is in the
+> code. What remains open is listed at the end, and is open on purpose.
 > Sibling to [composition-and-comprehension.md](composition-and-comprehension.md),
 > which split the card into two jobs. This one decides what fills the composition
 > half when the cursor is past the command.
@@ -143,8 +143,29 @@ actually typed, they carry old timestamps, and recency buries them without a rul
 
 The non-pathish source is not new machinery. `_clicue_history_stem` already finds the
 most recent prefix-matching line and proposes its remainder as ghost text; this
-generalises it from one match to N, cycled with Tab. The `ssh` case half works today —
-`→` accepts the newest matching host. What is missing is the other dozen.
+generalises it from one match to N, cycled with Tab.
+
+**Implemented**, along with the tier-1 split and the tier-2 ungating. Measured against
+a real history and corpus:
+
+| buffer | tier 1 | tier 2 |
+|---|---|---|
+| `ls ` | `-lat`, `--color`, `--help`, … | 59 candidates total |
+| `rm ` | `-rf`, `-rt`, `-f` — no path | 14 total |
+| `cat ` | `-pp`, `--help`, `-p` | — |
+| `ssh <partial>` | the newest matching host, then the rest | — |
+| `git sta` | `status` alone | correctly **not** flooded with git's flag set |
+
+Building it surfaced three bugs of one kind, worth recording because the shape will
+recur: `%`, `#` and `!=` are all **pattern** operators in zsh, and every one of them had
+been used where a literal was meant. A typed word carrying a glob was stripped by
+pattern and ate the wrong amount of buffer — including in `_clicue_insert`, where the
+consequence is losing what you typed, an outcome this project has already recorded once
+in another form. `[[ $c != $pfx ]]` pattern-matched, so a prefix of `*` discarded every
+candidate as identical to what was typed. And `${(M)history:#${(b)buf}*}` does not
+re-scan the quoted expansion as a pattern at all, so a glob in the buffer matched
+nothing; the `(R)` subscript does, and is the same form `_clicue_history_stem` already
+used one letter away. Splices are now by length, comparisons quoted.
 
 ### Rejected
 
@@ -174,12 +195,28 @@ because the host was discarded before the map was written.
   once grew to 68 rows in an 88-row window and shoved away the output of the command
   just run. Full option sets at empty prefix push more candidates through that clamp.
 
+**Not yet verified.** Everything above was measured through the candidate functions
+directly. The suite is in-process by design — a pty harness was tried for this project
+and abandoned as unreliable — so the parts that only exist on a real terminal have not
+been exercised: that card height stays constant while typing, that the ghost and the
+legend agree with the new tier 1, and that a 32-column terminal still fits now that
+tier 2 fills at empty prefix. Those need a human at a prompt.
+
 ## Open, and deliberately not decided here
 
 - Whether a command that is neither cleanly pathish nor cleanly value-reusable should
-  draw tier 1 from **both** sources, merged. `git` is the awkward case: `git clone` is a
-  reusable habit, `git clone <some url>` mostly is not.
+  draw tier 1 from **both** sources, merged. `git` is the awkward case and it is no
+  longer hypothetical: `git clo` now offers 27 candidates, every one of them a
+  `clone` of a different repository URL. The subcommand is a habit; the URL after it
+  is not, and the split has no way to say so because the split is per-command.
 - Whether `pathish` should become a zstyle the operator can amend. It is currently a
-  fixed list of 56, chosen by one developer's judgement about what holds paths.
-- Whether the recency buckets are the right granularity for invocations. They were
-  chosen as a multiplier on a count that, at this level, is nearly always 1.
+  fixed list of 56, chosen by one developer's judgement about what holds paths — and
+  it now decides card *content*, not just what the builder collects, which is more
+  weight than the list was chosen to carry.
+- Whether an argument-position order should be interrogable the way command position
+  is. `clicue-rank why` explains a command ordering; there is no equivalent for a
+  tier-1 argument ordering, and the reason this feature is right at all came out of
+  exactly that kind of measurement.
+- What a *stale* remembered line should do. History proposes hosts that may no longer
+  resolve and repositories that may no longer exist; recency makes them rank low
+  eventually, but nothing marks them.
