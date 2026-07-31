@@ -878,8 +878,12 @@ _clicue_cue_stem() {
   (( ${#_clicue_cands} )) || return 1
   (( _clicue_info )) && return 1
   local pick=${_clicue_cands[_clicue_sel]}
+  # The membership test wants a PATTERN (does the cue start with what is typed) and the
+  # strip wants a LITERAL. Same distinction as the splices in keys.zsh — `#` compares
+  # an expanded value literally in default zsh but strips a pattern under GLOB_SUBST,
+  # and the ghost showing the wrong stem is the visible half of a mis-splice.
   if [[ -n $_clicue_pfx && $pick == ${_clicue_pfx}* ]]; then
-    _clicue_cstem=${pick#$_clicue_pfx}
+    _clicue_cstem=${pick[${#_clicue_pfx}+1,-1]}
   elif [[ -z $_clicue_pfx ]]; then
     _clicue_cstem=$pick
   fi
