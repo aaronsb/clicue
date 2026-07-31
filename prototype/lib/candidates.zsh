@@ -292,7 +292,6 @@ _clicue_arg_candidates() {
   # one: `git ` still answers for `git co`, and nothing answers for a line that no
   # longer starts the same way.
   if ! [[ -n $_clicue_cs_for && $LBUFFER == ${_clicue_cs_for}* ]]; then
-    typeset -g _clicue_arg_t1=${#hist}
     reply=( $hist ${(o)rest} )
     (( ${#reply} )) || return 1
     return 0
@@ -308,7 +307,6 @@ _clicue_arg_candidates() {
     (( ${+seen[$n]} )) && continue
     seen[$n]=1; rest+=( $n )
   done
-  typeset -g _clicue_arg_t1=${#hist}
   reply=( $hist ${(o)rest} )
   (( ${#reply} )) || return 1
   return 0

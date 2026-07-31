@@ -24,14 +24,14 @@ typeset -A gloss kind
 # Only keep glosses for commands that actually exist here. The full whatis index
 # carries ~2x entries for things not installed; storing them is pure startup tax.
 typeset -A installed
-local c
+local c=''
 for c in ${(k)commands} ${(k)functions} ${(k)aliases} ${(k)builtins}; do
   installed[$c]=1
 done
 
 # ── 1. whatis / mandb ─────────────────────────────────────────────────────────
 # Format:  name[, name2] (section)   - description
-local line names section desc n
+local line='' names='' section='' desc='' n=''
 if (( $+commands[whatis] )); then
   whatis -w '*' 2>/dev/null | while IFS= read -r line; do
     [[ $line == *'('*')'*-* ]] || continue
@@ -63,7 +63,7 @@ if [[ -r $histfile ]]; then
   # stripped the timestamp before awk ever saw it — which left frequency as the only
   # ranking signal available for command position. Keeping it costs nothing: the line
   # is already being parsed, and EXTENDED_HISTORY has already stamped it.
-  local c n lst
+  local c='' n='' lst=''
   sed 's/^: \([0-9]*\):[0-9]*;/\1\t/' $histfile 2>/dev/null \
     | awk -F'\t' '
         {
@@ -95,7 +95,7 @@ fi
 # better (slashes, continuation, trailing-slash semantics) and clicue must not
 # compete with it.
 typeset -A pathish
-local pc
+local pc=''
 for pc in cd pushd popd ls ll la cat bat less more head tail wc sort diff \
           vim nvim nano vi code subl emacs micro \
           cp mv rm mkdir rmdir touch chmod chown chgrp ln stat file du df \
@@ -106,7 +106,7 @@ done
 
 typeset -A argrank argcount
 if [[ -r $histfile ]]; then
-  local cmd tok cnt
+  local cmd='' tok='' cnt=''
   sed 's/^: [0-9]*:[0-9]*;//' $histfile 2>/dev/null \
     | awk '
         {
@@ -142,19 +142,70 @@ fi
 
 # ── 4. whole-invocation frequency, recency, and percentile ────────────────────
 # Per-token counts answer "which flags do I use". The WHOLE invocation answers
-# something different: "do I know this command by heart" — which is what gates
-# how much explanation to show. `ls -lat` is a different fact from `ls` plus `-l`.
+# something different: what the operator actually typed as a unit. `ls -lat` is a
+# different fact from `ls` plus `-l`.
 #
 # Recency comes along for free: EXTENDED_HISTORY already stamps every line, so no
 # instrumentation is added here either.
-typeset -A invoke invlast invpct
+#
+# ── what belongs in a key, and why it splits on pathish ───────────────────────
+# This map now feeds the argument-position card, not only the familiarity gate, so a
+# key has to be something worth PROPOSING rather than merely worth counting. Three
+# rules, each earned by junk found in a real corpus:
+#
+#   1. A single-dash token containing hyphens is not a flag. `-home-aaron-Projects-x`
+#      passed the old test and was stored as an invocation of `cd`; a mangled path
+#      offered even once costs more trust than the feature earns. Clusters are letters
+#      and digits only, long options carry the second dash.
+#
+#   2. Cluster spellings are CANONICALISED for the key and remembered for display.
+#      `-lat` and `-alt` are one habit typed two ways; keyed raw they were two entries
+#      of 1 each, so neither could ever rank. The key sorts the letters, the display
+#      form is whichever spelling was typed most recently.
+#
+#   3. Leading word tokens count as part of the invocation for NON-pathish commands.
+#      Dropping them discarded `git clone` — the dominant git habit — while keeping
+#      `git --tags`, because the old rule required a flag. For pathish commands the
+#      word after the command is a path, so those stay flags-only. That is the same
+#      split the card uses (docs/design-notes/habits-in-argument-position.md), applied
+#      once here rather than guessed at twice.
+#
+# NOT filtered on a minimum count. Under HIST_IGNORE_ALL_DUPS a line typed identically
+# every time appears exactly once, so a count of 1 is the signature of the MOST
+# habitual invocations, not of noise (SPEC: "history frequency ≠ usage frequency").
+# Recency separates junk from habit here; frequency cannot.
+typeset -A invoke invlast invpct invdisp
 if [[ -r $histfile ]]; then
   # NOT `local key cnt lst`: cnt is already a local from section 3 and holds a
   # value, and re-declaring a set local PRINTS it — that is how a stray `cnt=''`
   # ended up on stdout.
-  local key lst
+  local key='' lst='' disp=''
   sed 's/^: \([0-9]*\):[0-9]*;/\1\t/' $histfile 2>/dev/null \
-    | awk -F'\t' '
+    | awk -F'\t' -v PATHISH="${(kj: :)pathish}" '
+        BEGIN { np = split(PATHISH, pa, " "); for (pi = 1; pi <= np; pi++) ps[pa[pi]] = 1 }
+        # A long option, or a short cluster of letters/digits. The length bound keeps a
+        # run-on token from posing as a cluster; real ones are short.
+        function isflag(t) {
+          if (t ~ /^--[a-zA-Z0-9][a-zA-Z0-9-]*$/) return 1
+          if (t ~ /^-[a-zA-Z0-9]+$/ && length(t) <= 9) return 1
+          return 0
+        }
+        # Sort the letters of a short cluster so one habit has one key. Insertion sort
+        # over substr rather than split(s, a, "") — the empty field separator is a GNU
+        # extension and this has to run wherever awk does.
+        function canon(t,   L, i, j, c, out, a) {
+          if (t !~ /^-[a-zA-Z0-9][a-zA-Z0-9]+$/) return t
+          L = length(t) - 1
+          for (i = 1; i <= L; i++) a[i] = substr(t, i + 1, 1)
+          for (i = 2; i <= L; i++) {
+            c = a[i]
+            for (j = i - 1; j >= 1 && a[j] > c; j--) a[j + 1] = a[j]
+            a[j + 1] = c
+          }
+          out = "-"
+          for (i = 1; i <= L; i++) out = out a[i]
+          return out
+        }
         {
           ts = 0; line = $0
           if (NF >= 2 && $1 ~ /^[0-9]+$/) { ts = $1; line = $2 }
@@ -166,24 +217,35 @@ if [[ -r $histfile ]]; then
             if (!ci) continue
             cmd = w[ci]
             if (cmd !~ /^[a-zA-Z0-9_.:+-]+$/) continue
-            # key on the command plus its FLAG tokens only. Paths and values are
-            # data — including them would make every invocation unique and the
-            # count meaningless.
-            key = cmd; nf = 0
-            for (i = ci + 1; i <= m; i++) {
-              if (w[i] ~ /^-{1,2}[a-zA-Z0-9][a-zA-Z0-9_-]*$/) { key = key " " w[i]; nf++ }
+            key = cmd; disp = cmd; nt = 0
+            # Leading subcommands, for commands whose arguments are not paths. Capped at
+            # two (`gh org list`) and stopped by the first token that is not a plain
+            # word, so a URL or a filename ends the run instead of joining the key.
+            i = ci + 1
+            if (!(cmd in ps)) {
+              while (i <= m && nt < 2 && w[i] ~ /^[a-zA-Z][a-zA-Z0-9_-]*$/) {
+                key = key " " w[i]; disp = disp " " w[i]; nt++; i++
+              }
             }
-            if (!nf) continue
-            print key "\t" ts
+            # Flags, wherever they fall in the rest of the segment. Values between them
+            # are data and are skipped, which is what keeps a count meaningful.
+            for (; i <= m; i++) {
+              if (isflag(w[i])) { key = key " " canon(w[i]); disp = disp " " w[i]; nt++ }
+            }
+            if (!nt) continue
+            print key "\t" disp "\t" ts
           }
         }' \
-    | awk -F'\t' '{ c[$1]++; if ($2+0 > last[$1]) last[$1] = $2+0 }
-                  END { for (k in c) print c[k] "\t" k "\t" last[k] }' \
+    | awk -F'\t' '{ c[$1]++; if ($3+0 > last[$1]) { last[$1] = $3+0; d[$1] = $2 } }
+                  END { for (k in c) print c[k] "\t" k "\t" last[k] "\t" d[k] }' \
     | sort -rn \
-    | while IFS=$'\t' read -r cnt key lst; do
+    | while IFS=$'\t' read -r cnt key lst disp; do
         [[ -z $key ]] && continue
         invoke[$key]=$cnt
         invlast[$key]=$lst
+        # The spelling to SHOW. Keyed canonically so `-lat` and `-alt` accumulate
+        # together; displayed as whichever the operator reached for most recently.
+        invdisp[$key]=${disp:-$key}
       done
 
   # Percentile by RANK among distinct invocations, so "top 10%" means "in the most
@@ -218,13 +280,13 @@ zmodload -F zsh/stat b:zstat 2>/dev/null
 # One `+` spec per zstat call: a second is parsed as a FILENAME, not as another
 # format, so `zstat -A st +mtime +size f` fails and the component vanishes silently.
 # [MEASURED]
-local -a st st2
-local _clicue_stamp="v2"   # must match _clicue_corpus_stamp in lib/corpus.zsh
+local -a st=() st2=()
+local _clicue_stamp="v3"   # must match _clicue_corpus_stamp in lib/corpus.zsh
 if [[ -r $histfile ]]; then
   zstat -A st +mtime $histfile 2>/dev/null && zstat -A st2 +size $histfile 2>/dev/null \
     && _clicue_stamp+=":h${st[1]}.${st2[1]}"
 fi
-local d
+local d=''
 for d in $path; do
   [[ -d $d ]] || continue
   zstat -A st +mtime $d 2>/dev/null && _clicue_stamp+=":${st[1]}"
@@ -242,7 +304,16 @@ done
   # input stamp cannot notice that.
   print -r -- "CLICUE_CORPUS_STAMP=${(qq)_clicue_stamp}"
   print -r -- "typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN \\"
-  print -r -- "            CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST CLICUE_LAST"
+  print -r -- "            CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST CLICUE_LAST \\"
+  print -r -- "            CLICUE_INVOKE_DISP CLICUE_PATHISH"
+  # Which commands take paths rather than reusable cues. Emitted rather than
+  # duplicated into the runtime: the list decides both what section 3 collects and
+  # what the card proposes, and two copies of a 56-entry judgement call will drift.
+  print -r -- "CLICUE_PATHISH=("
+  for n in ${(k)pathish}; do
+    print -r -- "  ${(qq)n} 1"
+  done
+  print -r -- ")"
   print -r -- "CLICUE_GLOSS=("
   for n in ${(k)gloss}; do
     print -r -- "  ${(qq)n} ${(qq)gloss[$n]}"
@@ -287,6 +358,15 @@ done
   print -r -- "CLICUE_INVOKE_LAST=("
   for n in ${(k)invlast}; do
     print -r -- "  ${(qq)n} ${(qq)invlast[$n]}"
+  done
+  print -r -- ")"
+  # The spelling to show for a canonically-keyed invocation. Only entries that differ
+  # from their key are stored — for most invocations the key IS the spelling, and
+  # writing both would double this map to say nothing.
+  print -r -- "CLICUE_INVOKE_DISP=("
+  for n in ${(k)invdisp}; do
+    [[ ${invdisp[$n]} == $n ]] && continue
+    print -r -- "  ${(qq)n} ${(qq)invdisp[$n]}"
   done
   print -r -- ")"
 } > $tmp
