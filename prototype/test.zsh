@@ -1810,5 +1810,132 @@ else
   nope "the yield is cleared on every redraw rather than latching"
 fi
 
+# ─────────────────────────────────────────────────────────────────────────────
+section "habits in argument position"
+# The two tier-1 sources, exercised against a SYNTHETIC corpus and a synthetic
+# $history — so these assert the split's behaviour rather than this machine's
+# shell history, which would make the suite pass or fail by whose laptop ran it.
+
+source $DIR/lib/candidates.zsh 2>/dev/null
+
+typeset -gA CLICUE_INVOKE=(
+  'zzcat -pp'  '4'   'zzcat --help' '1'   'zzcat -f' '1'
+  'zzls -alt'  '3'   'zzls -l'      '1'
+)
+typeset -gA CLICUE_INVOKE_LAST=(
+  'zzcat -pp'  '2000'  'zzcat --help' '1000'  'zzcat -f' '3000'
+  'zzls -alt'  '2000'  'zzls -l'      '9000'
+)
+# -alt is the canonical key; -lat is what the operator actually typed.
+typeset -gA CLICUE_INVOKE_DISP=( 'zzls -alt' 'zzls -lat' )
+typeset -gA CLICUE_PATHISH=( zzcat 1 zzls 1 )
+
+typeset -ga reply=()
+
+# Recency, not count. -f is the newest at 1 occurrence; -pp has four and is older.
+# Getting this backwards is the whole failure the design note was written to avoid.
+reply=(); _clicue_invocation_cues zzcat ''
+if [[ ${reply[1]} == -f ]]; then
+  ok "invocation cues rank by last-seen, not by count"
+else
+  nope "invocation cues rank by last-seen, not by count" \
+       "got [${reply[1]}] — a count-ranked order would put -pp first"
+fi
+
+# One habit, one row, spelled the way it was typed.
+reply=(); _clicue_invocation_cues zzls ''
+if (( ${reply[(I)-lat]} )) && (( ! ${reply[(I)-alt]} )); then
+  ok "a canonical key is proposed in the spelling last typed"
+else
+  nope "a canonical key is proposed in the spelling last typed" \
+       "got (${reply}) — expected -lat, never the sorted key -alt"
+fi
+
+reply=(); _clicue_invocation_cues zzcat '--'
+if [[ ${#reply} == 1 && ${reply[1]} == --help ]]; then
+  ok "invocation cues honour the prefix being typed"
+else
+  nope "invocation cues honour the prefix being typed" "got (${reply})"
+fi
+
+# A pathish command reads the invocation map and never history, so no candidate it
+# produces can carry a path. That is the reason the split exists.
+reply=(); _clicue_invocation_cues zzcat ''
+if (( ! ${reply[(I)*/*]} )); then
+  ok "a pathish command proposes no path"
+else
+  nope "a pathish command proposes no path" "got (${reply})"
+fi
+
+# The other half needs a real $history, which is a special parameter this shell cannot
+# reassign — `typeset -ga history` fails with "can't change type of autoloaded
+# parameter". So these run in a child with a synthetic HISTFILE, which also keeps the
+# suite from asserting against whoever's laptop is running it.
+# The trailing sentinel is load-bearing: `fc -R` in a non-interactive shell does not
+# surface the LAST line of the file, so without it the newest entry — the one every
+# recency assertion here turns on — is silently absent and the test reads as a ranking
+# bug. [MEASURED: 5 lines in, 4 in $history]
+histprobe() {
+  local -a lines=( ${(@f)1} zz-sentinel )
+  print -rl -- $lines > $SCRATCH/hist
+  zsh -c "
+    HISTFILE=$SCRATCH/hist HISTSIZE=200 SAVEHIST=200
+    fc -R \$HISTFILE
+    source ${(q)DIR}/lib/candidates.zsh 2>/dev/null
+    typeset -a reply=()
+    LBUFFER=${(q)2}
+    _clicue_history_lines ${(q)2} ${(q)3} && print -rl -- \$reply
+  " 2>/dev/null
+}
+
+typeset -a hl=( ${(@f)"$(histprobe 'zzssh other@host
+zzssh user@older
+zzssh user@newest' 'zzssh user@' 'user@')"} )
+
+# Values ARE the point for a command whose arguments are not paths, and the newest
+# occurrence leads — the one signal de-duplication does not distort.
+if [[ ${hl[1]} == 'user@newest' ]]; then
+  ok "history lines keep values and lead with the newest"
+else
+  nope "history lines keep values and lead with the newest" "got (${hl})"
+fi
+
+# The candidate must still START with the prefix, or _clicue_cue_stem produces no stem
+# and _clicue_insert splices the line at the wrong place.
+if [[ ${hl[1]} == user@* ]]; then
+  ok "a multi-token candidate still begins at the cursor's own word"
+else
+  nope "a multi-token candidate still begins at the cursor's own word" \
+       "got [${hl[1]}] — the stem arithmetic in _clicue_cue_stem needs this"
+fi
+
+# A glob in the buffer must not turn the lookup into a pattern match over history.
+hl=( ${(@f)"$(histprobe 'zzglob other
+zzglob * literal' 'zzglob *' '*')"} )
+if [[ ${hl[1]} == '* literal' ]]; then
+  ok "a glob in the buffer is matched literally"
+else
+  nope "a glob in the buffer is matched literally" \
+       "got (${hl}) — an unquoted lookup matches every line instead"
+fi
+
+# The same defect in the other direction: the typed word is removed from the buffer by
+# LENGTH, never by `${LBUFFER%$pfx}`. Pattern-stripping a word that carries a glob
+# removes the wrong amount of line — and losing what you typed is the worst outcome
+# this project has, already recorded once for delegation in flag position.
+for f in $DIR/lib/keys.zsh $DIR/lib/candidates.zsh; do
+  # Comments stripped first — both files explain the bad form in prose directly above
+  # the good one, and prose must not satisfy a code assertion. Same idiom as above.
+  fbody=${(F)${(f)"$(<$f)"}:#[[:space:]]#\#*}
+  if [[ $fbody == *'${LBUFFER%$'* || $fbody == *'${buf%$'* ]]; then
+    nope "${f:t} splices by length, not by pattern" \
+         "a glob in the typed word eats the wrong amount of buffer"
+  else
+    ok "${f:t} splices by length, not by pattern"
+  fi
+done
+
+unset CLICUE_INVOKE CLICUE_INVOKE_LAST CLICUE_INVOKE_DISP CLICUE_PATHISH
+
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

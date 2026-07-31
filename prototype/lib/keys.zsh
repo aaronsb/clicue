@@ -355,8 +355,13 @@ _clicue_insert() {
       tail=${_clicue_cs_sfx[$pick]}
       [[ $tail == $'\0' ]] && tail=''
     fi
+    # Replace the typed word by LENGTH, not with `${LBUFFER%$_clicue_pfx}`. That form
+    # strips a pattern: a word carrying a glob removes the wrong amount of buffer, and
+    # `%` taking the SHORTEST match means a bare `*` strips nothing while a longer
+    # pattern can eat back past the word. The prefix is a literal tail of LBUFFER, so
+    # its length says exactly where the word starts.
     if [[ -n $_clicue_pfx ]]; then
-      LBUFFER="${LBUFFER%$_clicue_pfx}${pick}${tail}"
+      LBUFFER="${LBUFFER[1,${#LBUFFER}-${#_clicue_pfx}]}${pick}${tail}"
     else
       LBUFFER="${LBUFFER}${pick}${tail}"
     fi

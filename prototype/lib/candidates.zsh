@@ -112,18 +112,135 @@ _clicue_candidates() {
   reply=( ${${(o)freqd}#*|} ${(o)rest} )
 }
 
+# ── whole remembered lines, for commands whose arguments are not paths ───────
+#
+# The corpus cannot answer `ssh <user>@<host>`. The host is a VALUE, and values are
+# stripped when invocation keys are built — deliberately, because keeping them makes
+# every invocation unique and the count meaningless. So for commands whose arguments
+# are worth replaying verbatim, the source is history itself.
+#
+# This is `_clicue_history_stem` generalised from one match to N. That function already
+# finds the newest line continuing the buffer and offers its remainder as ghost text;
+# everything here is the same lookup without the early stop, so Tab can cycle the rest.
+#
+# Ranked by RECENCY, and not by count, because counting is broken on a de-duplicated
+# history: under HIST_IGNORE_ALL_DUPS every unique line appears exactly once no matter
+# how often it was run, so a count measures argument diversity rather than habit. What
+# de-duplication preserves is the NEWEST occurrence — which makes `$history` order the
+# undistorted signal, and it is already sorted that way.
+# (docs/design-notes/habits-in-argument-position.md)
+#
+# Sets reply=( candidate ... ). A candidate is the line minus whatever precedes the word
+# under the cursor, so it still begins with $pfx — which is what lets _clicue_cue_stem
+# and _clicue_insert treat a multi-token cue exactly like a one-word one.
+_clicue_history_lines() {
+  local buf=$1 pfx=$2
+  local -i cap=${3:-40}
+  reply=()
+  [[ -n $buf ]] || return 1
+  (( ${#history} )) || return 1
+  # Everything to the left of the word being typed. Stripped from each match so the
+  # candidate starts at the cursor's own word rather than at the start of the line.
+  #
+  # By LENGTH, not by `${buf%$pfx}`. That form strips a PATTERN, so a word containing a
+  # glob eats the wrong amount: with pfx `*`, `%` matches the shortest suffix — the
+  # empty string — and the head swallows the whole buffer, leaving every candidate
+  # empty. The prefix is a literal substring of the buffer, so its length is exact.
+  local head=${buf[1,${#buf}-${#pfx}]}
+  local -A seen=()
+  local m c
+  # (b) quotes the buffer. Without it a line containing a glob character turns this
+  # lookup into a pattern match against every other line in history — the same reason
+  # _clicue_history_stem quotes, recorded there.
+  #
+  # The (R) SUBSCRIPT, not `${(M)history:#...}`. Both look like they filter values by a
+  # pattern and only one re-scans the expansion as one: inside `:#` the quoted result of
+  # (b) is compared as literal text, backslashes and all, so a buffer carrying a glob
+  # matched nothing at all. The subscript is also the form _clicue_history_stem already
+  # uses, one letter apart — (r) takes the first match, (R) takes them all. [MEASURED]
+  for m in ${(v)history[(R)${(b)buf}*]}; do
+    # Length again, for the same reason as $head: `${m#$head}` strips a pattern, and a
+    # glob anywhere earlier in the line makes it remove the wrong amount.
+    c=${m[${#head}+1,-1]}
+    # The RHS is QUOTED. Unquoted, `!=` inside [[ ]] is a pattern match, so a prefix of
+    # `*` matched every candidate and the whole list was discarded as "same as what is
+    # typed". Third form of one gotcha in this function alone: %, # and != are all
+    # pattern operators, and every one of them needs a literal here.
+    [[ -n $c && $c != "$pfx" ]] || continue
+    # Distinct LINES can still share a suffix once the head is removed, and dedup has
+    # only guaranteed the lines differ.
+    (( ${+seen[$c]} )) && continue
+    seen[$c]=1
+    reply+=( $c )
+    (( ${#reply} >= cap )) && break
+  done
+  (( ${#reply} ))
+}
+
+# ── remembered invocations, for commands whose arguments ARE paths ───────────
+#
+# The counterpart to _clicue_history_lines. For `rm`, `ls`, `tar` and the rest of the
+# pathish class, replaying a whole remembered line would offer a path that was deleted
+# months ago — so what is offered is the flag part alone, which is exactly what the
+# invocation keys hold.
+#
+# Ordered by LAST-SEEN, not by count, for the reason recorded above _clicue_history_lines
+# and measured in the design note: at invocation level a de-duplicated history makes the
+# count a measure of argument diversity, so the most habitual entries score lowest.
+# `rm -rf` reaches ~30 only because the paths after it varied; a listing typed the same
+# way every time sits at 1.
+_clicue_invocation_cues() {
+  local cmd=$1 pfx=$2
+  local -i cap=${3:-40}
+  reply=()
+  (( ${#CLICUE_INVOKE} )) || return 1
+  local k disp rest
+  local -a scored=()
+  local -A seen=()
+  for k in ${(k)CLICUE_INVOKE}; do
+    [[ $k == "${cmd} "* ]] || continue
+    # The key is canonical so one habit has one entry; the SPELLING is what the
+    # operator last reached for, and that is what gets proposed and inserted.
+    disp=${CLICUE_INVOKE_DISP[$k]:-$k}
+    rest=${disp#${cmd} }
+    [[ -n $rest ]] || continue
+    [[ -n $pfx && $rest != ${pfx}* ]] && continue
+    (( ${+seen[$rest]} )) && continue
+    seen[$rest]=1
+    # Descending by epoch via an ascending string sort on its complement, the same
+    # trick command position uses. Width 12, not 10: an epoch is already 10 digits, and
+    # the note above the command-position sort records what an overflowing field did —
+    # it wrapped the most-used entry to the BOTTOM of the card.
+    scored+=( "${(l:12::0:)$(( 99999999999 - ${CLICUE_INVOKE_LAST[$k]:-0} ))}|$rest" )
+  done
+  reply=( ${${(o)scored}#*|} )
+  (( ${#reply} > cap )) && reply=( ${reply[1,cap]} )
+  (( ${#reply} ))
+}
+
 # ── argument candidates: what YOU have actually passed this command ──────────
-# Sourced from history, already frequency-ranked at build time. No compsys and
-# no forks — compsys would give the authoritative flag set with real
-# descriptions, but needs the candidate-source adapter (component 3).
+# Tier 1 is the operator's own habits, sourced by splitting on pathish: whole remembered
+# lines where the values are worth replaying, flag-only invocation keys where they are
+# not. Tier 2 — everything below — is compsys's authoritative set, alphabetical.
+# (docs/design-notes/habits-in-argument-position.md)
 _clicue_arg_candidates() {
   local cmd=$1 pfx=$2
-  local -a toks=( ${(s: :)CLICUE_ARGS[$cmd]} )
   local -a hist=() rest=()
-  if [[ -n $pfx ]]; then
-    hist=( ${(M)toks:#${pfx}*} )
+  if (( ${+CLICUE_PATHISH[$cmd]} )); then
+    _clicue_invocation_cues $cmd "$pfx" && hist=( $reply )
   else
-    hist=( $toks )
+    _clicue_history_lines "$LBUFFER" "$pfx" && hist=( $reply )
+  fi
+  reply=()
+  # The per-token map still answers when neither source has anything — a command whose
+  # arguments were never a whole line worth keeping, but whose subcommands were seen.
+  if (( ! ${#hist} )); then
+    local -a toks=( ${(s: :)CLICUE_ARGS[$cmd]} )
+    if [[ -n $pfx ]]; then
+      hist=( ${(M)toks:#${pfx}*} )
+    else
+      hist=( $toks )
+    fi
   fi
   # compsys results, if Tab has fetched them for this buffer — these carry the
   # authoritative descriptions and cover flags never yet used
