@@ -1305,7 +1305,10 @@ section "flag position is never handed back"
 # every aliased command matched nothing: `ls` emulates `lsd`, the cache held `lsd|...`,
 # the scan looked for `ls|`. Measured: `ls -` bailed with render-failed while `cat -`
 # drew a full card — which is what made it look like an alias-config problem.
-if [[ $body == *'_clicue_resolve_path'* && $body == *'fk == ${keypfx}\|*'* ]]; then
+# Matches on the KEY the scan uses, not on the shape of the scan. The loop this
+# originally asserted became a subscript filter for speed, and an assertion pinned to
+# the old syntax fails on a change that preserves exactly what it was protecting.
+if [[ $body == *'_clicue_resolve_path'* && $body == *'${keypfx}\|'* ]]; then
   ok "the flag scan uses the same resolved key the map is written with"
 else
   nope "the flag scan uses the same resolved key the map is written with" \

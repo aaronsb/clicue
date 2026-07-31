@@ -411,6 +411,10 @@ _clicue_pre_redraw() {
 }
 
 _clicue_line_finish() {
+  # Into the search window before anything is cleared, so a line run in this session is
+  # proposable on the next one. The window is a bounded snapshot of $history taken once;
+  # without this it would answer only for lines that predate the shell.
+  _clicue_hist_remember "$BUFFER"
   _clicue_clear; _clicue_reset_sel; _clicue_ghost=''
   _clicue_suppressed=0; _clicue_info=0
   _clicue_lastbuf=$'\0'
