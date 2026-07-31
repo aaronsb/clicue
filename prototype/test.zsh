@@ -1869,6 +1869,30 @@ else
   nope "a non-winning spelling resolves to the stored habit"
 fi
 
+# The assertion above checks the MAP. It passed with the resolution deleted from both
+# consumers — verified by deleting it and re-running, 238/0 — so it guarded nothing that
+# could regress. These drive the consumers themselves. [REVIEW]
+typeset -gA CLICUE_INVOKE_PCT=( 'zzls -lat' '3' )
+zstyle ':clicue:*' familiar-percentile 5
+
+_clicue_words=( zzls -alt )
+_clicue_invocation_note
+if [[ -n $_clicue_invnote && $_clicue_invnote == *3* ]]; then
+  ok "the invocation note survives a non-winning spelling"
+else
+  nope "the invocation note survives a non-winning spelling" \
+       "got [${_clicue_invnote}] — the note goes blank when the alias lookup is dropped"
+fi
+
+if _clicue_is_familiar; then
+  ok "the familiarity gate survives a non-winning spelling"
+else
+  nope "the familiarity gate survives a non-winning spelling" \
+       "top-3% invocation not recognised at a 5% threshold via its other spelling"
+fi
+zstyle -d ':clicue:*' familiar-percentile
+unset CLICUE_INVOKE_PCT
+
 reply=(); _clicue_invocation_cues zzcat '--'
 if [[ ${#reply} == 1 && ${reply[1]} == --help ]]; then
   ok "invocation cues honour the prefix being typed"
@@ -1951,6 +1975,18 @@ else
   nope "an unresolved wrapper fails safe to flags only" "got (${hl})"
 fi
 
+# A wrapper's OWN option may or may not take a value, and which is a per-wrapper fact
+# this does not know: `sudo -u root rm` resolved to `root`, `nice -n 10 rm` to `10`, and
+# both then took the whole-line branch and offered a path. Ambiguity fails safe. Without
+# this the case is untested — verified by mutation, the bad form still passed. [REVIEW]
+hl=( ${(@f)"$(branchprobe 'sudo -u root rm -rf /var/tmp/build-9931
+sudo zzcat -pp' 'sudo -u root rm ' 'zzcat 1')"} )
+if (( ! ${hl[(I)*/*]} )); then
+  ok "a wrapper option-argument does not become the command"
+else
+  nope "a wrapper option-argument does not become the command" "got (${hl})"
+fi
+
 # A remembered line may run on past a separator into a different command; the candidate
 # is one segment, truncated there.
 hl=( ${(@f)"$(branchprobe 'zzgit status && rm -rf node_modules
@@ -2030,7 +2066,7 @@ for f in $DIR/lib/keys.zsh $DIR/lib/candidates.zsh; do
   fi
 done
 
-unset CLICUE_INVOKE CLICUE_INVOKE_LAST CLICUE_INVOKE_DISP CLICUE_PATHISH
+unset CLICUE_INVOKE CLICUE_INVOKE_LAST CLICUE_INVOKE_ALIAS CLICUE_PATHISH
 
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

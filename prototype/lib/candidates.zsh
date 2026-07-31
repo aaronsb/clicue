@@ -112,6 +112,12 @@ _clicue_candidates() {
   reply=( ${${(o)freqd}#*|} ${(o)rest} )
 }
 
+# Memoised flag grouping, keyed on the resolved path and flag. Declared here so the
+# lookup below is never a subscript into an undefined association, which is an error
+# rather than an empty string.
+typeset -gA _clicue_grp_canon=() _clicue_grp_label=()
+typeset -gi _clicue_grp_gen=-1
+
 # ── what command does this line REALLY run ───────────────────────────────────
 # `sudo rm`, `env FOO=1 rm`, `command rm` all run rm, and the pathish decision has to
 # see rm or the guarantee is one word away from being bypassed. Measured: `sudo` is not
@@ -121,9 +127,6 @@ _clicue_candidates() {
 # Wrappers only — this is deliberately not a general parse. Anything unrecognised stops
 # the walk and the token found there is the answer, so an unknown wrapper degrades to
 # treating the wrapper itself as the command rather than guessing past it.
-typeset -gA _clicue_grp_canon=() _clicue_grp_label=()
-typeset -gi _clicue_grp_gen=-1
-
 typeset -ga _clicue_wrappers=(
   sudo doas env command builtin exec nohup nice ionice setsid stdbuf time
 )
@@ -134,10 +137,17 @@ _clicue_effective_cmd() {
   for (( i = 1; i <= ${#_clicue_words}; i++ )); do
     w=${_clicue_words[i]}
     [[ -n $w ]] || continue
-    # leading assignments belong to the wrapper, not to the command
-    [[ $w == [a-zA-Z_][a-zA-Z0-9_]#=* ]] && continue
+    # Leading assignments belong to the wrapper, not to the command. Written without
+    # `#`, which needs EXTENDED_GLOB — off by default and not set in this file, so the
+    # original form silently never matched and `env FOO=1 rm` resolved to `FOO=1`.
+    # compsys.zsh records the same hazard one file over. [REVIEW]
+    [[ $w == [a-zA-Z_]*=* ]] && continue
     if (( ${_clicue_wrappers[(I)$w]} )); then continue; fi
-    [[ $w == -* ]] && continue
+    # An option belonging to the wrapper. Whether the NEXT token is its value or the
+    # command cannot be known without per-wrapper knowledge of which options take one:
+    # `sudo -u root rm` resolved to `root`, `nice -n 10 rm` to `10`, and both then took
+    # the whole-line branch. Unknown fails safe, as everywhere else here. [REVIEW]
+    [[ $w == -* ]] && return 1
     _clicue_effcmd=$w
     return 0
   done
@@ -194,10 +204,11 @@ _clicue_effective_cmd() {
 # over the handful of matched keys restores newest-first without sorting the window.
 typeset -gA _clicue_recent=()
 typeset -gi _clicue_recent_seeded=0 _clicue_recent_hi=0 _clicue_recent_lo=1
+typeset -gi _clicue_recent_hist=0
 typeset -gi _clicue_recent_win=2000
 
 _clicue_hist_window() {
-  (( _clicue_recent_seeded )) && return 0
+  (( _clicue_recent_seeded )) && { _clicue_hist_sync; return 0 }
   local win=2000
   zstyle -s ':clicue:*' history-window win 2>/dev/null || win=2000
   (( win < 1 )) && win=1
@@ -211,18 +222,41 @@ _clicue_hist_window() {
     _clicue_recent[${(l:8::0:)_clicue_recent_hi}]=$m
   done
   _clicue_recent_lo=1
+  _clicue_recent_hist=${HISTCMD:-0}
   _clicue_recent_seeded=1
   return 0
 }
 
-# The line just accepted, so the window does not go stale within a session. Bounded:
-# adding at the top drops one from the bottom, or a long-lived shell grows this without
-# limit and gives back the cost the window was built to remove.
-_clicue_hist_remember() {
-  [[ -n $1 ]] || return 0
+# Keep the window current within a session, reading from $history and NEVER from
+# $BUFFER.
+#
+# This distinction is the whole point. Taking the accepted line straight off the buffer
+# was instrumentation, and this project promises it does not instrument: README, SPEC,
+# stats.zsh and the corpus builder all state that HIST_IGNORE_SPACE works as a
+# per-command opt-out precisely because everything is derived from history. A
+# space-prefixed line never enters $history, so reading from there honours the opt-out
+# for free — while reading $BUFFER proposed the operator's deliberately-hidden commands
+# back to them in the same session. [REVIEW]
+#
+# Event numbers rather than a re-slice: ${(v)history} materialises the whole list, which
+# is the cost the window exists to avoid, and paying it per accepted command would give
+# it all back. Where HISTCMD is unavailable the window simply stays as seeded, which is
+# stale but never wrong.
+_clicue_hist_sync() {
   (( _clicue_recent_seeded )) || return 0
-  (( _clicue_recent_hi++ ))
-  _clicue_recent[${(l:8::0:)_clicue_recent_hi}]=$1
+  local -i cur=${HISTCMD:-0}
+  (( cur > 0 && _clicue_recent_hist > 0 )) || { _clicue_recent_hist=$cur; return 0 }
+  (( cur > _clicue_recent_hist )) || return 0
+  local -i i
+  local line
+  for (( i = _clicue_recent_hist; i < cur; i++ )); do
+    line=${history[$i]}
+    [[ -n $line ]] || continue
+    (( _clicue_recent_hi++ ))
+    _clicue_recent[${(l:8::0:)_clicue_recent_hi}]=$line
+  done
+  _clicue_recent_hist=$cur
+  # Bounded: a long-lived shell must not grow this back into the cost it removed.
   while (( _clicue_recent_hi - _clicue_recent_lo >= _clicue_recent_win )); do
     unset "_clicue_recent[${(l:8::0:)_clicue_recent_lo}]"
     (( _clicue_recent_lo++ ))

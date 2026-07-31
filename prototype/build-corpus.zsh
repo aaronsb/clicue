@@ -316,7 +316,7 @@ zmodload -F zsh/stat b:zstat 2>/dev/null
 # format, so `zstat -A st +mtime +size f` fails and the component vanishes silently.
 # [MEASURED]
 local -a st=() st2=()
-local _clicue_stamp="v3"   # must match _clicue_corpus_stamp in lib/corpus.zsh
+local _clicue_stamp="v4"   # must match _clicue_corpus_stamp in lib/corpus.zsh
 if [[ -r $histfile ]]; then
   zstat -A st +mtime $histfile 2>/dev/null && zstat -A st2 +size $histfile 2>/dev/null \
     && _clicue_stamp+=":h${st[1]}.${st2[1]}"

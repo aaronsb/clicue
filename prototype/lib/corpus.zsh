@@ -116,7 +116,7 @@ _clicue_corpus_stamp() {
   # CLICUE_INVOKE_ALIAS. The stamp only triggers a REBUILD — a stale cache is still
   # sourced and still rendered from, so nothing may treat the stamp as a feature gate.
   # Callers test for the data they need instead.
-  _clicue_stamp_now="v3"
+  _clicue_stamp_now="v4"
   local hf=${HISTFILE:-$HOME/.zsh_history}
   if [[ -r $hf ]]; then
     # One `+` spec per call: a second is read as a FILENAME, so `+mtime +size` fails

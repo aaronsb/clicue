@@ -124,8 +124,8 @@ reusable cues* — and that is the same reason a path must never be re-proposed 
 habit. It existed only as a build-time local and had to reach the runtime; emitting it
 into the corpus keeps one copy, and two copies would drift.
 
-**Implemented.** The corpus format moved to v3, carrying `CLICUE_PATHISH` and
-`CLICUE_INVOKE_DISP`, and the invocation builder was repaired. Measured against a real
+**Implemented.** The corpus format moved to v4, carrying `CLICUE_PATHISH` and
+`CLICUE_INVOKE_ALIAS`, and the invocation builder was repaired. Measured against a real
 history, the four defects and what fixing them changed:
 
 | Defect | Before | After |
@@ -208,6 +208,18 @@ because the host was discarded before the map was written.
 - The grid is clamped rather than filled, for a measured reason — an unclamped grid
   once grew to 68 rows in an 88-row window and shoved away the output of the command
   just run. Full option sets at empty prefix push more candidates through that clamp.
+
+### The opt-out is a constraint on this feature, not a footnote
+
+The search window must be read from `$history` and never from `$BUFFER`. README, SPEC,
+`stats.zsh` and the corpus builder all state that nothing here is instrumented, and that
+`HIST_IGNORE_SPACE` therefore works as a per-command opt-out. A space-prefixed line
+never enters `$history`, so a window built from it honours that for free.
+
+The first cut of the session top-up took the accepted line straight off the buffer. That
+is instrumentation, and it proposed the operator's deliberately-hidden commands back to
+them in the same session — a promise the project makes about secrets, broken by a
+convenience. Anything that keeps this window current has to go through `$history`.
 
 **Not yet verified.** Everything above was measured through the candidate functions
 directly. The suite is in-process by design — a pty harness was tried for this project
