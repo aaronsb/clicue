@@ -156,16 +156,30 @@ a real history and corpus:
 | `ssh <partial>` | the newest matching host, then the rest | — |
 | `git sta` | `status` alone | correctly **not** flooded with git's flag set |
 
-Building it surfaced three bugs of one kind, worth recording because the shape will
-recur: `%`, `#` and `!=` are all **pattern** operators in zsh, and every one of them had
-been used where a literal was meant. A typed word carrying a glob was stripped by
-pattern and ate the wrong amount of buffer — including in `_clicue_insert`, where the
-consequence is losing what you typed, an outcome this project has already recorded once
-in another form. `[[ $c != $pfx ]]` pattern-matched, so a prefix of `*` discarded every
-candidate as identical to what was typed. And `${(M)history:#${(b)buf}*}` does not
-re-scan the quoted expansion as a pattern at all, so a glob in the buffer matched
-nothing; the `(R)` subscript does, and is the same form `_clicue_history_stem` already
-used one letter away. Splices are now by length, comparisons quoted.
+Building it surfaced one real bug and, in diagnosing it, an incorrect generalisation
+that is worth recording because getting it wrong cost time in both directions.
+
+**The rule.** `[(r)]` and `[(R)]` subscripts re-scan an expansion as a pattern.
+`%`, `#`, `:#` and `[[ == ]]` do **not** — a value that arrives by expansion is compared
+literally unless `GLOB_SUBST` is set, which is off by default and rarely on. This is the
+opposite of ksh and bash, and it is exactly why `(b)` quoting is *required* in the
+subscript form and *fatal* in the `:#` form.
+
+**The bug**, which follows from that rule: `${(M)history:#${(b)buf}*}` compares the
+quoted result as literal text, backslashes included, so a buffer carrying a glob matched
+nothing at all. The `(R)` subscript does re-scan, and is what `_clicue_history_stem`
+already used one letter away — `(r)` for the first match, `(R)` for all of them.
+
+**The overreach.** This was first diagnosed as three bugs of one kind, on the assumption
+that `%`, `#` and `!=` pattern-matched too. Measured: `${buf%$pfx}` with `pfx` of `?`
+returns the string unchanged, and `[[ $c != $pfx ]]` with `pfx` of `*` is true. Neither
+was broken. The splices were changed to length arithmetic anyway and that change stands
+— it is correct under `GLOB_SUBST` as well, which the pattern forms are not — but it is
+hardening, not a fix, and the record should not claim otherwise.
+
+One consequence of the change is real and was not obvious: `%` fails *safe* when the
+prefix is not actually a suffix, returning the string untouched, while length arithmetic
+removes N characters regardless. A guard costs nothing and is now in place.
 
 ### Rejected
 

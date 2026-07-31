@@ -16,7 +16,7 @@ setopt extended_glob
 typeset -g DIR=${0:A:h}
 typeset -gi PASS=0 FAIL=0
 # Declared once, up front. Re-declaring a set `local` in zsh prints its value.
-typeset -g k w d c body want got word disp leak bad harvest f srcout
+typeset -g k w d c body want got word disp leak bad harvest f srcout fbody hl alias_key
 typeset -g SCRATCH=${TMPDIR:-/tmp}/clicue-test.$$
 mkdir -p $SCRATCH
 trap "rm -rf $SCRATCH" EXIT
@@ -1820,14 +1820,17 @@ source $DIR/lib/candidates.zsh 2>/dev/null
 
 typeset -gA CLICUE_INVOKE=(
   'zzcat -pp'  '4'   'zzcat --help' '1'   'zzcat -f' '1'
-  'zzls -alt'  '3'   'zzls -l'      '1'
+  'zzls -lat'  '3'   'zzls -l'      '1'
 )
 typeset -gA CLICUE_INVOKE_LAST=(
   'zzcat -pp'  '2000'  'zzcat --help' '1000'  'zzcat -f' '3000'
-  'zzls -alt'  '2000'  'zzls -l'      '9000'
+  'zzls -lat'  '2000'  'zzls -l'      '9000'
 )
-# -alt is the canonical key; -lat is what the operator actually typed.
-typeset -gA CLICUE_INVOKE_DISP=( 'zzls -alt' 'zzls -lat' )
+# Keys are stored under the SPELLING the operator typed. The canonical form exists only
+# inside the builder, where it merges two spellings into one count; the other spelling
+# routes here so a lookup by what was typed still resolves. Keying the map canonically
+# instead is what silently broke the invocation note and the familiarity gate. [REVIEW]
+typeset -gA CLICUE_INVOKE_ALIAS=( 'zzls -alt' 'zzls -lat' )
 typeset -gA CLICUE_PATHISH=( zzcat 1 zzls 1 )
 
 typeset -ga reply=()
@@ -1845,10 +1848,22 @@ fi
 # One habit, one row, spelled the way it was typed.
 reply=(); _clicue_invocation_cues zzls ''
 if (( ${reply[(I)-lat]} )) && (( ! ${reply[(I)-alt]} )); then
-  ok "a canonical key is proposed in the spelling last typed"
+  ok "a habit is proposed in the spelling last typed"
 else
-  nope "a canonical key is proposed in the spelling last typed" \
+  nope "a habit is proposed in the spelling last typed" \
        "got (${reply}) — expected -lat, never the sorted key -alt"
+fi
+
+# The other spelling has to reach the same entry, or the note goes blank for exactly the
+# clusters it is meant to recognise.
+# Subscript UNQUOTED. `${A['k with space']}` returns empty in zsh — the quotes become
+# part of the key rather than grouping it — which is how this assertion first failed
+# against a map that was correct.
+alias_key=${CLICUE_INVOKE_ALIAS[zzls -alt]}
+if [[ $alias_key == 'zzls -lat' ]] && [[ -n ${CLICUE_INVOKE[$alias_key]} ]]; then
+  ok "a non-winning spelling resolves to the stored habit"
+else
+  nope "a non-winning spelling resolves to the stored habit"
 fi
 
 reply=(); _clicue_invocation_cues zzcat '--'
@@ -1858,13 +1873,90 @@ else
   nope "invocation cues honour the prefix being typed" "got (${reply})"
 fi
 
-# A pathish command reads the invocation map and never history, so no candidate it
-# produces can carry a path. That is the reason the split exists.
-reply=(); _clicue_invocation_cues zzcat ''
-if (( ! ${reply[(I)*/*]} )); then
-  ok "a pathish command proposes no path"
+# The BRANCH, not the fixture. Asserting that _clicue_invocation_cues emits no path is
+# tautological — it reads a map that holds none. What can actually regress is
+# _clicue_arg_candidates choosing the wrong source, so these drive that instead, with a
+# history full of paths that must never surface. [REVIEW]
+typeset -gA CLICUE_ARGS=() CLICUE_ARGN=()
+typeset -g _clicue_cs_for=''; typeset -ga _clicue_cs_words=(); typeset -gi _clicue_optctx=0
+typeset -ga _clicue_words=()
+
+branchprobe() {
+  local -a lines=( ${(@f)1} zz-sentinel )
+  print -rl -- $lines > $SCRATCH/hist
+  zsh -c "
+    HISTFILE=$SCRATCH/hist HISTSIZE=200 SAVEHIST=200
+    fc -R \$HISTFILE
+    source ${(q)DIR}/lib/candidates.zsh 2>/dev/null
+    # Stubs for the flag machinery. These probes exercise SOURCE SELECTION — which of
+    # the two tier-1 sources answers — and the flag path below it belongs to another
+    # module. Without them _clicue_arg_candidates aborts on the first undefined
+    # function and every probe returns empty, which reads as a passing safety test.
+    _clicue_flag_load()  { return 1 }
+    _clicue_resolve_path() { typeset -g _clicue_realpath=\$1 }
+    _clicue_fkey()       { typeset -g _clicue_fk=\"\$1|\$2\" }
+    _clicue_flag_canon() { typeset -g _clicue_fc=\$2 }
+    _clicue_flag_label() { typeset -g _clicue_fl=\$2 }
+    typeset -gA _clicue_flag_desc=() _clicue_flag_alt=() _clicue_flag_none=() _clicue_disp=()
+    typeset -gA CLICUE_INVOKE=( 'zzcat -pp' 4 'zzcat -f' 1 'sudo zzcat -pp' 2 )
+    typeset -gA CLICUE_INVOKE_LAST=( 'zzcat -pp' 2000 'zzcat -f' 3000 'sudo zzcat -pp' 2000 )
+    # Interpolated UNQUOTED so it splits into key and value. ${(q)3} made 'zzcat 1' one
+    # word, so the map held a single malformed key, every probe returned empty, and the
+    # two safety assertions passed by asserting nothing. [REVIEW]
+    typeset -gA CLICUE_ARGS=() CLICUE_PATHISH=( ${3} )
+    typeset -g _clicue_cs_for=''; typeset -ga _clicue_cs_words=(); typeset -gi _clicue_optctx=0
+    # (z) needs a PARAMETER NAME. Written as \${(z)${(q)2}} it interpolated to
+    # \${(z)zzcat\ }, which zsh reads as the parameter named 'zzcat ' — empty — so
+    # _clicue_words was empty in every probe and all three safety assertions were
+    # vacuous while appearing to pass. [REVIEW]
+    typeset -g buf=${(q)2}
+    typeset -ga _clicue_words=( \${(z)buf} )
+    typeset -a reply=()
+    LBUFFER=\$buf
+    _clicue_arg_candidates \${_clicue_words[1]} '' && print -rl -- \$reply
+  " 2>/dev/null
+}
+
+# A pathish command must not take the whole-line branch, whatever history holds.
+hl=( ${(@f)"$(branchprobe 'zzcat /home/someone/gone.md
+zzcat -pp' 'zzcat ' 'zzcat 1')"} )
+if (( ${#hl} )) && (( ! ${hl[(I)*/*]} )); then
+  ok "a pathish command never proposes a path from history"
 else
-  nope "a pathish command proposes no path" "got (${reply})"
+  nope "a pathish command never proposes a path from history" "got (${hl})"
+fi
+
+# An ABSENT pathish map means a pre-v3 cache, which is still sourced and still rendered
+# from. Unknown must fail safe to flags-only, or every command looks non-pathish for one
+# shell after upgrading and `rm <Tab>` offers deleted paths. [REVIEW]
+hl=( ${(@f)"$(branchprobe 'zzcat /home/someone/gone.md
+zzcat -pp' 'zzcat ' '')"} )
+if (( ! ${hl[(I)*/*]} )); then
+  ok "an absent pathish map fails safe to flags only"
+else
+  nope "an absent pathish map fails safe to flags only" "got (${hl})"
+fi
+
+# A wrapper with nothing after it cannot say what it will run, so it fails safe too.
+# `sudo`, not a zz-prefixed stand-in: the wrapper list is the shipped one, and a
+# fixture name that is not on it silently skips the branch under test.
+hl=( ${(@f)"$(branchprobe 'sudo rm -rf /var/tmp/build-9931
+sudo zzcat -pp' 'sudo ' 'zzcat 1')"} )
+if (( ! ${hl[(I)*/*]} )); then
+  ok "an unresolved wrapper fails safe to flags only"
+else
+  nope "an unresolved wrapper fails safe to flags only" "got (${hl})"
+fi
+
+# A remembered line may run on past a separator into a different command; the candidate
+# is one segment, truncated there.
+hl=( ${(@f)"$(branchprobe 'zzgit status && rm -rf node_modules
+zzgit pull' 'zzgit ' '')"} )
+if (( ! ${hl[(I)*rm*]} )); then
+  ok "a candidate stops at a separator rather than carrying a second command"
+else
+  nope "a candidate stops at a separator rather than carrying a second command" \
+       "got (${hl})"
 fi
 
 # The other half needs a real $history, which is a special parameter this shell cannot

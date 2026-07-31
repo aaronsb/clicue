@@ -174,7 +174,7 @@ fi
 # every time appears exactly once, so a count of 1 is the signature of the MOST
 # habitual invocations, not of noise (SPEC: "history frequency ≠ usage frequency").
 # Recency separates junk from habit here; frequency cannot.
-typeset -A invoke invlast invpct invdisp
+typeset -A invoke invlast invpct invalias
 if [[ -r $histfile ]]; then
   # NOT `local key cnt lst`: cnt is already a local from section 3 and holds a
   # value, and re-declaring a set local PRINTS it — that is how a stray `cnt=''`
@@ -185,10 +185,19 @@ if [[ -r $histfile ]]; then
         BEGIN { np = split(PATHISH, pa, " "); for (pi = 1; pi <= np; pi++) ps[pa[pi]] = 1 }
         # A long option, or a short cluster of letters/digits. The length bound keeps a
         # run-on token from posing as a cluster; real ones are short.
+        # A long option, optionally carrying its value with `=`. The value is dropped
+        # and only the option name kept, for the same reason a separate value token is
+        # skipped — keeping it makes every invocation unique. Without the `=` form,
+        # `ls --color=auto` matched nothing, hit the "no tokens" test, and the WHOLE
+        # invocation was discarded rather than merely losing one flag. [REVIEW]
         function isflag(t) {
-          if (t ~ /^--[a-zA-Z0-9][a-zA-Z0-9-]*$/) return 1
+          if (t ~ /^--[a-zA-Z0-9][a-zA-Z0-9-]*(=.*)?$/) return 1
           if (t ~ /^-[a-zA-Z0-9]+$/ && length(t) <= 9) return 1
           return 0
+        }
+        function flagname(t,   e) {
+          e = index(t, "=")
+          return (e > 0) ? substr(t, 1, e - 1) : t
         }
         # Sort the letters of a short cluster so one habit has one key. Insertion sort
         # over substr rather than split(s, a, "") — the empty field separator is a GNU
@@ -230,22 +239,48 @@ if [[ -r $histfile ]]; then
             # Flags, wherever they fall in the rest of the segment. Values between them
             # are data and are skipped, which is what keeps a count meaningful.
             for (; i <= m; i++) {
-              if (isflag(w[i])) { key = key " " canon(w[i]); disp = disp " " w[i]; nt++ }
+              # `--` is an end-of-options marker, not an option. Acting on it would key
+              # `grep -- -x file` as `grep -x`, claiming a flag the operator explicitly
+              # marked as NOT one. [REVIEW]
+              if (w[i] == "--") break
+              if (isflag(w[i])) {
+                fn = flagname(w[i])
+                key = key " " canon(fn); disp = disp " " fn; nt++
+              }
             }
             if (!nt) continue
             print key "\t" disp "\t" ts
           }
         }' \
-    | awk -F'\t' '{ c[$1]++; if ($3+0 > last[$1]) { last[$1] = $3+0; d[$1] = $2 } }
-                  END { for (k in c) print c[k] "\t" k "\t" last[k] "\t" d[k] }' \
+    | awk -F'\t' '
+        { c[$1]++
+          seen[$1 SUBSEP $2] = 1
+          if ($3+0 > last[$1]) { last[$1] = $3+0; d[$1] = $2 }
+        }
+        END {
+          # Emit under the SPELLING, never under the canonical key. The canonical form
+          # exists to make two spellings accumulate as one habit; it must not become
+          # the name of that habit, because everything that looks an invocation up does
+          # so with the line the operator actually typed. Keying canonically silently
+          # broke _clicue_invocation_note and the familiarity gate for exactly the
+          # multi-letter clusters they are meant to recognise. [REVIEW]
+          for (k in c) print c[k] "\t" d[k] "\t" last[k] "\t" ""
+          # Every OTHER spelling of the same habit, pointing at the one that won. This
+          # is what lets a lookup with a non-winning spelling still resolve.
+          for (s in seen) {
+            split(s, p, SUBSEP)
+            if (p[2] != d[p[1]]) print "0\t" p[2] "\t0\t" d[p[1]]
+          }
+        }' \
     | sort -rn \
-    | while IFS=$'\t' read -r cnt key lst disp; do
+    | while IFS=$'\t' read -r cnt key lst alias; do
         [[ -z $key ]] && continue
+        if [[ -n $alias ]]; then
+          invalias[$key]=$alias
+          continue
+        fi
         invoke[$key]=$cnt
         invlast[$key]=$lst
-        # The spelling to SHOW. Keyed canonically so `-lat` and `-alt` accumulate
-        # together; displayed as whichever the operator reached for most recently.
-        invdisp[$key]=${disp:-$key}
       done
 
   # Percentile by RANK among distinct invocations, so "top 10%" means "in the most
@@ -305,7 +340,7 @@ done
   print -r -- "CLICUE_CORPUS_STAMP=${(qq)_clicue_stamp}"
   print -r -- "typeset -gA CLICUE_GLOSS CLICUE_KIND CLICUE_FREQ CLICUE_ARGS CLICUE_ARGN \\"
   print -r -- "            CLICUE_INVOKE CLICUE_INVOKE_PCT CLICUE_INVOKE_LAST CLICUE_LAST \\"
-  print -r -- "            CLICUE_INVOKE_DISP CLICUE_PATHISH"
+  print -r -- "            CLICUE_INVOKE_ALIAS CLICUE_PATHISH"
   # Which commands take paths rather than reusable cues. Emitted rather than
   # duplicated into the runtime: the list decides both what section 3 collects and
   # what the card proposes, and two copies of a 56-entry judgement call will drift.
@@ -360,15 +395,16 @@ done
     print -r -- "  ${(qq)n} ${(qq)invlast[$n]}"
   done
   print -r -- ")"
-  # The spelling to show for a canonically-keyed invocation. Only entries that differ
-  # from their key are stored — for most invocations the key IS the spelling, and
-  # writing both would double this map to say nothing.
-  print -r -- "CLICUE_INVOKE_DISP=("
-  for n in ${(k)invdisp}; do
-    [[ ${invdisp[$n]} == $n ]] && continue
-    print -r -- "  ${(qq)n} ${(qq)invdisp[$n]}"
+  # Other spellings of a habit, pointing at the one that won. A lookup keyed on the
+  # line as TYPED resolves through here when the operator reached for the spelling
+  # that is not the most recent one — which is what keeps the invocation note and the
+  # familiarity gate working across `-lat` and `-alt`.
+  print -r -- "CLICUE_INVOKE_ALIAS=("
+  for n in ${(k)invalias}; do
+    print -r -- "  ${(qq)n} ${(qq)invalias[$n]}"
   done
   print -r -- ")"
+
 } > $tmp
 
 mv -f $tmp $out

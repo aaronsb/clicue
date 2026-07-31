@@ -6,12 +6,22 @@
 # shell history at build time and never instrumented — so HIST_IGNORE_SPACE works as
 # a per-command opt-out for free.
 
+# Declared at file scope, not left to _clicue_load. An undefined association read with
+# a subscript is an ERROR in zsh, not an empty string — corpus.zsh records the same
+# hazard for the maps it owns — and this file is reachable before any corpus is loaded.
+typeset -gA CLICUE_INVOKE_ALIAS
+
 # How often the operator has actually run THIS invocation, and how recently.
 # Their own habits are the one thing no manual page knows, and it is the input
 # the familiarity gate needs.
 # Sets _clicue_invnote. Called from render, so it must not fork.
 _clicue_invocation_note() {
   local key="${(j: :)_clicue_words}"
+  # Resolve the spelling actually typed to the one the corpus stored. Two spellings of
+  # one cluster accumulate as a single habit, and the winner is whichever was typed
+  # most recently — so the OTHER spelling has to route here or the note silently goes
+  # blank for exactly the invocations it is meant to recognise. [REVIEW]
+  key=${CLICUE_INVOKE_ALIAS[$key]:-$key}
   _clicue_invnote=''
   local n=${CLICUE_INVOKE[$key]:-}
   [[ -z $n ]] && return 0
@@ -37,6 +47,7 @@ _clicue_is_familiar() {
   zstyle -s ':clicue:*' familiar-percentile thresh 2>/dev/null || thresh=0
   (( thresh > 0 )) || return 1
   local key="${(j: :)_clicue_words}"
+  key=${CLICUE_INVOKE_ALIAS[$key]:-$key}
   local pct=${CLICUE_INVOKE_PCT[$key]:-}
   [[ -n $pct ]] || return 1
   (( pct <= thresh ))

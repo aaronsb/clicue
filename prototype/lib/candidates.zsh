@@ -112,6 +112,40 @@ _clicue_candidates() {
   reply=( ${${(o)freqd}#*|} ${(o)rest} )
 }
 
+# ── what command does this line REALLY run ───────────────────────────────────
+# `sudo rm`, `env FOO=1 rm`, `command rm` all run rm, and the pathish decision has to
+# see rm or the guarantee is one word away from being bypassed. Measured: `sudo` is not
+# in the pathish set, so `sudo <Tab>` took the whole-line branch and would replay a
+# remembered `sudo rm -rf <path>` verbatim. [REVIEW]
+#
+# Wrappers only — this is deliberately not a general parse. Anything unrecognised stops
+# the walk and the token found there is the answer, so an unknown wrapper degrades to
+# treating the wrapper itself as the command rather than guessing past it.
+typeset -ga _clicue_wrappers=(
+  sudo doas env command builtin exec nohup nice ionice setsid stdbuf time
+)
+_clicue_effective_cmd() {
+  typeset -g _clicue_effcmd=$1
+  local -i i=1
+  local w
+  for (( i = 1; i <= ${#_clicue_words}; i++ )); do
+    w=${_clicue_words[i]}
+    [[ -n $w ]] || continue
+    # leading assignments belong to the wrapper, not to the command
+    [[ $w == [a-zA-Z_][a-zA-Z0-9_]#=* ]] && continue
+    if (( ${_clicue_wrappers[(I)$w]} )); then continue; fi
+    [[ $w == -* ]] && continue
+    _clicue_effcmd=$w
+    return 0
+  done
+  # Walked off the end without finding a command word: the line is a wrapper and
+  # nothing else yet (`sudo <Tab>`). What it will run is genuinely unknown, so this
+  # reports failure and the caller applies the same fail-safe as a missing pathish map.
+  # Without this, `sudo ` took the whole-line branch and proposed a remembered
+  # `sudo rm -rf <path>` in full. [REVIEW]
+  return 1
+}
+
 # ── whole remembered lines, for commands whose arguments are not paths ───────
 #
 # The corpus cannot answer `ssh <user>@<host>`. The host is a VALUE, and values are
@@ -142,10 +176,10 @@ _clicue_history_lines() {
   # Everything to the left of the word being typed. Stripped from each match so the
   # candidate starts at the cursor's own word rather than at the start of the line.
   #
-  # By LENGTH, not by `${buf%$pfx}`. That form strips a PATTERN, so a word containing a
-  # glob eats the wrong amount: with pfx `*`, `%` matches the shortest suffix — the
-  # empty string — and the head swallows the whole buffer, leaving every candidate
-  # empty. The prefix is a literal substring of the buffer, so its length is exact.
+  # By LENGTH. `${buf%$pfx}` compares literally in default zsh and only becomes a
+  # pattern strip under GLOB_SUBST; length arithmetic is correct under both. Guarded,
+  # because an index removes N characters whether or not the prefix is really there.
+  [[ -z $pfx || $buf == *"$pfx" ]] || return 1
   local head=${buf[1,${#buf}-${#pfx}]}
   local -A seen=()
   local m c
@@ -162,6 +196,26 @@ _clicue_history_lines() {
     # Length again, for the same reason as $head: `${m#$head}` strips a pattern, and a
     # glob anywhere earlier in the line makes it remove the wrong amount.
     c=${m[${#head}+1,-1]}
+    # A candidate is ONE segment. A remembered line may continue past a separator into
+    # a different command, and offering the tail of it would insert that command too —
+    # measured, a `git status && rm -rf node_modules` in history put the `rm -rf` on
+    # git's card. Truncated rather than rejected: the part before the separator is a
+    # genuine cue and only the continuation is unwanted. [REVIEW]
+    #
+    # The character test is a cheap pre-filter; only lines that could contain a
+    # separator pay for tokenising, and ${(z)} is what decides, so a quoted `|` inside
+    # an argument is left alone.
+    if [[ $c == *[\|\;\&\(\)\{]* ]]; then
+      local -a ctok=( ${(z)c} )
+      local -i ci
+      for (( ci = 1; ci <= ${#ctok}; ci++ )); do
+        case ${ctok[ci]} in
+          ('|'|'||'|';'|'&&'|'&'|'|&'|'('|'{') break ;;
+        esac
+      done
+      (( ci > 1 )) || continue
+      c=${(j: :)ctok[1,ci-1]}
+    fi
     # The RHS is QUOTED. Unquoted, `!=` inside [[ ]] is a pattern match, so a prefix of
     # `*` matched every candidate and the whole list was discarded as "same as what is
     # typed". Third form of one gotcha in this function alone: %, # and != are all
@@ -194,15 +248,15 @@ _clicue_invocation_cues() {
   local -i cap=${3:-40}
   reply=()
   (( ${#CLICUE_INVOKE} )) || return 1
-  local k disp rest
+  local k rest
   local -a scored=()
   local -A seen=()
   for k in ${(k)CLICUE_INVOKE}; do
     [[ $k == "${cmd} "* ]] || continue
-    # The key is canonical so one habit has one entry; the SPELLING is what the
-    # operator last reached for, and that is what gets proposed and inserted.
-    disp=${CLICUE_INVOKE_DISP[$k]:-$k}
-    rest=${disp#${cmd} }
+    # Keys are stored under the spelling the operator typed, so this is already what
+    # gets proposed and inserted; the canonical form exists only inside the builder,
+    # where it makes two spellings accumulate as one habit.
+    rest=${k[${#cmd}+2,-1]}
     [[ -n $rest ]] || continue
     [[ -n $pfx && $rest != ${pfx}* ]] && continue
     (( ${+seen[$rest]} )) && continue
@@ -226,7 +280,18 @@ _clicue_invocation_cues() {
 _clicue_arg_candidates() {
   local cmd=$1 pfx=$2
   local -a hist=() rest=()
-  if (( ${+CLICUE_PATHISH[$cmd]} )); then
+  # ── which source, and what happens when we cannot tell ──────────────────────
+  # Tested on the DATA, never on the corpus stamp. A stale cache is still sourced and
+  # still rendered from — _clicue_load returns 0 and only sets _clicue_corpus_stale —
+  # so a pre-v3 corpus has no CLICUE_PATHISH at all. Gating on the stamp would have
+  # made every command look non-pathish for one shell after upgrading, and `rm <Tab>`
+  # would have proposed deleted paths: the exact outcome this split exists to prevent.
+  # With `auto-rebuild no` it would never have self-corrected. [REVIEW]
+  #
+  # Absent map means UNKNOWN, and unknown fails safe to flags-only. Withholding a whole
+  # line costs the operator a cue; proposing a path we could not rule out costs more.
+  if ! _clicue_effective_cmd $cmd || (( ! ${#CLICUE_PATHISH} )) \
+     || (( ${+CLICUE_PATHISH[$_clicue_effcmd]} )); then
     _clicue_invocation_cues $cmd "$pfx" && hist=( $reply )
   else
     _clicue_history_lines "$LBUFFER" "$pfx" && hist=( $reply )
