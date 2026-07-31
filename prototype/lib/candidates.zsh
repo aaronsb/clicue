@@ -259,7 +259,21 @@ _clicue_arg_candidates() {
   # Without this the card would be empty until Tab, and an empty card is how
   # zsh's raw listing got on screen in the first place.
   typeset -g _clicue_argnomatch=0
-  if [[ $pfx == -* ]] || (( _clicue_optctx )); then
+  # ── the parameter set is there to arrow into, not only to filter ─────────────
+  # `-z $pfx` was added to this gate so tier 2 carries the whole documented set the
+  # moment the cursor reaches argument position. Without it `ls <Tab>` loaded no flags
+  # at all and there was nothing below tier 1 to browse — the operator could see their
+  # own habits and not the reference behind them, which is half the card's contract.
+  #
+  # A non-empty prefix that is not an option is still excluded: typing `git sta` means
+  # a subcommand is being named, and answering with git's entire flag set would bury it.
+  #
+  # This puts the flag path on EVERY argument-position card rather than only on
+  # dash-typing, so the ordering below matters more than it used to, not less — the
+  # grouped set must resolve before the raw compsys words or identical input yields two
+  # different cards depending on cache warmth. That is recorded above and is now on the
+  # common path.
+  if [[ -z $pfx || $pfx == -* ]] || (( _clicue_optctx )); then
     # keyed on the path the cursor is in, so `gh org <Tab>` offers org's options
     local lookup=${_clicue_cmdpath:-$cmd}
     _clicue_flag_load $lookup 2>/dev/null

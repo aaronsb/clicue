@@ -762,9 +762,43 @@ these options recency is strictly more reliable than frequency, and the operator
 own instinct — *"the last -property I used is proposed"* — is a recency rule, not
 a frequency one.
 
-Open: whether ranking should be recency-weighted, frequency-weighted, or a decay
-blend. Not yet decided; the prototype currently ranks on raw frequency and is
-therefore known-wrong for habitual commands.
+**Resolved, and it resolved differently at each level.** Ranking is a switchable
+zstyle — `frequency`, `recency`, `frecency` — defaulting to frecency, a count
+weighted by bucketed age. `clicue-rank` switches it mid-session and `clicue-rank
+why <prefix>` prints the counts, ages, weights and scores behind an order, because
+every improvement to this tool began as "that order feels wrong" and then cost a
+measurement to explain.
+
+#### The distortion is fatal one level down **[MEASURED]**
+
+The paragraph above under-stated its own finding. De-duplication does not merely
+deflate counts; it deflates them **in proportion to how habitual an invocation is**,
+and that bites much harder for whole invocations than for commands.
+
+A *command* still accumulates a count, because it appears across many differing
+lines — different arguments, different paths, all distinct, all kept. An
+*invocation* does not, because an invocation is habitual precisely to the degree
+that it is retyped identically, and identical lines collapse to one.
+
+So at invocation level a count measures **argument diversity**, not use:
+
+| | count | why |
+|---|---|---|
+| a habitual destructive one | ~30 | the paths after it varied, so it spans ~30 distinct lines |
+| a habitual listing | 1 | typed the same way every time, so dedup collapsed it |
+
+The listing is the more habitual of the two and scores lowest. This makes frecency
+unusable there rather than merely imprecise: frecency is `count × recency_weight`,
+so when the count is 1 for every habitual entry it degenerates to the age bucket
+alone, with mass ties broken alphabetically — an order that looks principled and
+behaves as noise.
+
+Argument position therefore ranks on **recency alone**, at both of its sources.
+Command position keeps frecency, where the count is real. One metric was never
+going to fit both, and the reason is a property of the history file rather than of
+the ranking.
+
+See `docs/design-notes/habits-in-argument-position.md`.
 
 ---
 
@@ -922,6 +956,25 @@ The familiarity gate defaults to **off**. A card that quietly shows less than it
 did yesterday is indistinguishable from a broken one, and the collapsed row names
 the key that expands it — design value 1 applied to a feature whose whole purpose
 is showing less.
+
+**These keys now feed the card, not only the gate**, which raised the bar on what
+belongs in one: a key has to be worth *proposing*, not merely worth counting. Four
+things had to change, each invisible while the map only counted.
+
+A single-dash token carrying hyphens is not a flag — one was being stored as an
+invocation of `cd`, and a mangled path offered even once costs more trust than the
+feature earns. Cluster spellings are canonicalised, since one habit typed two ways
+was two entries of 1 and neither could ever rank; the key sorts the letters and the
+*spelling last typed* is what gets shown. Leading subcommands count, for commands
+whose arguments are not paths — requiring a flag had been discarding the dominant
+habit of the most-used command in the corpus while keeping rarer flagged forms of
+it. Order ~180 distinct invocations became order ~500.
+
+What was **not** added is a minimum-count filter. It is the obvious way to drop the
+junk, and under `HIST_IGNORE_ALL_DUPS` a count of 1 is the signature of the most
+habitual invocations rather than of noise — the filter would have deleted exactly
+what the feature exists to surface. Recency separates junk from habit here without
+a threshold, because junk is old.
 
 ### Two zsh behaviours that fail by storing the wrong thing **[MEASURED]**
 
