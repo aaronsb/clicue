@@ -14,6 +14,7 @@
 
 pub mod corpus;
 pub mod daemon;
+pub mod engine;
 pub mod layout;
 pub mod model;
 pub mod protocol;
