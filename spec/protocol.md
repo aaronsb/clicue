@@ -38,6 +38,12 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    present only on the event that produced one), and `session` (shell PID +
    start time, so the daemon can key per-shell state like selection and
    engagement).
+4b. The first event of a session is `hello`, carrying `env`: the alias
+   map (name → expansion), function names, and builtin names — the three
+   name universes only a live shell can enumerate. The daemon walks
+   `$PATH` itself. The prototype read these per keystroke from shell
+   globals; once per session is enough because new aliases mid-session
+   are rare and a fresh `hello` after `clicue-off`/on re-syncs.
 4a. `cursor` travels in CHARACTERS — ZLE's `$CURSOR`, forwarded untouched;
    the daemon converts to bytes. Converting in zsh would put logic back in
    the shim, and an unstated unit here is the exact defect class §2
@@ -65,8 +71,12 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    to the appended text), and `action` for key events (consume | delegate |
    insert {text} | yield), mirroring the delegation contract the prototype's
    widgets implement in-shell.
-7. Span offsets are in bytes of the reply's card text; the shim converts to
-   whatever ZLE's region_highlight requires at paint time, in one place.
+7. Span offsets are in CHARACTERS of the reply's card text — amended from
+   bytes once the shim was designed: region_highlight is character-indexed,
+   and byte→char conversion in zsh would be real decision logic in the one
+   component specified to have none. The daemon converts (trivial in Rust),
+   the same division as `cursor` in §4a. Frames themselves stay
+   byte-limited per §2/§2a.
 
 ## Failure
 

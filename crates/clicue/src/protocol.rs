@@ -32,6 +32,10 @@ pub struct Session {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Event {
+    /// First event of a session; `env` on the request carries what only
+    /// the shell knows (aliases, functions, builtins). Sent once per
+    /// shell, before the first redraw.
+    Hello,
     /// line-pre-redraw fired.
     Redraw,
     /// A bound key fired; `name` is the shim's action name (accept,
@@ -39,6 +43,21 @@ pub enum Event {
     Key { name: String },
     /// The line was accepted; `hist` on the request carries new history.
     LineFinish,
+}
+
+/// Shell-side name universe, sent with [`Event::Hello`]. The daemon can
+/// walk `$PATH` itself; aliases, functions and builtins exist only inside
+/// the live shell (prototype read them per keystroke; the daemon gets
+/// them once and the shim stays dumb thereafter).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnvPayload {
+    /// name → expansion (the gloss for an alias IS its expansion).
+    #[serde(default)]
+    pub aliases: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub functions: Vec<String>,
+    #[serde(default)]
+    pub builtins: Vec<String>,
 }
 
 /// One new `$history` entry: zsh event number and the line (spec §5a).
@@ -65,13 +84,19 @@ pub struct Request {
     /// Compsys harvest payload, present only on the event that produced one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<serde_json::Value>,
+    /// Shell name universe; present only on [`Event::Hello`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<EnvPayload>,
     /// New `$history` entries since the last acked event number — read from
     /// `$history`, never `$BUFFER` (spec §5a).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hist: Vec<HistEntry>,
 }
 
-/// Byte-offset style span, relative to the reply's `card` text (spec §7).
+/// Style span over the reply's `card` text, in CHARACTER offsets —
+/// region_highlight is character-indexed, and the daemon converting
+/// (trivial in Rust) keeps the shim dumb, same reasoning as `cursor`
+/// (spec §7, amended; frames themselves stay byte-limited per §2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub start: usize,
@@ -88,8 +113,12 @@ pub enum Action {
     Consume,
     /// Hand the key to its original owner.
     Delegate,
-    /// Put `text` on the command line (composition, never execution).
-    Insert { text: String },
+    /// Put `text` on the command line (composition, never execution),
+    /// after removing `strip` CHARACTERS before the cursor — the typed
+    /// prefix being replaced. The daemon computes strip (it saw the exact
+    /// buffer); the shim applies it by length arithmetic, the zsh-safe
+    /// form (keys.md I1). Plain append is strip 0.
+    Insert { strip: usize, text: String },
     /// Card may stay visible, but this key belongs to compsys.
     Yield,
 }
@@ -100,6 +129,10 @@ pub struct Reply {
     /// Text to append to POSTDISPLAY. Empty means no card (spec §6).
     pub card: String,
     pub ghost: String,
+    /// region_highlight style for the ghost text; the daemon owns the
+    /// theme, so the shim never invents a colour.
+    #[serde(default)]
+    pub ghost_style: String,
     pub spans: Vec<Span>,
     /// Highest `$history` event number incorporated for this session
     /// (spec §5a); 0 before any history has been seen.
@@ -116,6 +149,7 @@ impl Reply {
             v: VERSION,
             card: String::new(),
             ghost: String::new(),
+            ghost_style: String::new(),
             spans: Vec::new(),
             ack: 0,
             action: Action::Delegate,
@@ -153,6 +187,7 @@ mod tests {
             lines: 40,
             keymap: "main".into(),
             pending: None,
+            env: None,
             hist: vec![HistEntry(101, "git status".into())],
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -175,6 +210,7 @@ mod tests {
             lines: 24,
             keymap: "main".into(),
             pending: None,
+            env: None,
             hist: vec![],
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -193,13 +229,15 @@ mod tests {
         assert!(line.contains(r#""ack":0"#));
         let ins = Reply {
             action: Action::Insert {
-                text: "tus ".into(),
+                strip: 3,
+                text: "status ".into(),
             },
             ..Reply::stand_down()
         };
         let line = serde_json::to_string(&ins).unwrap();
         assert!(line.contains(r#""action":"insert""#));
-        assert!(line.contains(r#""text":"tus ""#));
+        assert!(line.contains(r#""strip":3"#));
+        assert!(line.contains(r#""text":"status ""#));
     }
 
     #[test]

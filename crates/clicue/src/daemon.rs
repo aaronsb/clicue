@@ -126,21 +126,26 @@ fn bind(path: &Path) -> Result<(UnixListener, File)> {
 pub fn run() -> Result<()> {
     let path = socket_path()?;
     let (listener, _lock) = bind(&path)?; // lock lives as long as serve()
-    serve(listener)
+    let engine = std::sync::Arc::new(crate::engine::Engine::new()?);
+    serve_with(listener, std::sync::Arc::new(move |req| engine.handle(req)))
 }
 
 pub fn serve(listener: UnixListener) -> Result<()> {
-    serve_with(listener, handle)
+    serve_with(listener, std::sync::Arc::new(handle))
 }
+
+/// Shared render function — the engine behind every connection.
+pub type Render = std::sync::Arc<dyn Fn(Request) -> Reply + Send + Sync>;
 
 /// Accept loop, one thread per connection — a shell holds one persistent
 /// connection (spec §3), so the thread count tracks live shells. The
 /// render function is injected so the loop is testable against more than
 /// the stand-down stub, and it is where per-session state will thread in.
-pub fn serve_with(listener: UnixListener, render: fn(Request) -> Reply) -> Result<()> {
+pub fn serve_with(listener: UnixListener, render: Render) -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                let render = render.clone();
                 std::thread::spawn(move || {
                     // A dropped connection is a shell exiting: not an error.
                     let _ = serve_connection(stream, render);
@@ -157,7 +162,7 @@ pub fn serve_with(listener: UnixListener, render: fn(Request) -> Reply) -> Resul
     Ok(())
 }
 
-fn serve_connection(stream: UnixStream, render: fn(Request) -> Reply) -> Result<()> {
+fn serve_connection(stream: UnixStream, render: Render) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut stream = stream;
     let mut raw: Vec<u8> = Vec::new();
@@ -186,7 +191,7 @@ fn serve_connection(stream: UnixStream, render: fn(Request) -> Reply) -> Result<
             stream.write_all(b"\n")?;
             return Ok(());
         }
-        let frame = respond(&raw, render);
+        let frame = respond(&raw, &render);
         stream.write_all(frame.as_bytes())?;
         stream.write_all(b"\n")?;
     }
@@ -198,7 +203,7 @@ fn serve_connection(stream: UnixStream, render: fn(Request) -> Reply) -> Result<
 /// (spec §10). Error text carries positions only, never request content —
 /// the request may be the operator's command line, and §10 stashes these
 /// frames for `clicue doctor`.
-fn respond(raw: &[u8], render: fn(Request) -> Reply) -> String {
+fn respond(raw: &[u8], render: &Render) -> String {
     #[derive(serde::Deserialize)]
     struct Probe {
         v: u32,
@@ -249,6 +254,10 @@ mod tests {
             .recursive(true)
             .mode(0o700)
             .create(&dir);
+        // Parallel tests race bind()'s process-global umask window, which
+        // can strip the search bit from a dir created inside it. Assert
+        // the mode explicitly rather than trusting creation-time.
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
         dir
     }
 
@@ -270,6 +279,7 @@ mod tests {
             lines: 40,
             keymap: "main".into(),
             pending: None,
+            env: None,
             hist: vec![],
         };
         serde_json::to_string(&req).unwrap()
