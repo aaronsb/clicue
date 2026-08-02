@@ -212,4 +212,61 @@ print -rn -- "dead=$_clicue_dead action=$_clicue_action err=$_clicue_err""#,
         let v = zsh_stdout(r#"print -rn -- $_clicue_v"#, &[]);
         assert_eq!(v, crate::protocol::VERSION.to_string().as_bytes());
     }
+
+    #[test]
+    fn harvest_json_from_fixture_arrays_parses_as_pending() {
+        // Fill the capture arrays as the compadd shadow would (hostile
+        // description included), assemble, and let the daemon-side parser
+        // be the judge — both halves of the bridge meet in this test.
+        let out = zsh_stdout(
+            r#"
+_clicue_cs_words=( A c '--file' )
+_clicue_cs_descs=( 'A  -- append to an "archive"' '@' '--file  -- archive file' )
+_clicue_cs_sfxw=( A '--file' )
+_clicue_cs_sfxv=( '' '=' )
+_clicue_cs_ipfx='-'
+_clicue_cs_json 'tar -' tar 0
+print -rn -- "{\"harvests\":[$REPLY]}"
+"#,
+            &[],
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("shim emitted valid JSON");
+        let p = crate::flags::parse_pending(&v).expect("daemon parses the shim's payload");
+        let h = &p.harvests[0];
+        assert_eq!(h.path, "tar");
+        assert!(!h.live);
+        assert_eq!(h.iprefix, "-");
+        assert_eq!(h.words, vec!["A", "c", "--file"]);
+        assert_eq!(h.descs[1], "@", "placeholder survives");
+        assert_eq!(h.sfx.get("A").map(|s| s.as_str()), Some(""), "-S ''");
+        assert_eq!(h.sfx.get("--file").map(|s| s.as_str()), Some("="));
+        assert!(!h.sfx.contains_key("c"), "no -S = absent");
+        // and the daemon's table sees the normalised spelling
+        let t = crate::flags::table_from(h, "s".into());
+        assert!(t.entries.contains_key("-A"));
+        assert_eq!(
+            t.entries["-A"].desc, r#"append to an "archive""#,
+            "quotes survive the wire"
+        );
+    }
+
+    #[test]
+    fn argpath_mirrors_the_daemon_derivation() {
+        let out = zsh_stdout(
+            r#"
+BUFFER='gh org list --limit 1'
+_clicue_argpath && print -rn -- "$REPLY"
+print -rn -- '|'
+BUFFER='gh org '
+_clicue_argpath && print -rn -- "$REPLY"
+print -rn -- '|'
+BUFFER='git sta'
+_clicue_argpath && print -rn -- "$REPLY"
+"#,
+            &[],
+        );
+        // flags exclude themselves; a trailing space completes the word;
+        // the word still being typed never extends the path
+        assert_eq!(String::from_utf8_lossy(&out), "gh:org:list|gh:org|git");
+    }
 }
