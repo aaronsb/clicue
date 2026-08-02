@@ -20,4 +20,4 @@ _Architecture, data model, ranking and corpus semantics_
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-100](./core/ADR-100-rebuild-as-a-rust-daemon-behind-a-generated-zsh-shim.md) | Rebuild as a Rust daemon behind a generated zsh shim | Proposed |
+| [ADR-100](./core/ADR-100-rebuild-as-a-rust-daemon-behind-a-generated-zsh-shim.md) | Rebuild as a Rust daemon behind a generated zsh shim | Accepted |
