@@ -12,8 +12,15 @@
 //! - `doctor`   — live-shell probing and the conflict catalog
 //! - `shim`     — the generated zsh source
 
+pub mod corpus;
 pub mod daemon;
+pub mod layout;
+pub mod model;
 pub mod protocol;
+pub mod rank;
+pub mod shim;
+pub mod sources;
+pub mod theme;
 
 use anyhow::{bail, Result};
 
