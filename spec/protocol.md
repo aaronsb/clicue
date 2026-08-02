@@ -15,9 +15,20 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    counted in **bytes**; zsh `${#var}` counts characters and must never be
    used as a frame size. [zsh-hazard, stays: the shim reads frames]
    [MEASURED: the spike's own sanity check failed on this]
+2a. One frame is capped at `MAX_FRAME` (1 MiB, defined once in
+   protocol.rs). An oversized frame gets an error frame naming the limit,
+   then the connection closes — resync inside an overlong line is
+   impossible, and reconnect costs 49 µs. Unbounded reads measured 266 MB
+   RSS from one connection on review of PR #5. [MEASURED]
 3. The shim holds one persistent connection per shell. On error it may
    reconnect once per event; reconnect worst-case is 0.26 ms [MEASURED], so
    no pooling or retry sophistication is warranted.
+3a. The daemon is a singleton per socket, enforced by an flock'd lockfile
+   beside the socket (`clicue.lock`) held for the daemon's lifetime. The
+   connect-probe alone loses the start race — measured: 6 concurrent
+   starts against a stale socket yielded two live daemons [MEASURED] — and
+   §9's auto-spawn fires N times at once when a multiplexer restores a
+   session. A pre-existing path that is not a socket is never removed.
 
 ## Request
 
@@ -27,17 +38,25 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    present only on the event that produced one), and `session` (shell PID +
    start time, so the daemon can key per-shell state like selection and
    engagement).
+4a. `cursor` travels in CHARACTERS — ZLE's `$CURSOR`, forwarded untouched;
+   the daemon converts to bytes. Converting in zsh would put logic back in
+   the shim, and an unstated unit here is the exact defect class §2
+   records. Every offset in the REPLY is bytes (§7); the asymmetry is
+   deliberate and this clause is its single statement.
 5. The daemon owns the state machine: standdown, yield-tab, mode, selection,
    engagement, suppression. The shim never interprets buffer content.
    (Prototype provenance: the state globals of clicue.zsh:80–215 become
    daemon per-session state.)
 5a. History freshness (resolves sources.md ambiguity D5): on `line-finish`
-   the shim includes `hist`: the entries appended to `$history` since the
-   last event number the daemon acknowledged — read from `$history`, never
-   from `$BUFFER`. A space-prefixed line never enters `$history`, so
-   `HIST_IGNORE_SPACE` remains a free per-command opt-out; reading the
-   buffer would re-propose deliberately hidden commands, the exact defect
-   the prototype records at candidates.zsh:230–245. [domain]
+   the shim includes `hist`: `[event-number, line]` pairs appended to
+   `$history` since the last number the daemon acked — read from
+   `$history`, never from `$BUFFER`. A space-prefixed line never enters
+   `$history`, so `HIST_IGNORE_SPACE` remains a free per-command opt-out;
+   reading the buffer would re-propose deliberately hidden commands, the
+   exact defect the prototype records at candidates.zsh:230–245. Every
+   reply carries `ack`: the highest event number incorporated for the
+   session, so the shim knows what to resend after a daemon restart and
+   the mechanism is expressible on the wire. [domain]
 
 ## Reply
 
@@ -64,8 +83,13 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
 
 ## Versioning
 
-10. Request and reply carry `v` (integer). Mismatch → the daemon replies
-    with an error frame naming both versions; the shim goes silent
-    (rule 8) and stashes the error for `clicue doctor`. The generated-shim
-    model (`clicue init zsh`) makes mismatch a transient of mid-upgrade
-    shells only.
+10. Request and reply carry `v` (integer). The daemon probes `v` BEFORE
+    parsing the full request — a bumped version means a changed shape, so
+    shape-first parsing would report gibberish for the one case this frame
+    exists to name. Mismatch → an error frame naming both versions; the
+    shim goes silent (rule 8) and stashes the error for `clicue doctor`.
+    The generated-shim model (`clicue init zsh`) makes mismatch a
+    transient of mid-upgrade shells only.
+11. Error frames never echo request content — a request is usually the
+    operator's command line, and these frames are stashed (rule 10) and
+    later shown by `clicue doctor`. Positions and limits only.

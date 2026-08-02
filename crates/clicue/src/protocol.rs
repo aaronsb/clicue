@@ -2,13 +2,21 @@
 //!
 //! Contract: spec/protocol.md. Framing is newline-delimited JSON — one
 //! request line in, one reply line out. All offsets and limits are BYTES
-//! (spec §2: zsh `${#var}` counts characters and must never size a frame).
+//! (spec §2: zsh `${#var}` counts characters and must never size a frame),
+//! with one deliberate exception: `cursor` travels in characters, ZLE's
+//! native unit, and the daemon converts — the shim stays dumb.
 
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any wire-visible change. Mismatch produces an [`ErrorFrame`],
 /// never a guessed reply (spec §10).
 pub const VERSION: u32 = 1;
+
+/// Hard cap on one frame, in bytes (spec §2). A compsys harvest of several
+/// hundred described candidates measures tens of KiB; a frame past this is
+/// a malfunction, answered with an error frame and a closed connection.
+/// One constant so shim and daemon cannot disagree.
+pub const MAX_FRAME: usize = 1 << 20;
 
 /// Keys per-shell daemon state: selection, engagement, suppression all
 /// belong to one shell, not one connection (spec §4).
@@ -33,13 +41,21 @@ pub enum Event {
     LineFinish,
 }
 
+/// One new `$history` entry: zsh event number and the line (spec §5a).
+/// Serialized as a two-element array. Numbered so the daemon can ack and
+/// the shim can resend only what was never acknowledged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistEntry(pub u64, pub String);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub v: u32,
     pub session: Session,
     pub event: Event,
     pub buffer: String,
-    /// Cursor position in BYTES into `buffer`.
+    /// Cursor position in CHARACTERS into `buffer` — ZLE's `$CURSOR`,
+    /// forwarded untouched. The daemon converts to bytes; converting in
+    /// zsh would put decision logic back in the shim.
     pub cursor: usize,
     pub cols: u16,
     pub lines: u16,
@@ -49,10 +65,10 @@ pub struct Request {
     /// Compsys harvest payload, present only on the event that produced one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<serde_json::Value>,
-    /// New `$history` entries since the last acknowledged event — read from
+    /// New `$history` entries since the last acked event number — read from
     /// `$history`, never `$BUFFER` (spec §5a).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hist: Vec<String>,
+    pub hist: Vec<HistEntry>,
 }
 
 /// Byte-offset style span, relative to the reply's `card` text (spec §7).
@@ -85,6 +101,9 @@ pub struct Reply {
     pub card: String,
     pub ghost: String,
     pub spans: Vec<Span>,
+    /// Highest `$history` event number incorporated for this session
+    /// (spec §5a); 0 before any history has been seen.
+    pub ack: u64,
     #[serde(flatten)]
     pub action: Action,
 }
@@ -98,13 +117,15 @@ impl Reply {
             card: String::new(),
             ghost: String::new(),
             spans: Vec::new(),
+            ack: 0,
             action: Action::Delegate,
         }
     }
 }
 
 /// Sent instead of a [`Reply`] when the request cannot be honoured; the
-/// shim goes silent and stashes it for `clicue doctor` (spec §10).
+/// shim goes silent and stashes it for `clicue doctor` (spec §10). Must
+/// never echo request content — the request may be a command line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorFrame {
     pub v: u32,
@@ -132,18 +153,14 @@ mod tests {
             lines: 40,
             keymap: "main".into(),
             pending: None,
-            hist: vec![],
+            hist: vec![HistEntry(101, "git status".into())],
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains('\n'), "one frame must be one line");
+        assert!(line.contains(r#"[101,"git status"]"#), "hist is [n, line]");
         let back: Request = serde_json::from_str(&line).unwrap();
         assert_eq!(back.buffer, "git sta");
-        assert_eq!(
-            back.event,
-            Event::Key {
-                name: "accept".into()
-            }
-        );
+        assert_eq!(back.hist[0].0, 101);
     }
 
     #[test]
@@ -173,6 +190,7 @@ mod tests {
     fn reply_action_is_flattened() {
         let line = serde_json::to_string(&Reply::stand_down()).unwrap();
         assert!(line.contains(r#""action":"delegate""#));
+        assert!(line.contains(r#""ack":0"#));
         let ins = Reply {
             action: Action::Insert {
                 text: "tus ".into(),
