@@ -11,8 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 
 use crate::corpus::{self, Corpus};
+use crate::flags::{self, FlagStore, Harvest};
 use crate::layout::{self, CardInput, Dims, KeyLabels, LayoutCfg, View};
-use crate::model::{Cue, Mode};
+use crate::model::{Cue, Kind, Mode};
 use crate::protocol::{Action, Event, Reply, Request, Session, Span};
 use crate::rank::RankMode;
 use crate::sources::{self, ArgContext, HistoryWindow, SessionEnv, DEFAULT_WINDOW};
@@ -21,6 +22,9 @@ use crate::theme::{self, Theme};
 
 struct Sess {
     state: SessionState,
+    /// Live compsys harvest for the exact buffer it was taken at —
+    /// membership authority that supersedes the cache (sources spec).
+    live: Option<Harvest>,
     env: SessionEnv,
     view: View,
     window: HistoryWindow,
@@ -31,6 +35,7 @@ struct Sess {
 
 pub struct Engine {
     corpus: Corpus,
+    flags: FlagStore,
     theme: Theme,
     cfg: LayoutCfg,
     keys: KeyLabels,
@@ -39,6 +44,26 @@ pub struct Engine {
     /// Seed for each new session's history window (newest N of HISTFILE).
     hist_seed: Vec<String>,
     sessions: Mutex<HashMap<Session, Sess>>,
+}
+
+/// What candidate resolution produced, beyond the cues themselves.
+#[derive(Default)]
+struct CueSet {
+    cues: Vec<Cue>,
+    info: bool,
+    argnomatch: bool,
+    /// Membership came from a live compsys harvest for this buffer.
+    live_membership: bool,
+}
+
+fn info_cue(cmd: &str, gloss: &str) -> Cue {
+    Cue {
+        insert: cmd.to_string(),
+        label: cmd.to_string(),
+        gloss: gloss.to_string(),
+        kind: Kind::Arg,
+        suffix: None,
+    }
 }
 
 fn now_epoch() -> u64 {
@@ -75,14 +100,31 @@ impl Engine {
                 .map(|h| h.line)
                 .collect::<Vec<_>>()
         };
-        // Theme choice comes from config later; aura is the shipped default.
-        let (theme, _msgs) = theme::load("aura", None);
+        let loaded = crate::config::load();
+        for w in &loaded.warnings {
+            eprintln!("clicue daemon: config: {w}");
+        }
+        let cfgf = loaded.config;
+        let (theme, msgs) = theme::load(&cfgf.theme, None);
+        for m in &msgs {
+            eprintln!("clicue daemon: theme: {m}");
+        }
         Ok(Engine {
             corpus: corp,
+            flags: FlagStore::new(
+                FlagStore::default_dir()?,
+                corpus::path_dirs(),
+                cfgf.emulates.clone().into_iter().collect(),
+            ),
             theme,
-            cfg: LayoutCfg::default(),
+            cfg: LayoutCfg {
+                tier1_rows: cfgf.tier1_rows,
+                max_width: cfgf.max_width,
+                max_lines: cfgf.max_lines,
+                tier2_rows: cfgf.tier2_rows,
+            },
             keys: KeyLabels::default(),
-            rank: RankMode::Frecency,
+            rank: RankMode::parse(&cfgf.ranking),
             path_commands: corpus::scan_path(&corpus::path_dirs()),
             hist_seed,
             sessions: Mutex::new(HashMap::new()),
@@ -96,6 +138,7 @@ impl Engine {
             window.seed(self.hist_seed.iter().map(|s| s.as_str()));
             Sess {
                 state: SessionState::default(),
+                live: None,
                 env: SessionEnv {
                     path_commands: self.path_commands.clone(),
                     ..SessionEnv::default()
@@ -109,6 +152,20 @@ impl Engine {
 
         for h in &req.hist {
             sess.window.push(h.0, h.1.clone());
+        }
+
+        // Harvest payloads ride any event. Live captures are membership
+        // for that exact buffer; synthesised ancestors feed the store.
+        if let Some(p) = &req.pending {
+            if let Some(pending) = flags::parse_pending(p) {
+                for h in pending.harvests {
+                    if h.live {
+                        sess.live = Some(h);
+                    } else if let Err(e) = self.flags.ingest(&h, &sess.env.aliases) {
+                        eprintln!("clicue daemon: flag ingest: {e:#}");
+                    }
+                }
+            }
         }
 
         match &req.event {
@@ -165,8 +222,11 @@ impl Engine {
         };
 
         let now = now_epoch();
-        let (cues, info) = self.cues_for(sess, &req.buffer, &pos, now);
-        if cues.is_empty() {
+        let set = self.cues_for(sess, &req.buffer, &pos, now);
+        let cues = set.cues;
+        let info = set.info;
+        let explain = self.explain_rows(sess, &pos);
+        if cues.is_empty() && explain.is_empty() {
             sess.grid = None;
             return reply(String::new(), Vec::new(), String::new(), String::new());
         }
@@ -193,11 +253,11 @@ impl Engine {
         sess.view.maxed = sess.state.maxed;
         let input = CardInput {
             cues: &cues,
-            explain: &[],
+            explain: &explain,
             mode: pos.mode,
             prefix: &pos.pfx,
             info,
-            argnomatch: false,
+            argnomatch: set.argnomatch,
             engaged: sess.state.engaged,
             familiar: false,
             expanded: sess.state.expanded,
@@ -235,31 +295,185 @@ impl Engine {
         }
     }
 
-    /// Candidate resolution for a position. Returns (cues, info-card).
-    fn cues_for(
-        &self,
-        sess: &Sess,
-        buffer: &str,
-        pos: &state::Position,
-        now: u64,
-    ) -> (Vec<Cue>, bool) {
+    /// Candidate resolution for a position.
+    fn cues_for(&self, sess: &Sess, buffer: &str, pos: &state::Position, now: u64) -> CueSet {
         match pos.mode {
-            Mode::Cmd => (
-                sources::command_candidates(&sess.env, &self.corpus, &pos.pfx, self.rank, now),
-                false,
-            ),
-            Mode::Arg => {
-                let words: Vec<&str> = pos.words.iter().map(|s| s.as_str()).collect();
-                let ctx = ArgContext {
-                    corpus: &self.corpus,
-                    window: &sess.window,
-                    buffer,
-                    words,
-                    prefix: &pos.pfx,
+            Mode::Cmd => CueSet {
+                cues: sources::command_candidates(
+                    &sess.env,
+                    &self.corpus,
+                    &pos.pfx,
+                    self.rank,
+                    now,
+                ),
+                ..CueSet::default()
+            },
+            Mode::Arg => self.arg_cues(sess, buffer, pos),
+        }
+    }
+
+    /// Argument position: the operator's habits lead (tier 1), the
+    /// documented parameter set follows — live compsys membership
+    /// superseding the cache when Tab has produced one for this buffer.
+    fn arg_cues(&self, sess: &Sess, buffer: &str, pos: &state::Position) -> CueSet {
+        let words: Vec<&str> = pos.words.iter().map(|s| s.as_str()).collect();
+        let ctx = ArgContext {
+            corpus: &self.corpus,
+            window: &sess.window,
+            buffer,
+            words,
+            prefix: &pos.pfx,
+        };
+        let mut cues = sources::arg_history_candidates(&ctx, 40);
+        let mut seen: std::collections::HashSet<String> =
+            cues.iter().map(|c| c.insert.clone()).collect();
+        let mut set = CueSet::default();
+
+        // The parameter set is there to arrow into, not only to filter
+        // (sources spec): shown on every argument-position card, except a
+        // non-flag word being typed (a subcommand name is being narrowed).
+        let show_flags = pos.pfx.is_empty() || pos.pfx.starts_with('-') || pos.optctx;
+        if !show_flags {
+            set.cues = cues;
+            return set;
+        }
+        let resolved = flags::resolve_path(&pos.cmdpath, &sess.env.aliases, &self.flags.emulates);
+
+        // Live harvest for THIS buffer: compsys's membership is the
+        // answer; the cache only decorates it with labels and grouping.
+        if let Some(live) = sess.live.as_ref().filter(|h| h.pos == buffer) {
+            let rel = pos
+                .pfx
+                .strip_prefix(&live.iprefix)
+                .unwrap_or(pos.pfx.as_str());
+            for (i, w) in live.words.iter().enumerate() {
+                if !rel.is_empty() && !w.starts_with(rel) {
+                    continue;
+                }
+                let norm = if !w.starts_with('-') && live.iprefix.starts_with('-') {
+                    format!("{}{w}", live.iprefix)
+                } else {
+                    w.clone()
                 };
-                (sources::arg_history_candidates(&ctx, 40), false)
+                if !seen.insert(norm.clone()) {
+                    continue;
+                }
+                let gloss = live
+                    .descs
+                    .get(i)
+                    .and_then(|d| flags::unpack_desc(w, d))
+                    .or_else(|| self.flags.explain(&resolved, &norm).map(|(_, d)| d))
+                    .unwrap_or_default();
+                let label = self
+                    .flags
+                    .explain(&resolved, &norm)
+                    .map(|(l, _)| l)
+                    .unwrap_or_else(|| norm.clone());
+                let suffix = live.sfx.get(w).cloned().map(Some).unwrap_or(None);
+                set.live_membership = true;
+                cues.push(Cue {
+                    insert: norm,
+                    label,
+                    gloss,
+                    kind: Kind::Arg,
+                    suffix,
+                });
+            }
+            set.cues = cues;
+            return set;
+        }
+
+        // Cache path: grouped rows, prefix-filtered; a flag prefix that
+        // matches nothing is a TYPO — offer the whole set and say so.
+        match self.flags.get(&resolved) {
+            Some(Some(_)) => {
+                let rows = self.flags.rows(&resolved).unwrap_or_default();
+                let matched: Vec<_> = rows
+                    .iter()
+                    .filter(|r| pos.pfx.is_empty() || r.insert.starts_with(&pos.pfx))
+                    .collect();
+                let (chosen, argnomatch) =
+                    if matched.is_empty() && pos.pfx.starts_with('-') && !rows.is_empty() {
+                        (rows.iter().collect::<Vec<_>>(), true)
+                    } else {
+                        (matched, false)
+                    };
+                set.argnomatch = argnomatch;
+                for r in chosen {
+                    if !seen.insert(r.insert.clone()) {
+                        continue;
+                    }
+                    cues.push(Cue {
+                        insert: r.insert.clone(),
+                        label: r.label.clone(),
+                        gloss: r.gloss.clone(),
+                        kind: Kind::Arg,
+                        suffix: r.suffix.clone(),
+                    });
+                }
+                set.cues = cues;
+            }
+            Some(None) => {
+                // Fetched, and the command documents nothing (H3).
+                if cues.is_empty() && pos.pfx.starts_with('-') {
+                    set.info = true;
+                    set.cues = vec![info_cue(&pos.cmd, "no documented options")];
+                } else {
+                    set.cues = cues;
+                }
+            }
+            None => {
+                // Never harvested. A leading dash is never a filename:
+                // keep the card and tell the operator how to fill it.
+                if pos.pfx.starts_with('-') || (pos.optctx && cues.is_empty()) {
+                    if cues.is_empty() {
+                        set.info = true;
+                        set.cues = vec![info_cue(
+                            &pos.cmd,
+                            "press Tab to load this command's options",
+                        )];
+                    } else {
+                        set.cues = cues;
+                    }
+                } else {
+                    set.cues = cues;
+                }
             }
         }
+        set
+    }
+
+    /// E-rules: what the operator ALREADY typed, explained. Walks the
+    /// tokens left to right maintaining the command path — subcommands
+    /// descend, flags do not, values say nothing.
+    fn explain_rows(&self, sess: &Sess, pos: &state::Position) -> Vec<crate::model::ExplainRow> {
+        if pos.mode != Mode::Arg || pos.words.len() < 2 {
+            return Vec::new();
+        }
+        let mut rows = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut epath = pos.words[0].clone();
+        for tok in &pos.words[1..] {
+            let resolved = flags::resolve_path(&epath, &sess.env.aliases, &self.flags.emulates);
+            if !tok.starts_with('-') {
+                if let Some((label, desc)) = self.flags.explain(&resolved, tok) {
+                    if seen.insert(tok.clone()) {
+                        rows.push(crate::model::ExplainRow { label, desc });
+                    }
+                }
+                // Descend regardless: an undocumented subcommand still
+                // changes what the NEXT token means.
+                epath.push(':');
+                epath.push_str(tok);
+                continue;
+            }
+            if let Some((label, desc)) = self.flags.explain(&resolved, tok) {
+                if seen.insert(tok.clone()) {
+                    rows.push(crate::model::ExplainRow { label, desc });
+                }
+            }
+        }
+        rows
     }
 
     /// E5: how often the operator has run THIS invocation.
@@ -294,12 +508,14 @@ impl Engine {
         // What the card is currently showing decides what keys can do.
         let pos = state::analyze(buffer, 1).ok();
         let now = now_epoch();
-        let (cues, info) = match &pos {
+        let set = match &pos {
             Some(p) if req.keymap != "menuselect" && !sess.state.dismissed(buffer) => {
                 self.cues_for(sess, buffer, p, now)
             }
-            _ => (Vec::new(), false),
+            _ => CueSet::default(),
         };
+        let cues = set.cues;
+        let info = set.info;
         let total = cues.len();
 
         match name.as_str() {
@@ -434,6 +650,11 @@ mod tests {
     fn engine_with(corpus: Corpus) -> Engine {
         Engine {
             corpus,
+            flags: FlagStore::new(
+                std::env::temp_dir().join(format!("clicue-engine-test-{}", std::process::id())),
+                Vec::new(),
+                std::collections::HashMap::new(),
+            ),
             theme: theme::base(),
             cfg: LayoutCfg::default(),
             keys: KeyLabels::default(),

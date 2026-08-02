@@ -20,16 +20,30 @@ enum Command {
         shell: String,
     },
     /// Check the live zsh environment, then wire clicue into it
-    Install,
-    /// Remove clicue from the zsh config and restore original bindings
-    Uninstall,
+    Install {
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+        /// Proceed even if the doctor found fighters
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove clicue from the zsh config
+    Uninstall {
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
     /// Probe a live zsh for conflicts and silent degradations
     Doctor,
-    /// Show or edit configuration
+    /// Show the effective configuration with provenance
     Config,
     /// List, set, or preview themes
-    Theme,
-    /// Inspect and manage collected data (corpus, flag cache, habits)
+    Theme {
+        #[command(subcommand)]
+        cmd: Option<ThemeCmd>,
+    },
+    /// Inspect and manage collected data (corpus, habits)
     Data {
         #[command(subcommand)]
         cmd: Option<DataCmd>,
@@ -39,11 +53,75 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum ThemeCmd {
+    /// List available themes (built-in and installed TOML)
+    List,
+    /// Set the theme in config.toml
+    Set { name: String },
+    /// Render a sample card with a theme
+    Preview { name: String },
+}
+
+#[derive(Subcommand)]
 enum DataCmd {
     /// Corpus location, size, and staleness
     Status,
     /// Rebuild the corpus from history and whatis
     Rebuild,
+    /// Everything clicue knows about one command
+    Inspect { cmd: String },
+    /// Remove one command's habits from the corpus (targeted deletion)
+    Forget { cmd: String },
+}
+
+/// User TOML themes live beside the config file.
+fn themes_dir() -> Option<std::path::PathBuf> {
+    clicue::config::config_path()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("themes")))
+}
+
+fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
+    use clicue::theme;
+    let dir = themes_dir();
+    match cmd.unwrap_or(ThemeCmd::List) {
+        ThemeCmd::List => {
+            let loaded = clicue::config::load();
+            println!("theme: {}", loaded.config.theme);
+            println!("available: {}", theme::available(dir.as_deref()).join("  "));
+            Ok(())
+        }
+        ThemeCmd::Set { name } => {
+            let names = theme::available(dir.as_deref());
+            if !names.contains(&name) {
+                anyhow::bail!("no theme named {name:?} — available: {}", names.join("  "));
+            }
+            let (t, msgs) = theme::load(&name, dir.as_deref());
+            for m in &msgs {
+                eprintln!("warning: {m}");
+            }
+            if t.name != name {
+                anyhow::bail!("theme {name:?} failed validation — not set");
+            }
+            let path = clicue::config::config_path()?;
+            clicue::config::set_key_line(&path, "theme", &name)?;
+            println!("theme is now {name} ({})", path.display());
+            println!("restart the daemon to apply: pkill -f 'clicue daemon' (it respawns on the next keystroke)");
+            Ok(())
+        }
+        ThemeCmd::Preview { name } => {
+            let (t, msgs) = theme::load(&name, dir.as_deref());
+            for m in &msgs {
+                eprintln!("warning: {m}");
+            }
+            let cols = std::env::var("COLUMNS")
+                .ok()
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(80);
+            print!("{}", theme::preview(&t, cols));
+            Ok(())
+        }
+    }
 }
 
 fn data(cmd: Option<DataCmd>) -> Result<()> {
@@ -82,10 +160,77 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             );
             Ok(())
         }
+        DataCmd::Inspect { cmd } => {
+            let c = corpus::load(&cache)?;
+            println!("{cmd}:");
+            match c.gloss.get(&cmd) {
+                Some(g) => println!("  gloss     {g}"),
+                None => println!("  gloss     (none)"),
+            }
+            let count = c.freq.get(&cmd).copied().unwrap_or(0);
+            println!("  runs      {count}");
+            if let Some(last) = c.last.get(&cmd).filter(|l| **l > 0) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                println!("  last      {}d ago", now.saturating_sub(*last) / 86400);
+            }
+            if let Some(toks) = c.args.get(&cmd) {
+                println!("  args      {}", toks.join(" "));
+            }
+            let prefix = format!("{cmd} ");
+            let mut invocations: Vec<_> = c
+                .invoke
+                .iter()
+                .filter(|(k, _)| **k == cmd || k.starts_with(&prefix))
+                .collect();
+            invocations.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+            if !invocations.is_empty() {
+                println!("  invocations:");
+                for (k, s) in invocations.iter().take(10) {
+                    println!("    {:<40} {}×  top {}%", k, s.count, s.pct);
+                }
+                if invocations.len() > 10 {
+                    println!("    … {} total", invocations.len());
+                }
+            }
+            Ok(())
+        }
+        DataCmd::Forget { cmd } => {
+            let mut c = corpus::load(&cache)?;
+            let prefix = format!("{cmd} ");
+            let hit = |k: &str| k == cmd || k.starts_with(&prefix);
+            let mut removed = 0usize;
+            removed += c.freq.remove(&cmd).map(|_| 1).unwrap_or(0);
+            removed += c.last.remove(&cmd).map(|_| 1).unwrap_or(0);
+            removed += c.args.remove(&cmd).map(|_| 1).unwrap_or(0);
+            removed += c.argn.remove(&cmd).map(|_| 1).unwrap_or(0);
+            let before = c.invoke.len();
+            c.invoke.retain(|k, _| !hit(k));
+            removed += before - c.invoke.len();
+            let before = c.invoke_alias.len();
+            c.invoke_alias.retain(|k, v| !hit(k) && !hit(v));
+            removed += before - c.invoke_alias.len();
+            // The gloss stays: it is whatis-derived public data, not a habit.
+            corpus::save(&c, &cache)?;
+            println!(
+                "forgot {removed} entr{} for {cmd}. Note: the next rebuild re-learns from \
+                 history — prefix the command with a space (HIST_IGNORE_SPACE) to keep it \
+                 out for good.",
+                if removed == 1 { "y" } else { "ies" }
+            );
+            Ok(())
+        }
     }
 }
 
 fn main() -> Result<()> {
+    // Die quietly on a closed pipe (`clicue data inspect x | head`), like
+    // every other Unix CLI — Rust's default turns SIGPIPE into a panic.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     match cli.command {
         Command::Init { shell } => {
@@ -95,14 +240,27 @@ fn main() -> Result<()> {
             print!("{}", clicue::shim::emit_zsh());
             Ok(())
         }
-        Command::Install => clicue::not_yet("install"),
-        Command::Uninstall => clicue::not_yet("uninstall"),
-        Command::Doctor => clicue::not_yet("doctor"),
-        Command::Config => clicue::not_yet("config"),
-        Command::Theme => {
-            println!("built-in: {}", clicue::theme::builtin_names().join("  "));
+        Command::Install { yes, force } => {
+            let code = clicue::install::install(&clicue::install::InstallOpts { yes, force })?;
+            std::process::exit(code);
+        }
+        Command::Uninstall { yes } => {
+            let code = clicue::install::uninstall(yes)?;
+            std::process::exit(code);
+        }
+        Command::Doctor => {
+            let code = clicue::doctor::run()?;
+            std::process::exit(code);
+        }
+        Command::Config => {
+            let loaded = clicue::config::load();
+            let shown = clicue::config::config_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "(unresolvable)".into());
+            print!("{}", clicue::config::render_effective(&loaded, &shown));
             Ok(())
         }
+        Command::Theme { cmd } => theme_cmd(cmd),
         Command::Data { cmd } => data(cmd),
         Command::Daemon => clicue::daemon::run(),
     }

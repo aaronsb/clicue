@@ -282,14 +282,210 @@ _clicue_apply() {
 }
 
 # ── requests ─────────────────────────────────────────────────────────────────
-# $1 = event JSON fragment. Builds the full request into REPLY.
+# $1 = event JSON fragment. Builds the full request into REPLY. A pending
+# harvest fragment (set by _clicue_harvest) rides exactly one request.
 _clicue_request() {
   local ev=$1
   _clicue_hist_json
   local hist=$REPLY
   _clicue_json_esc "$BUFFER"
   local buf=$REPLY
-  REPLY='{"v":'$_clicue_v',"session":{"pid":'$$',"start":'$_clicue_start'},"event":'$ev',"buffer":"'$buf'","cursor":'${CURSOR:-0}',"cols":'${COLUMNS:-80}',"lines":'${LINES:-24}',"keymap":"'${KEYMAP:-main}'"'$hist'}'
+  REPLY='{"v":'$_clicue_v',"session":{"pid":'$$',"start":'$_clicue_start'},"event":'$ev',"buffer":"'$buf'","cursor":'${CURSOR:-0}',"cols":'${COLUMNS:-80}',"lines":'${LINES:-24}',"keymap":"'${KEYMAP:-main}'"'$hist$_clicue_pending'}'
+  _clicue_pending=''
+}
+
+# ── compsys capture: the compadd shadow (spec/compsys-bridge.md §B) ─────────
+# Drives compsys through documented interfaces only. The shadow APPENDS
+# -O/-D and hands everything else to the builtin — never round-trips
+# compadd's body as text (B1). Raw output crosses the wire; the daemon owns
+# grouping, labels and storage (Z3).
+
+# Scan a compadd argument list. Sets _clicue_csd (display array),
+# _clicue_cs_probe, _clicue_cs_hassfx, _clicue_cs_sfxval.
+_clicue_cs_scan() {
+  _clicue_csd=(); _clicue_cs_probe=''; _clicue_cs_hassfx=''; _clicue_cs_sfxval=''
+  local -i i
+  local a dv
+  for (( i = 1; i <= $#; i++ )); do
+    a=${@[i]}
+    # words follow the separator; a candidate may merely LOOK like an option
+    [[ $a == - || $a == -- ]] && break
+    [[ $a == -?* && $a != --* ]] || continue
+    case ${a[-1]} in
+      # -d takes the next word, so it is last in its cluster; compdescribe
+      # emits it CLUSTERED (-ld), so an exact == -d test never matches (B3)
+      (d) if [[ -z $dv ]]; then
+            dv=${@[i+1]}
+            if [[ -n ${(P)dv+x} ]]; then
+              _clicue_csd=( "${(@P)dv}" )
+            else
+              _clicue_csd=( ${=${${dv#\(}%\)}} )   # literal (a b c) form
+            fi
+          fi ;;
+      # caller-supplied -O/-A: the completer probing ITSELF — the first -O
+      # wins, stealing it corrupts _git's layout (B2)
+      (O|A) _clicue_cs_probe=1 ;;
+      (S) _clicue_cs_hassfx=1; _clicue_cs_sfxval=${@[i+1]} ;;
+    esac
+    [[ $a == -[A-Za-z]#S?* && $a != --* ]] && \
+      { _clicue_cs_hassfx=1; _clicue_cs_sfxval=${a#*S} }
+  done
+  return 0
+}
+
+_clicue_cap_fn() {
+  compstate[insert]=''
+  compstate[list]=''
+  _clicue_cs_words=(); _clicue_cs_descs=(); _clicue_cs_ipfx=''
+  _clicue_cs_sfxw=(); _clicue_cs_sfxv=()
+  compadd() {
+    # what compsys treats as already on the line: _tar consumes the dash
+    # into IPREFIX and completes bare letters (B5)
+    _clicue_cs_ipfx=$IPREFIX
+    _clicue_cs_scan "$@"
+    local -a dsp=( "${(@)_clicue_csd}" )
+    local probe=$_clicue_cs_probe sfx=$_clicue_cs_sfxval hassfx=$_clicue_cs_hassfx
+    if [[ -n $probe ]]; then
+      builtin compadd "$@" 2>/dev/null
+      return $?
+    fi
+    local -a w
+    builtin compadd -O w -D dsp "$@" 2>/dev/null
+    (( ${#w} )) || return 1
+    _clicue_cs_words+=( "${(@)w}" )
+    local a
+    if (( hassfx )); then
+      # PARALLEL arrays, not an association keyed inline (Z1: an unescaped
+      # | in a subscript stores under a key the read never looks at)
+      for a in "${(@)w}"; do
+        _clicue_cs_sfxw+=( "$a" )
+        _clicue_cs_sfxv+=( "$sfx" )
+      done
+    fi
+    if (( ${#dsp} == ${#w} )); then
+      _clicue_cs_descs+=( "${(@)dsp}" )
+    else
+      # one placeholder PER WORD, split on the empty separator (B6)
+      _clicue_cs_descs+=( ${(s::)${(l:${#w}::@:):-}} )
+    fi
+    return 0
+  }
+  # list-grouped decides whether descriptions survive to compadd: with it
+  # on, curl - measured 664 words and ZERO descriptions (B7). Borrowed for
+  # THIS call, restored in an always block.
+  local -a _lg
+  local -i _lg_had=0
+  zstyle -g _lg ':completion:*' list-grouped 2>/dev/null && _lg_had=1
+  zstyle ':completion:*' list-grouped false
+  {
+    _main_complete
+  } always {
+    if (( _lg_had )); then
+      zstyle ':completion:*' list-grouped "${_lg[@]}"
+    else
+      zstyle -d ':completion:*' list-grouped
+    fi
+    unfunction compadd 2>/dev/null
+  }
+  return 0
+}
+
+# One harvest object from the capture arrays into REPLY.
+# $1 pos  $2 path  $3 live (1/0). Words capped so a pathological completer
+# cannot push the frame toward MAX_FRAME.
+_clicue_cs_json() {
+  local pos=$1 path=$2
+  local lv=false
+  (( $3 )) && lv=true
+  if (( ${#_clicue_cs_words} > 800 )); then
+    _clicue_cs_words=( "${(@)_clicue_cs_words[1,800]}" )
+    _clicue_cs_descs=( "${(@)_clicue_cs_descs[1,800]}" )
+  fi
+  local -a wj=() dj=() sj=()
+  local x kw
+  for x in "${(@)_clicue_cs_words}"; do
+    _clicue_json_esc "$x"; wj+=( '"'$REPLY'"' )
+  done
+  for x in "${(@)_clicue_cs_descs}"; do
+    _clicue_json_esc "$x"; dj+=( '"'$REPLY'"' )
+  done
+  local -i i
+  for (( i = 1; i <= ${#_clicue_cs_sfxw}; i++ )); do
+    _clicue_json_esc "${_clicue_cs_sfxw[i]}"; kw=$REPLY
+    _clicue_json_esc "${_clicue_cs_sfxv[i]}"
+    sj+=( '"'$kw'":"'$REPLY'"' )
+  done
+  local pj paj ij
+  _clicue_json_esc "$pos";            pj=$REPLY
+  _clicue_json_esc "$path";           paj=$REPLY
+  _clicue_json_esc "$_clicue_cs_ipfx"; ij=$REPLY
+  REPLY='{"pos":"'$pj'","path":"'$paj'","live":'$lv',"iprefix":"'$ij'","words":['${(j:,:)wj}'],"descs":['${(j:,:)dj}'],"sfx":{'${(j:,:)sj}'}}'
+}
+
+# Mechanical colon path of the buffer's last segment: non-flag words,
+# excluding the word still being typed. A mirror of the daemon's own
+# derivation, not a decision — the daemon re-derives authoritatively.
+_clicue_argpath() {
+  local seg=${BUFFER##*[\|\;\&]}
+  seg=${seg##[[:space:]]#}
+  local -i trailing=0
+  [[ $seg == *[[:space:]] ]] && trailing=1
+  local -a words=( ${(z)seg} )
+  (( ${#words} )) || { REPLY=''; return 1 }
+  local -i upto=${#words}
+  (( trailing )) || (( upto-- ))
+  (( upto >= 1 )) || { REPLY=''; return 1 }
+  local out=${words[1]} w
+  local -i i
+  for (( i = 2; i <= upto; i++ )); do
+    w=${words[i]}
+    [[ -n $w && $w != -* ]] && out+=":$w"
+  done
+  REPLY=$out
+  return 0
+}
+
+# The harvest: live capture at the operator's buffer (compsys's membership
+# answer for THIS position), then `p ` + `p -` per un-harvested ancestor
+# path (H1/H2), buffer swapped and restored with no redraw between. Runs
+# once per buffer (the prototype's _clicue_cs_for comparison) and keeps a
+# session memo of harvested paths — storage authority is the daemon's (Z3).
+_clicue_harvest() {
+  [[ $BUFFER == *[^[:space:]]*[[:space:]]* ]] || return 0
+  [[ $_clicue_cs_for == "$BUFFER" ]] && return 0
+  _clicue_cs_for=$BUFFER
+  _clicue_argpath || return 0
+  local path=$REPLY
+  local -a hj=()
+  zle _clicue_cap 2>/dev/null
+  _clicue_cs_json "$BUFFER" "$path" 1
+  hj+=( "$REPLY" )
+  local -a parts=( ${(s.:.)path} )
+  local acc='' seg spaced sbuf pos mip
+  local -i scur
+  local -a mw md msw msv
+  for seg in $parts; do
+    acc=${acc:+$acc:}$seg
+    (( ${+_clicue_cs_done[$acc]} )) && continue
+    _clicue_cs_done[$acc]=1
+    spaced=${acc//:/ }
+    mw=(); md=(); msw=(); msv=(); mip=''
+    sbuf=$BUFFER; scur=$CURSOR
+    for pos in "$spaced " "$spaced -"; do
+      BUFFER=$pos; CURSOR=${#BUFFER}
+      { zle _clicue_cap 2>/dev/null } always { BUFFER=$sbuf; CURSOR=$scur }
+      mw+=( "${(@)_clicue_cs_words}" ); md+=( "${(@)_clicue_cs_descs}" )
+      msw+=( "${(@)_clicue_cs_sfxw}" ); msv+=( "${(@)_clicue_cs_sfxv}" )
+      [[ -n $_clicue_cs_ipfx ]] && mip=$_clicue_cs_ipfx
+    done
+    _clicue_cs_words=( "${(@)mw}" ); _clicue_cs_descs=( "${(@)md}" )
+    _clicue_cs_sfxw=( "${(@)msw}" ); _clicue_cs_sfxv=( "${(@)msv}" )
+    _clicue_cs_ipfx=$mip
+    _clicue_cs_json "$spaced -" "$acc" 0
+    hj+=( "$REPLY" )
+  done
+  _clicue_pending=',"pending":{"harvests":['${(j:,:)hj}']}'
+  return 0
 }
 
 # ── hello: the name universes only a live shell can enumerate ───────────────
@@ -384,7 +580,13 @@ _clicue_key() {
 
 # Widget functions, registered BESIDE their definitions (spec/keys.md W1:
 # `zle -N` accepts a missing function and fails only on the keypress).
-_clicue_w_accept()   { _clicue_key accept   "${_clicue_fb[accept]:-expand-or-complete}" }
+# Accept harvests first (argument position, once per buffer): the same
+# keypress that fetches also cycles, so the press is never consumed by a
+# fetch alone (prototype keys.zsh:243–246).
+_clicue_w_accept() {
+  (( _clicue_dead )) || _clicue_harvest
+  _clicue_key accept "${_clicue_fb[accept]:-expand-or-complete}"
+}
 _clicue_w_dismiss()  { _clicue_key dismiss  "${_clicue_fb[dismiss]}" }
 _clicue_w_expand()   { _clicue_key expand   "${_clicue_fb[expand]}" }
 _clicue_w_maximize() { _clicue_key maximize "${_clicue_fb[maximize]}" }
@@ -486,6 +688,10 @@ _clicue_install() {
   done
   add-zle-hook-widget line-pre-redraw _clicue_pre_redraw
   add-zle-hook-widget line-finish _clicue_line_finish
+  # zle -C fails silently at load on a missing function (Z2); definition is
+  # in this file, registration here because zle refuses widget ops in
+  # non-interactive shells (same constraint as the zle -N block above).
+  zle -C _clicue_cap list-choices _clicue_cap_fn
   return 0
 }
 
@@ -531,6 +737,13 @@ typeset -g  _clicue_instext=''
 typeset -gi _clicue_hist_acked=0
 typeset -gA _clicue_orig=()
 typeset -gA _clicue_fb=()
+# compsys capture state
+typeset -g  _clicue_cs_for=''
+typeset -g  _clicue_pending=''
+typeset -gA _clicue_cs_done=()
+typeset -ga _clicue_cs_words=() _clicue_cs_descs=() _clicue_csd=()
+typeset -ga _clicue_cs_sfxw=() _clicue_cs_sfxv=()
+typeset -g  _clicue_cs_ipfx='' _clicue_cs_probe='' _clicue_cs_hassfx='' _clicue_cs_sfxval=''
 
 if [[ -o interactive && -o zle ]]; then
   zmodload zsh/net/socket zsh/system zsh/datetime 2>/dev/null || return 0

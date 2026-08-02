@@ -12,9 +12,13 @@
 //! - `doctor`   — live-shell probing and the conflict catalog
 //! - `shim`     — the generated zsh source
 
+pub mod config;
 pub mod corpus;
 pub mod daemon;
+pub mod doctor;
 pub mod engine;
+pub mod flags;
+pub mod install;
 pub mod layout;
 pub mod model;
 pub mod protocol;

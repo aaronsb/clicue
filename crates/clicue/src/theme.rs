@@ -420,6 +420,134 @@ pub fn available(themes_dir: Option<&Path>) -> Vec<String> {
     names
 }
 
+// ── preview: a sample card on stdout ─────────────────────────────────────
+// `clicue theme preview <name>` renders fake cues through the REAL layout
+// engine so what the operator sees is what a card will look like, colours
+// included — region_highlight styles translated to ANSI.
+
+/// One region_highlight style string → ANSI SGR sequence ("" = default).
+fn style_to_ansi(style: &str) -> String {
+    let mut codes: Vec<String> = Vec::new();
+    for part in style.split(',') {
+        let part = part.trim();
+        let (attr, val) = match part.split_once('=') {
+            Some((a, v)) => (a, v),
+            None => (part, ""),
+        };
+        match attr {
+            "bold" => codes.push("1".into()),
+            "underline" => codes.push("4".into()),
+            "standout" => codes.push("7".into()),
+            "fg" | "bg" => {
+                let base = if attr == "fg" { 38 } else { 48 };
+                if let Some(hex) = val.strip_prefix('#') {
+                    if hex.len() == 6 {
+                        if let (Ok(r), Ok(g), Ok(b)) = (
+                            u8::from_str_radix(&hex[0..2], 16),
+                            u8::from_str_radix(&hex[2..4], 16),
+                            u8::from_str_radix(&hex[4..6], 16),
+                        ) {
+                            codes.push(format!("{base};2;{r};{g};{b}"));
+                        }
+                    }
+                } else if let Ok(n) = val.parse::<u8>() {
+                    codes.push(format!("{base};5;{n}"));
+                } else {
+                    let named = match val {
+                        "black" => Some(0),
+                        "red" => Some(1),
+                        "green" => Some(2),
+                        "yellow" => Some(3),
+                        "blue" => Some(4),
+                        "magenta" => Some(5),
+                        "cyan" => Some(6),
+                        "white" => Some(7),
+                        _ => None, // "default" and unknowns: no code
+                    };
+                    if let Some(n) = named {
+                        // Basic SGR: 30–37 foreground, 40–47 background.
+                        codes.push(format!("{}", if attr == "fg" { 30 + n } else { 40 + n }));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if codes.is_empty() {
+        String::new()
+    } else {
+        format!("\x1b[{}m", codes.join(";"))
+    }
+}
+
+/// Render a sample card with this theme at the given width, ANSI-coloured.
+pub fn preview(theme: &Theme, cols: u16) -> String {
+    use crate::layout::{CardInput, Dims, KeyLabels, LayoutCfg, View};
+    use crate::model::{Cue, Kind, Mode};
+
+    let cue = |insert: &str, gloss: &str, kind: Kind| Cue {
+        insert: insert.into(),
+        label: insert.into(),
+        gloss: gloss.into(),
+        kind,
+        suffix: None,
+    };
+    let cues = vec![
+        cue("git", "the stupid content tracker", Kind::System),
+        cue("gitui", "blazing fast terminal-ui for git", Kind::System),
+        cue("gib", "git wrapper of mine", Kind::Alias),
+        cue("gimme", "fetch a file", Kind::Function),
+        cue("gist", "upload code to gist", Kind::System),
+    ];
+    let cfg = LayoutCfg {
+        tier1_rows: 4,
+        ..LayoutCfg::default()
+    };
+    let input = CardInput {
+        cues: &cues,
+        explain: &[],
+        mode: Mode::Cmd,
+        prefix: "gi",
+        info: false,
+        argnomatch: false,
+        engaged: true,
+        familiar: false,
+        expanded: false,
+        tab_inserts: false,
+        ghost: "t status",
+        invnote: "",
+        dims: Dims { cols, lines: 24 },
+        cfg: &cfg,
+        keys: &KeyLabels::default(),
+    };
+    let mut view = View::default();
+    let Some(card) = crate::layout::render(&input, &mut view, theme) else {
+        return format!("theme {}: nothing to preview\n", theme.name);
+    };
+
+    // Last span wins per character, exactly as region_highlight stacks.
+    let chars: Vec<char> = card.text.chars().collect();
+    let mut styles: Vec<String> = vec![String::new(); chars.len()];
+    for s in &card.spans {
+        let ansi = style_to_ansi(&s.style);
+        for slot in styles.iter_mut().take(s.end.min(chars.len())).skip(s.start) {
+            *slot = ansi.clone();
+        }
+    }
+    let mut out = String::with_capacity(card.text.len() * 2);
+    let mut current = String::new();
+    for (c, style) in chars.iter().zip(&styles) {
+        if *style != current {
+            out.push_str("\x1b[0m");
+            out.push_str(style);
+            current = style.clone();
+        }
+        out.push(*c);
+    }
+    out.push_str("\x1b[0m\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
