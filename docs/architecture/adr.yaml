@@ -1,0 +1,53 @@
+# ADR Configuration
+# Defines domain numbering and validation rules.
+# Used by: docs/scripts/adr
+
+# Project name (used in generated index)
+project_name: clicue
+
+# Domain Number Series
+domains:
+  core:
+    range: [100, 199]
+    name: Core
+    description: Architecture, data model, ranking and corpus semantics
+    folder: core
+
+  shim:
+    range: [200, 299]
+    name: Shim
+    description: The zsh integration surface — ZLE, bindings, compsys bridge
+    folder: shim
+
+  protocol:
+    range: [300, 399]
+    name: Protocol
+    description: Daemon IPC contract and lifecycle
+    folder: protocol
+
+  tool:
+    range: [400, 499]
+    name: Tool
+    description: CLI tool surface — install, doctor, config, theme, data
+    folder: tool
+
+# Valid ADR statuses
+statuses:
+  - Draft         # Initial creation, not yet proposed
+  - Proposed      # Under discussion/review
+  - Accepted      # Approved and ready for implementation
+  - Superseded    # Replaced by another ADR
+  - Deprecated    # No longer relevant
+
+# Default values for new ADRs
+defaults:
+  deciders: []    # Empty = auto-detect from gh/git
+  status: Draft
+
+# Legacy ADR range (pre-domain numbering)
+legacy:
+  range: [1, 99]
+  label: "Legacy"
+
+# Viewer command for `adr view` (use {file} as placeholder)
+viewer: cat {file}
