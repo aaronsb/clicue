@@ -1,0 +1,19 @@
+[package]
+name = "clicue"
+description = "Live, contextual command guidance for zsh — a daemon behind a generated shim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[lib]
+name = "clicue"
+path = "src/lib.rs"
+
+[[bin]]
+name = "clicue"
+path = "src/main.rs"
