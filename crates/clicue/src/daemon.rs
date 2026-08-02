@@ -270,6 +270,7 @@ mod tests {
             lines: 40,
             keymap: "main".into(),
             pending: None,
+            env: None,
             hist: vec![],
         };
         serde_json::to_string(&req).unwrap()

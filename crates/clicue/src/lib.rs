@@ -20,6 +20,7 @@ pub mod protocol;
 pub mod rank;
 pub mod shim;
 pub mod sources;
+pub mod state;
 pub mod theme;
 
 use anyhow::{bail, Result};
