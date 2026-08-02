@@ -355,8 +355,15 @@ _clicue_insert() {
       tail=${_clicue_cs_sfx[$pick]}
       [[ $tail == $'\0' ]] && tail=''
     fi
-    if [[ -n $_clicue_pfx ]]; then
-      LBUFFER="${LBUFFER%$_clicue_pfx}${pick}${tail}"
+    # Replace the typed word by LENGTH. `${LBUFFER%$_clicue_pfx}` is NOT wrong in
+    # default zsh — an expanded value is compared literally there, unlike ksh — but it
+    # becomes a pattern strip under GLOB_SUBST, and length arithmetic is correct either
+    # way. The guard matters more than the form: `%` fails safe when the prefix is not
+    # actually a suffix, returning the line untouched, while an index removes N
+    # characters regardless. Losing what you typed is the worst outcome this project
+    # has, already recorded once for delegation in flag position. [REVIEW]
+    if [[ -n $_clicue_pfx && $LBUFFER == *"$_clicue_pfx" ]]; then
+      LBUFFER="${LBUFFER[1,${#LBUFFER}-${#_clicue_pfx}]}${pick}${tail}"
     else
       LBUFFER="${LBUFFER}${pick}${tail}"
     fi

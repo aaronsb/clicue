@@ -103,6 +103,21 @@ year does not outrank what you ran an hour ago. `frequency` is count alone;
 `recency` is last-used alone. All three read data derived from history at build time;
 nothing is instrumented, so `HIST_IGNORE_SPACE` remains a per-command opt-out.
 
+These settings govern **command position**. Past the command, cues rank on recency
+alone and the switch does not apply, because counting does not survive there: if your
+history de-duplicates (`HIST_IGNORE_ALL_DUPS` and friends), a line you type identically
+every time is stored once, so a count ends up measuring how much the *arguments* varied
+rather than how often you ran it. `rm -rf` scores high because the paths after it
+differed; `ls -lat` scores 1 however habitual it is. What de-duplication keeps is the
+newest occurrence, so that is what argument position sorts on.
+
+What it offers there also depends on the command. Where the arguments are worth
+replaying — `ssh`, `git`, `ffmpeg` — the cue is a whole remembered line, values
+included, so `ssh <partial-host><Tab>` cycles the hosts you actually use. Where the
+arguments are paths — `rm`, `ls`, `cat`, `tar` and the rest — only the flags are
+offered, so a directory you deleted last month is never proposed back to you. Below
+either, the second card holds the command's full documented option set.
+
 ## Caches
 
 Both live under `$XDG_CACHE_HOME/clicue` and are derived data — deleting them is

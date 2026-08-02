@@ -357,7 +357,6 @@ _clicue_render() {
   local pfx=$1
   local -a cands
   local -a reply
-  typeset -g _clicue_tier1_n=0
   # cleared per render, or a label from the previous command would outlive it
   _clicue_disp=()
   _clicue_coldflags=0
@@ -435,9 +434,9 @@ _clicue_render() {
     # a cue the operator can act on. Now that the explanation can open a card by
     # itself, there is nothing left for it to do.
     if (( ${#_clicue_explain_rows} )); then
-      reply=(); _clicue_tier1_n=0
+      reply=()
     else
-      reply=( $_clicue_cmd ); _clicue_tier1_n=1
+      reply=( $_clicue_cmd )
     fi
   elif [[ $_clicue_mode == arg ]]; then
     if ! _clicue_arg_candidates $_clicue_cmd "$pfx"; then
@@ -448,7 +447,6 @@ _clicue_render() {
          { ! _clicue_flag_load ${_clicue_cmdpath:-$_clicue_cmd} 2>/dev/null || \
            (( ${+_clicue_flag_none[$_clicue_realcmd]} )) }; then
         _clicue_info=1; _clicue_coldflags=1; reply=( $_clicue_cmd )
-        _clicue_tier1_n=1
         cands=( $reply )
         _clicue_cands=( $cands )
       elif (( ${#_clicue_explain_rows} )); then
@@ -460,8 +458,10 @@ _clicue_render() {
         _clicue_info=1; reply=( $_clicue_cmd )
       fi
     fi
-    # history-derived args are tier 1; compsys-derived fill the grid
-    _clicue_tier1_n=${_clicue_arg_t1:-${#reply}}
+    # History-derived args lead the list, compsys-derived follow — that ORDER is the
+    # whole mechanism (_clicue_arg_candidates builds `$hist ${(o)rest}`). Where the
+    # primary card ends is the fixed row count below, not that seam, so a command with
+    # 18 remembered args puts 10 on the card and the rest in the grid.
   else
     _clicue_candidates $pfx
   fi
@@ -878,8 +878,12 @@ _clicue_cue_stem() {
   (( ${#_clicue_cands} )) || return 1
   (( _clicue_info )) && return 1
   local pick=${_clicue_cands[_clicue_sel]}
+  # The membership test wants a PATTERN (does the cue start with what is typed) and the
+  # strip wants a LITERAL. Same distinction as the splices in keys.zsh — `#` compares
+  # an expanded value literally in default zsh but strips a pattern under GLOB_SUBST,
+  # and the ghost showing the wrong stem is the visible half of a mis-splice.
   if [[ -n $_clicue_pfx && $pick == ${_clicue_pfx}* ]]; then
-    _clicue_cstem=${pick#$_clicue_pfx}
+    _clicue_cstem=${pick[${#_clicue_pfx}+1,-1]}
   elif [[ -z $_clicue_pfx ]]; then
     _clicue_cstem=$pick
   fi

@@ -16,7 +16,7 @@ setopt extended_glob
 typeset -g DIR=${0:A:h}
 typeset -gi PASS=0 FAIL=0
 # Declared once, up front. Re-declaring a set `local` in zsh prints its value.
-typeset -g k w d c body want got word disp leak bad harvest f srcout
+typeset -g k w d c body want got word disp leak bad harvest f srcout fbody hl alias_key
 typeset -g SCRATCH=${TMPDIR:-/tmp}/clicue-test.$$
 mkdir -p $SCRATCH
 trap "rm -rf $SCRATCH" EXIT
@@ -1305,7 +1305,10 @@ section "flag position is never handed back"
 # every aliased command matched nothing: `ls` emulates `lsd`, the cache held `lsd|...`,
 # the scan looked for `ls|`. Measured: `ls -` bailed with render-failed while `cat -`
 # drew a full card — which is what made it look like an alias-config problem.
-if [[ $body == *'_clicue_resolve_path'* && $body == *'fk == ${keypfx}\|*'* ]]; then
+# Matches on the KEY the scan uses, not on the shape of the scan. The loop this
+# originally asserted became a subscript filter for speed, and an assertion pinned to
+# the old syntax fails on a change that preserves exactly what it was protecting.
+if [[ $body == *'_clicue_resolve_path'* && $body == *'${keypfx}\|'* ]]; then
   ok "the flag scan uses the same resolved key the map is written with"
 else
   nope "the flag scan uses the same resolved key the map is written with" \
@@ -1809,6 +1812,261 @@ if [[ $(awk '/^_clicue_pre_redraw\(\)/{f=1} f{print} f&&/^}/{exit}' $SRC) == *'_
 else
   nope "the yield is cleared on every redraw rather than latching"
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+section "habits in argument position"
+# The two tier-1 sources, exercised against a SYNTHETIC corpus and a synthetic
+# $history — so these assert the split's behaviour rather than this machine's
+# shell history, which would make the suite pass or fail by whose laptop ran it.
+
+source $DIR/lib/candidates.zsh 2>/dev/null
+
+typeset -gA CLICUE_INVOKE=(
+  'zzcat -pp'  '4'   'zzcat --help' '1'   'zzcat -f' '1'
+  'zzls -lat'  '3'   'zzls -l'      '1'
+)
+typeset -gA CLICUE_INVOKE_LAST=(
+  'zzcat -pp'  '2000'  'zzcat --help' '1000'  'zzcat -f' '3000'
+  'zzls -lat'  '2000'  'zzls -l'      '9000'
+)
+# Keys are stored under the SPELLING the operator typed. The canonical form exists only
+# inside the builder, where it merges two spellings into one count; the other spelling
+# routes here so a lookup by what was typed still resolves. Keying the map canonically
+# instead is what silently broke the invocation note and the familiarity gate. [REVIEW]
+typeset -gA CLICUE_INVOKE_ALIAS=( 'zzls -alt' 'zzls -lat' )
+typeset -gA CLICUE_PATHISH=( zzcat 1 zzls 1 )
+
+typeset -ga reply=()
+
+# Recency, not count. -f is the newest at 1 occurrence; -pp has four and is older.
+# Getting this backwards is the whole failure the design note was written to avoid.
+reply=(); _clicue_invocation_cues zzcat ''
+if [[ ${reply[1]} == -f ]]; then
+  ok "invocation cues rank by last-seen, not by count"
+else
+  nope "invocation cues rank by last-seen, not by count" \
+       "got [${reply[1]}] — a count-ranked order would put -pp first"
+fi
+
+# One habit, one row, spelled the way it was typed.
+reply=(); _clicue_invocation_cues zzls ''
+if (( ${reply[(I)-lat]} )) && (( ! ${reply[(I)-alt]} )); then
+  ok "a habit is proposed in the spelling last typed"
+else
+  nope "a habit is proposed in the spelling last typed" \
+       "got (${reply}) — expected -lat, never the sorted key -alt"
+fi
+
+# The other spelling has to reach the same entry, or the note goes blank for exactly the
+# clusters it is meant to recognise.
+# Subscript UNQUOTED. `${A['k with space']}` returns empty in zsh — the quotes become
+# part of the key rather than grouping it — which is how this assertion first failed
+# against a map that was correct.
+alias_key=${CLICUE_INVOKE_ALIAS[zzls -alt]}
+if [[ $alias_key == 'zzls -lat' ]] && [[ -n ${CLICUE_INVOKE[$alias_key]} ]]; then
+  ok "a non-winning spelling resolves to the stored habit"
+else
+  nope "a non-winning spelling resolves to the stored habit"
+fi
+
+# The assertion above checks the MAP. It passed with the resolution deleted from both
+# consumers — verified by deleting it and re-running, 238/0 — so it guarded nothing that
+# could regress. These drive the consumers themselves. [REVIEW]
+typeset -gA CLICUE_INVOKE_PCT=( 'zzls -lat' '3' )
+zstyle ':clicue:*' familiar-percentile 5
+
+_clicue_words=( zzls -alt )
+_clicue_invocation_note
+if [[ -n $_clicue_invnote && $_clicue_invnote == *3* ]]; then
+  ok "the invocation note survives a non-winning spelling"
+else
+  nope "the invocation note survives a non-winning spelling" \
+       "got [${_clicue_invnote}] — the note goes blank when the alias lookup is dropped"
+fi
+
+if _clicue_is_familiar; then
+  ok "the familiarity gate survives a non-winning spelling"
+else
+  nope "the familiarity gate survives a non-winning spelling" \
+       "top-3% invocation not recognised at a 5% threshold via its other spelling"
+fi
+zstyle -d ':clicue:*' familiar-percentile
+unset CLICUE_INVOKE_PCT
+
+reply=(); _clicue_invocation_cues zzcat '--'
+if [[ ${#reply} == 1 && ${reply[1]} == --help ]]; then
+  ok "invocation cues honour the prefix being typed"
+else
+  nope "invocation cues honour the prefix being typed" "got (${reply})"
+fi
+
+# The BRANCH, not the fixture. Asserting that _clicue_invocation_cues emits no path is
+# tautological — it reads a map that holds none. What can actually regress is
+# _clicue_arg_candidates choosing the wrong source, so these drive that instead, with a
+# history full of paths that must never surface. [REVIEW]
+typeset -gA CLICUE_ARGS=() CLICUE_ARGN=()
+typeset -g _clicue_cs_for=''; typeset -ga _clicue_cs_words=(); typeset -gi _clicue_optctx=0
+typeset -ga _clicue_words=()
+
+branchprobe() {
+  local -a lines=( ${(@f)1} zz-sentinel )
+  print -rl -- $lines > $SCRATCH/hist
+  zsh -c "
+    HISTFILE=$SCRATCH/hist HISTSIZE=200 SAVEHIST=200
+    fc -R \$HISTFILE
+    source ${(q)DIR}/lib/candidates.zsh 2>/dev/null
+    # Stubs for the flag machinery. These probes exercise SOURCE SELECTION — which of
+    # the two tier-1 sources answers — and the flag path below it belongs to another
+    # module. Without them _clicue_arg_candidates aborts on the first undefined
+    # function and every probe returns empty, which reads as a passing safety test.
+    _clicue_flag_load()  { return 1 }
+    _clicue_resolve_path() { typeset -g _clicue_realpath=\$1 }
+    _clicue_fkey()       { typeset -g _clicue_fk=\"\$1|\$2\" }
+    _clicue_flag_canon() { typeset -g _clicue_fc=\$2 }
+    _clicue_flag_label() { typeset -g _clicue_fl=\$2 }
+    typeset -gA _clicue_flag_desc=() _clicue_flag_alt=() _clicue_flag_none=() _clicue_disp=()
+    typeset -gA CLICUE_INVOKE=( 'zzcat -pp' 4 'zzcat -f' 1 'sudo zzcat -pp' 2 )
+    typeset -gA CLICUE_INVOKE_LAST=( 'zzcat -pp' 2000 'zzcat -f' 3000 'sudo zzcat -pp' 2000 )
+    # Interpolated UNQUOTED so it splits into key and value. ${(q)3} made 'zzcat 1' one
+    # word, so the map held a single malformed key, every probe returned empty, and the
+    # two safety assertions passed by asserting nothing. [REVIEW]
+    typeset -gA CLICUE_ARGS=() CLICUE_PATHISH=( ${3} )
+    typeset -g _clicue_cs_for=''; typeset -ga _clicue_cs_words=(); typeset -gi _clicue_optctx=0
+    # (z) needs a PARAMETER NAME. Written as \${(z)${(q)2}} it interpolated to
+    # \${(z)zzcat\ }, which zsh reads as the parameter named 'zzcat ' — empty — so
+    # _clicue_words was empty in every probe and all three safety assertions were
+    # vacuous while appearing to pass. [REVIEW]
+    typeset -g buf=${(q)2}
+    typeset -ga _clicue_words=( \${(z)buf} )
+    typeset -a reply=()
+    LBUFFER=\$buf
+    _clicue_arg_candidates \${_clicue_words[1]} '' && print -rl -- \$reply
+  " 2>/dev/null
+}
+
+# A pathish command must not take the whole-line branch, whatever history holds.
+hl=( ${(@f)"$(branchprobe 'zzcat /home/someone/gone.md
+zzcat -pp' 'zzcat ' 'zzcat 1')"} )
+if (( ${#hl} )) && (( ! ${hl[(I)*/*]} )); then
+  ok "a pathish command never proposes a path from history"
+else
+  nope "a pathish command never proposes a path from history" "got (${hl})"
+fi
+
+# An ABSENT pathish map means a pre-v3 cache, which is still sourced and still rendered
+# from. Unknown must fail safe to flags-only, or every command looks non-pathish for one
+# shell after upgrading and `rm <Tab>` offers deleted paths. [REVIEW]
+hl=( ${(@f)"$(branchprobe 'zzcat /home/someone/gone.md
+zzcat -pp' 'zzcat ' '')"} )
+if (( ! ${hl[(I)*/*]} )); then
+  ok "an absent pathish map fails safe to flags only"
+else
+  nope "an absent pathish map fails safe to flags only" "got (${hl})"
+fi
+
+# A wrapper with nothing after it cannot say what it will run, so it fails safe too.
+# `sudo`, not a zz-prefixed stand-in: the wrapper list is the shipped one, and a
+# fixture name that is not on it silently skips the branch under test.
+hl=( ${(@f)"$(branchprobe 'sudo rm -rf /var/tmp/build-9931
+sudo zzcat -pp' 'sudo ' 'zzcat 1')"} )
+if (( ! ${hl[(I)*/*]} )); then
+  ok "an unresolved wrapper fails safe to flags only"
+else
+  nope "an unresolved wrapper fails safe to flags only" "got (${hl})"
+fi
+
+# A wrapper's OWN option may or may not take a value, and which is a per-wrapper fact
+# this does not know: `sudo -u root rm` resolved to `root`, `nice -n 10 rm` to `10`, and
+# both then took the whole-line branch and offered a path. Ambiguity fails safe. Without
+# this the case is untested — verified by mutation, the bad form still passed. [REVIEW]
+hl=( ${(@f)"$(branchprobe 'sudo -u root rm -rf /var/tmp/build-9931
+sudo zzcat -pp' 'sudo -u root rm ' 'zzcat 1')"} )
+if (( ! ${hl[(I)*/*]} )); then
+  ok "a wrapper option-argument does not become the command"
+else
+  nope "a wrapper option-argument does not become the command" "got (${hl})"
+fi
+
+# A remembered line may run on past a separator into a different command; the candidate
+# is one segment, truncated there.
+hl=( ${(@f)"$(branchprobe 'zzgit status && rm -rf node_modules
+zzgit pull' 'zzgit ' '')"} )
+if (( ! ${hl[(I)*rm*]} )); then
+  ok "a candidate stops at a separator rather than carrying a second command"
+else
+  nope "a candidate stops at a separator rather than carrying a second command" \
+       "got (${hl})"
+fi
+
+# The other half needs a real $history, which is a special parameter this shell cannot
+# reassign — `typeset -ga history` fails with "can't change type of autoloaded
+# parameter". So these run in a child with a synthetic HISTFILE, which also keeps the
+# suite from asserting against whoever's laptop is running it.
+# The trailing sentinel is load-bearing: `fc -R` in a non-interactive shell does not
+# surface the LAST line of the file, so without it the newest entry — the one every
+# recency assertion here turns on — is silently absent and the test reads as a ranking
+# bug. [MEASURED: 5 lines in, 4 in $history]
+histprobe() {
+  local -a lines=( ${(@f)1} zz-sentinel )
+  print -rl -- $lines > $SCRATCH/hist
+  zsh -c "
+    HISTFILE=$SCRATCH/hist HISTSIZE=200 SAVEHIST=200
+    fc -R \$HISTFILE
+    source ${(q)DIR}/lib/candidates.zsh 2>/dev/null
+    typeset -a reply=()
+    LBUFFER=${(q)2}
+    _clicue_history_lines ${(q)2} ${(q)3} && print -rl -- \$reply
+  " 2>/dev/null
+}
+
+typeset -a hl=( ${(@f)"$(histprobe 'zzssh other@host
+zzssh user@older
+zzssh user@newest' 'zzssh user@' 'user@')"} )
+
+# Values ARE the point for a command whose arguments are not paths, and the newest
+# occurrence leads — the one signal de-duplication does not distort.
+if [[ ${hl[1]} == 'user@newest' ]]; then
+  ok "history lines keep values and lead with the newest"
+else
+  nope "history lines keep values and lead with the newest" "got (${hl})"
+fi
+
+# The candidate must still START with the prefix, or _clicue_cue_stem produces no stem
+# and _clicue_insert splices the line at the wrong place.
+if [[ ${hl[1]} == user@* ]]; then
+  ok "a multi-token candidate still begins at the cursor's own word"
+else
+  nope "a multi-token candidate still begins at the cursor's own word" \
+       "got [${hl[1]}] — the stem arithmetic in _clicue_cue_stem needs this"
+fi
+
+# A glob in the buffer must not turn the lookup into a pattern match over history.
+hl=( ${(@f)"$(histprobe 'zzglob other
+zzglob * literal' 'zzglob *' '*')"} )
+if [[ ${hl[1]} == '* literal' ]]; then
+  ok "a glob in the buffer is matched literally"
+else
+  nope "a glob in the buffer is matched literally" \
+       "got (${hl}) — an unquoted lookup matches every line instead"
+fi
+
+# The same defect in the other direction: the typed word is removed from the buffer by
+# LENGTH, never by `${LBUFFER%$pfx}`. Pattern-stripping a word that carries a glob
+# removes the wrong amount of line — and losing what you typed is the worst outcome
+# this project has, already recorded once for delegation in flag position.
+for f in $DIR/lib/keys.zsh $DIR/lib/candidates.zsh; do
+  # Comments stripped first — both files explain the bad form in prose directly above
+  # the good one, and prose must not satisfy a code assertion. Same idiom as above.
+  fbody=${(F)${(f)"$(<$f)"}:#[[:space:]]#\#*}
+  if [[ $fbody == *'${LBUFFER%$'* || $fbody == *'${buf%$'* ]]; then
+    nope "${f:t} splices by length, not by pattern" \
+         "a glob in the typed word eats the wrong amount of buffer"
+  else
+    ok "${f:t} splices by length, not by pattern"
+  fi
+done
+
+unset CLICUE_INVOKE CLICUE_INVOKE_LAST CLICUE_INVOKE_ALIAS CLICUE_PATHISH
 
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))
