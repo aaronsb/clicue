@@ -12,6 +12,9 @@
 //! - `doctor`   — live-shell probing and the conflict catalog
 //! - `shim`     — the generated zsh source
 
+pub mod daemon;
+pub mod protocol;
+
 use anyhow::{bail, Result};
 
 /// Stub marker for subcommands whose spec section has not landed yet.

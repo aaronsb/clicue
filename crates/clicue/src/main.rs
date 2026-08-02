@@ -45,6 +45,6 @@ fn main() -> Result<()> {
         Command::Config => clicue::not_yet("config"),
         Command::Theme => clicue::not_yet("theme"),
         Command::Data => clicue::not_yet("data"),
-        Command::Daemon => clicue::not_yet("daemon"),
+        Command::Daemon => clicue::daemon::run(),
     }
 }
