@@ -21,7 +21,10 @@ Every extracted invariant carries one of two tags:
 Where the prototype marked a behaviour `[MEASURED]`, keep that provenance —
 those are facts about zsh/terminals, not opinions.
 
-## Planned sections
+## Sections
+
+Extracted 2026-08-02 (~184 invariants). `protocol.md` additionally carries
+the IPC spike's measurements (`experiments/02-shim-ipc-latency/`).
 
 | File | Source material | Component (ADR-100) |
 |---|---|---|

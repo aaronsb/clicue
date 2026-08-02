@@ -1,0 +1,71 @@
+# Protocol — shim ↔ daemon
+
+The seam ADR-100 creates. Evidence: `experiments/02-shim-ipc-latency/`
+(round trip p50 25 µs / p99 57 µs for a card-sized reply, ~6× cheaper than
+one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
+
+## Transport
+
+1. Per-user Unix stream socket at `$XDG_RUNTIME_DIR/clicue.sock`, falling
+   back to `$XDG_CACHE_HOME/clicue/clicue.sock` when `XDG_RUNTIME_DIR` is
+   unset. Mode 0600; the daemon refuses to serve a socket whose parent
+   directory is writable by another user.
+2. Framing is newline-delimited JSON: one request line in, one reply line
+   out. No length prefix — the spike showed none is needed. Frame limits are
+   counted in **bytes**; zsh `${#var}` counts characters and must never be
+   used as a frame size. [zsh-hazard, stays: the shim reads frames]
+   [MEASURED: the spike's own sanity check failed on this]
+3. The shim holds one persistent connection per shell. On error it may
+   reconnect once per event; reconnect worst-case is 0.26 ms [MEASURED], so
+   no pooling or retry sophistication is warranted.
+
+## Request
+
+4. One request per ZLE event, sent by the shim with no local decision
+   logic. Fields: `buffer`, `cursor`, `cols`, `lines`, `keymap`, `event`
+   (redraw | key name | line-finish), `pending` (compsys harvest payload,
+   present only on the event that produced one), and `session` (shell PID +
+   start time, so the daemon can key per-shell state like selection and
+   engagement).
+5. The daemon owns the state machine: standdown, yield-tab, mode, selection,
+   engagement, suppression. The shim never interprets buffer content.
+   (Prototype provenance: the state globals of clicue.zsh:80–215 become
+   daemon per-session state.)
+5a. History freshness (resolves sources.md ambiguity D5): on `line-finish`
+   the shim includes `hist`: the entries appended to `$history` since the
+   last event number the daemon acknowledged — read from `$history`, never
+   from `$BUFFER`. A space-prefixed line never enters `$history`, so
+   `HIST_IGNORE_SPACE` remains a free per-command opt-out; reading the
+   buffer would re-propose deliberately hidden commands, the exact defect
+   the prototype records at candidates.zsh:230–245. [domain]
+
+## Reply
+
+6. One reply per request: `card` (text to append to POSTDISPLAY, empty
+   means no card), `ghost`, `spans` (byte-offset ranges with styles, relative
+   to the appended text), and `action` for key events (consume | delegate |
+   insert {text} | yield), mirroring the delegation contract the prototype's
+   widgets implement in-shell.
+7. Span offsets are in bytes of the reply's card text; the shim converts to
+   whatever ZLE's region_highlight requires at paint time, in one place.
+
+## Failure
+
+8. The shim applies a hard read deadline of 5 ms per event. On timeout,
+   connection error, or absent socket: **no card, ever a degraded one** —
+   POSTDISPLAY untouched, all keys delegate to their original owners. The
+   prototype's design value 1 (no invisible fallback) promoted to a wire
+   rule. A healthy daemon replies in <0.1 ms [MEASURED], so a fired deadline
+   means the daemon is genuinely wedged, not slow.
+9. The shim auto-spawns `clicue daemon` at most once per shell when the
+   socket is absent, detached, output discarded — the corpus-refresh
+   precedent (prototype corpus.zsh:138–149). It never restarts a daemon
+   that dies twice; the second death surfaces via `clicue doctor`.
+
+## Versioning
+
+10. Request and reply carry `v` (integer). Mismatch → the daemon replies
+    with an error frame naming both versions; the shim goes silent
+    (rule 8) and stashes the error for `clicue doctor`. The generated-shim
+    model (`clicue init zsh`) makes mismatch a transient of mid-upgrade
+    shells only.
