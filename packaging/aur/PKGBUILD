@@ -1,14 +1,17 @@
 # Maintainer: Aaron Bockelie <aaronsb@gmail.com>
 # Source of truth lives in the clicue repo at packaging/aur/PKGBUILD;
-# `make publish` verifies pkgver against Cargo.toml, verifies the committed
-# sha256sums against the tag tarball, regenerates .SRCINFO, and pushes to
-# AUR. Edit there, not in the AUR clone. Version bump: edit pkgver, run
-# `updpkgsums` in packaging/aur/. The publish flow's local makepkg cannot
+# `make publish` verifies pkgver against Cargo.toml, computes sha256sums,
+# regenerates .SRCINFO, and pushes to AUR. Edit there, not in the AUR
+# clone. sha256sums stays SKIP here BY DESIGN: this file ships inside the
+# tarball it would checksum, so a committed sum is circular — the real
+# sum lives in the published AUR copy, and the publish flow alarms if the
+# tarball for an ALREADY-PUBLISHED version ever changes underneath it.
+# Version bump: edit pkgver only. The publish flow's local makepkg cannot
 # catch a missing depends entry (everything is installed on the dev box) —
 # the real check before publishing a depends change is a clean-chroot
 # build (devtools' extra-x86_64-build) plus namcap on the package.
 pkgname=clicue
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Live, contextual command guidance for zsh — a daemon behind a generated shim"
 arch=('x86_64' 'aarch64')
@@ -19,7 +22,7 @@ makedepends=('cargo')
 optdepends=('man-db: glosses for system commands (whatis)')
 install=clicue.install
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('34adf164a87dbff0c89ac709088633ab87d0fb56f250c1466f477885a084a457')
+sha256sums=('SKIP')
 
 prepare() {
   cd "$pkgname-$pkgver"

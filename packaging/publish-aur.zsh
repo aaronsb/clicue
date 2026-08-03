@@ -1,10 +1,11 @@
 #!/usr/bin/env zsh
 # Publish the AUR package from packaging/aur/ — invoked by `make publish`.
-# Idempotent per version: verifies pkgver against Cargo.toml, verifies the
-# COMMITTED checksums against the GitHub tag tarball (an immutable tag
-# whose tarball changed is an alarm, never a silent re-sum — on a version
-# bump, edit pkgver and run `updpkgsums` in packaging/aur/ before
-# publishing), test-builds with makepkg, regenerates .SRCINFO, pushes.
+# Idempotent per version: verifies pkgver against Cargo.toml, computes the
+# checksums (the repo copy cannot commit them: it ships inside the tarball
+# it would checksum), ALARMS if the tarball for an already-published
+# version differs from what the AUR copy recorded — an immutable tag whose
+# tarball changed is an incident, never a silent re-sum — then test-builds
+# with makepkg, regenerates .SRCINFO, and pushes.
 # Needs an AUR-registered SSH key in the agent; ssh is BatchMode so a
 # missing key fails fast instead of hanging, accept-new so a first-ever
 # contact with aur.archlinux.org does not die on an unknown host key.
@@ -23,6 +24,8 @@ if ! git -C "$root" rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then
   exit 1
 fi
 
+command -v updpkgsums >/dev/null || { print -u2 "updpkgsums missing — install pacman-contrib"; exit 1; }
+
 export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 work=$(mktemp -d)
 cleanup() {
@@ -37,11 +40,26 @@ trap cleanup EXIT INT TERM
 print "── cloning AUR repo (empty on first publish) ──"
 git clone "ssh://aur@aur.archlinux.org/clicue.git" "$work/clicue"
 
+prev_pkgver=""
+prev_sum=""
+if [[ -f "$work/clicue/PKGBUILD" ]]; then
+  prev_pkgver=$(sed -n 's/^pkgver=//p' "$work/clicue/PKGBUILD")
+  prev_sum=$(sed -n "s/^sha256sums=('\(.*\)')/\1/p" "$work/clicue/PKGBUILD")
+fi
+
 cp "$root/packaging/aur/PKGBUILD" "$root/packaging/aur/clicue.install" "$work/clicue/"
 cd "$work/clicue"
 
-print "── verifying the committed checksum against the tag tarball ──"
-makepkg --verifysource --noconfirm
+print "── computing checksums from the tag tarball ──"
+updpkgsums
+new_sum=$(sed -n "s/^sha256sums=('\(.*\)')/\1/p" PKGBUILD)
+if [[ -n "$prev_sum" && "$prev_sum" != "SKIP" && "$prev_pkgver" == "$pkgver" && "$prev_sum" != "$new_sum" ]]; then
+  print -u2 "ALARM: tarball for already-published v$pkgver changed upstream"
+  print -u2 "  published sum: $prev_sum"
+  print -u2 "  current sum:   $new_sum"
+  print -u2 "someone or something rewrote the tag — investigate before republishing"
+  exit 1
+fi
 
 print "── test build (makepkg: build, package, unit tests) ──"
 makepkg --cleanbuild --force --noconfirm
