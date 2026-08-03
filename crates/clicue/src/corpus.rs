@@ -421,6 +421,38 @@ pub fn is_stale(corpus: &Corpus, current_stamp: &str) -> bool {
     corpus.stamp != current_stamp
 }
 
+/// Why the stamp mismatches — because not all mismatches mean the same
+/// thing (S6). zsh appends every command to HISTFILE as it runs, so in a
+/// live shell the corpus is always at least one line behind: `clicue data`
+/// itself moves the history before it can look. That is the working state
+/// of derived data, not an error. A format or `$path` change is different —
+/// glosses may be missing or wrong until a rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Staleness {
+    /// Stamp matches exactly (only reachable when no shell is writing).
+    Current,
+    /// Only the history component moved: new commands since the build.
+    TrailingHistory,
+    /// Format version or `$path` directories changed.
+    Structural,
+}
+
+pub fn staleness(corpus: &Corpus, current_stamp: &str) -> Staleness {
+    if corpus.stamp == current_stamp {
+        return Staleness::Current;
+    }
+    // Stamp grammar (S1): `v{N}` `:h{mtime}.{len}` `:{dir-mtime}`* — the
+    // history component is the only one carrying an `h` prefix.
+    fn structural(s: &str) -> Vec<&str> {
+        s.split(':').filter(|c| !c.starts_with('h')).collect()
+    }
+    if structural(&corpus.stamp) == structural(current_stamp) {
+        Staleness::TrailingHistory
+    } else {
+        Staleness::Structural
+    }
+}
+
 /// Names present in the given directories — the "installed" filter (C2).
 pub fn scan_path(path_dirs: &[PathBuf]) -> HashSet<String> {
     let mut names = HashSet::new();
@@ -472,9 +504,13 @@ pub fn read_histfile(path: &Path) -> String {
 }
 
 /// Full build with IO: read HISTFILE, run whatis, scan PATH, stamp.
+/// The stamp is taken BEFORE the inputs are read: an input that changes
+/// mid-build (whatis takes seconds) then mismatches and schedules another
+/// pass, instead of being masked behind a stamp newer than the data.
 pub fn build() -> Result<Corpus> {
     let histfile = default_histfile()?;
     let dirs = path_dirs();
+    let taken = stamp(&histfile, &dirs);
     let history_text = read_histfile(&histfile);
     let installed = scan_path(&dirs);
     let whatis_text = std::process::Command::new("whatis")
@@ -483,7 +519,7 @@ pub fn build() -> Result<Corpus> {
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
     let mut corpus = build_from_parts(&history_text, &whatis_text, &installed);
-    corpus.stamp = stamp(&histfile, &dirs);
+    corpus.stamp = taken;
     Ok(corpus)
 }
 
@@ -653,5 +689,28 @@ sshd (8)             - OpenSSH daemon
         assert!(!is_stale(&back, "v1:h1.2:3"));
         assert!(is_stale(&back, "v1:h9.9:3"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_drift_is_not_structural_staleness() {
+        let mut c = build_from_parts("", "", &installed(&[]));
+        c.stamp = "v1:h100.200:300:400".into();
+        // Exact match.
+        assert_eq!(staleness(&c, "v1:h100.200:300:400"), Staleness::Current);
+        // Only history moved — the state every live shell is in.
+        assert_eq!(
+            staleness(&c, "v1:h101.230:300:400"),
+            Staleness::TrailingHistory
+        );
+        // Format bump, $path dir touched, dir added: all structural.
+        assert_eq!(staleness(&c, "v2:h100.200:300:400"), Staleness::Structural);
+        assert_eq!(staleness(&c, "v1:h100.200:300:401"), Staleness::Structural);
+        assert_eq!(
+            staleness(&c, "v1:h100.200:300:400:500"),
+            Staleness::Structural
+        );
+        // Histfile appearing where there was none is still only history.
+        c.stamp = "v1:300:400".into();
+        assert_eq!(staleness(&c, "v1:h5.6:300:400"), Staleness::TrailingHistory);
     }
 }

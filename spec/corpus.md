@@ -78,6 +78,19 @@ review ranked as its top finding. Tags per `spec/README.md`.
   (corpus.zsh:136–149; build-corpus.zsh:408–410)
 - S5 [zsh-hazard, dies] zstat accepts one `+spec` per call — a second is
   parsed as a filename and the component vanishes silently. [MEASURED]
+- S6 [domain] Not every stamp mismatch means the same thing. zsh appends each
+  command to HISTFILE as it runs, so in a live shell the corpus is always at
+  least one command behind — `clicue data` itself moves the history before it
+  can look, and a rebuild can never present as "current" for more than zero
+  keystrokes. [MEASURED 2026-08-03] Status reporting therefore distinguishes
+  *trailing history* (the working state of derived data; folds in at the next
+  scheduled build) from *structural* staleness (format version or `$path`
+  changed — glosses may be missing or wrong; worth a hand rebuild). The
+  rebuild trigger itself stays exact-match: folding new history at the next
+  build point is precisely what the trigger is for. Corollary: the stamp is
+  taken BEFORE the inputs are read — an input changing mid-build (whatis
+  takes seconds) then mismatches and reschedules, instead of hiding behind a
+  stamp newer than the data it describes.
   (corpus.zsh:122–126; build-corpus.zsh:315–317)
 
 ## L — load and lifecycle

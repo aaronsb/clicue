@@ -178,10 +178,18 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                     println!("corpus:  {}", cache.display());
                     println!("  glosses      {}", c.gloss.len());
                     println!("  invocations  {}", c.invoke.len());
-                    let state = if corpus::is_stale(&c, &current) {
-                        "STALE — history or installed commands changed; run `clicue data rebuild`"
-                    } else {
-                        "current"
+                    // A live shell appends every command to history as it
+                    // runs — `clicue data` itself moved the file before this
+                    // check. Trailing history is the working state of derived
+                    // data, not something to alarm about (S6).
+                    let state = match corpus::staleness(&c, &current) {
+                        corpus::Staleness::Current => "current",
+                        corpus::Staleness::TrailingHistory => {
+                            "current (trailing live history — new commands fold in at the daemon's next corpus build)"
+                        }
+                        corpus::Staleness::Structural => {
+                            "STALE — corpus format or installed commands changed; run `clicue data rebuild`"
+                        }
                     };
                     println!("  state        {state}");
                 }
