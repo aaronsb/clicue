@@ -385,23 +385,46 @@ pub fn from_toml(name: &str, src: &str) -> Result<Theme, Vec<String>> {
 pub fn load(name: &str, themes_dir: Option<&Path>) -> (Theme, Vec<String>) {
     if let Some(dir) = themes_dir {
         let path = dir.join(format!("{name}.toml"));
-        if let Ok(src) = std::fs::read_to_string(&path) {
-            return match from_toml(name, &src) {
-                Ok(t) => (t, Vec::new()),
-                Err(mut errs) => match builtin(name) {
+        match std::fs::read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                // An unreadable file (EACCES, EISDIR…) is broken in every
+                // sense that matters to the operator: the edits they make
+                // to it have no effect, so the fallback must be NAMED
+                // exactly like a parse failure (review #21).
+                let mut errs = vec![format!(
+                    "theme '{name}': {} unreadable ({e})",
+                    path.display()
+                )];
+                return match builtin(name) {
                     Some(t) => {
-                        errs.push(format!(
-                            "theme '{name}': {} rejected — using the built-in (delete the file to regenerate it)",
-                            path.display()
-                        ));
+                        errs.push(format!("'{name}': using the built-in"));
                         (t, errs)
                     }
                     None => {
-                        errs.push(format!("theme '{name}' rejected — using base"));
+                        errs.push(format!("'{name}': using base"));
                         (base(), errs)
                     }
-                },
-            };
+                };
+            }
+            Ok(src) => {
+                return match from_toml(name, &src) {
+                    Ok(t) => (t, Vec::new()),
+                    Err(mut errs) => match builtin(name) {
+                        Some(t) => {
+                            errs.push(format!(
+                            "theme '{name}': {} rejected — using the built-in (delete the file to regenerate it)",
+                            path.display()
+                        ));
+                            (t, errs)
+                        }
+                        None => {
+                            errs.push(format!("theme '{name}' rejected — using base"));
+                            (base(), errs)
+                        }
+                    },
+                }
+            }
         }
     }
     if let Some(t) = builtin(name) {
@@ -480,7 +503,12 @@ fn seed_file(dir: &Path, name: &str, template: &str) -> bool {
     if std::fs::write(&tmp, seeded_content(template)).is_err() {
         return false;
     }
-    std::fs::rename(&tmp, dir.join(format!("{name}.toml"))).is_ok()
+    let ok = std::fs::rename(&tmp, dir.join(format!("{name}.toml"))).is_ok();
+    if !ok {
+        // Debris in a directory operators browse and the reloader watches.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    ok
 }
 
 /// `load`, plus the regeneration half of T14: a MISSING file whose name
@@ -547,6 +575,12 @@ pub fn available(themes_dir: Option<&Path>) -> Vec<String> {
                 let p = e.path();
                 if p.extension().and_then(|x| x.to_str()) == Some("toml") {
                     if let Some(stem) = p.file_stem().and_then(|x| x.to_str()) {
+                        // Editor artifacts are dotfiles with our extension
+                        // (emacs lock `.#aura.toml` stems to `.#aura`) —
+                        // live editing must not mint themes (review #21).
+                        if stem.starts_with('.') {
+                            continue;
+                        }
                         if !names.iter().any(|n| n == stem) {
                             names.push(stem.to_string());
                         }
@@ -578,6 +612,33 @@ fn parse_hex(s: &str) -> Option<(f32, f32, f32)> {
 /// frame for no visible gain at card widths. Offsets are relative to the
 /// row start; the caller shifts them. Invalid stops yield no spans (the
 /// flat border style stays underneath).
+/// Piecewise-linear interpolation along parsed stops at t ∈ [0,1].
+fn lerp_stops(rgb: &[(f32, f32, f32)], t: f32) -> String {
+    let x = t.clamp(0.0, 1.0) * (rgb.len() - 1) as f32;
+    let i = (x.floor() as usize).min(rgb.len() - 2);
+    let f = x - i as f32;
+    let (r0, g0, b0) = rgb[i];
+    let (r1, g1, b1) = rgb[i + 1];
+    let (r, g, b) = (
+        (r0 + (r1 - r0) * f).round() as u8,
+        (g0 + (g1 - g0) * f).round() as u8,
+        (b0 + (b1 - b0) * f).round() as u8,
+    );
+    format!("fg=#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Colour at position t along the stop list — the same interpolation
+/// gradient_segments applies, exposed for consumers that sample by
+/// ordinal rather than row position (the swatch, T13: six border glyphs
+/// carry the whole sweep compressed, or they carry only its dark ends).
+pub(crate) fn gradient_at(stops: &[String], t: f32) -> Option<String> {
+    if stops.len() < 2 {
+        return None;
+    }
+    let rgb: Option<Vec<(f32, f32, f32)>> = stops.iter().map(|s| parse_hex(s)).collect();
+    Some(lerp_stops(&rgb?, t))
+}
+
 pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, String)> {
     if width == 0 || stops.len() < 2 {
         return Vec::new();
@@ -598,17 +659,7 @@ pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, S
         } else {
             mid / (width - 1) as f32
         };
-        let x = t * (rgb.len() - 1) as f32;
-        let i = (x.floor() as usize).min(rgb.len() - 2);
-        let f = x - i as f32;
-        let (r0, g0, b0) = rgb[i];
-        let (r1, g1, b1) = rgb[i + 1];
-        let (r, g, b) = (
-            (r0 + (r1 - r0) * f).round() as u8,
-            (g0 + (g1 - g0) * f).round() as u8,
-            (b0 + (b1 - b0) * f).round() as u8,
-        );
-        let style = format!("fg=#{r:02x}{g:02x}{b:02x}");
+        let style = lerp_stops(&rgb, t);
         // coalesce equal neighbours (flat stretches of the gradient)
         match out.last_mut() {
             Some(last) if last.2 == style => last.1 = end,
@@ -705,10 +756,23 @@ pub fn swatch(t: &Theme) -> String {
         (" ".into(), "", false),
         (format!("{}{}{}", g.h, g.h, g.tr), &p.border, true),
     ];
-    let total: usize = segs.iter().map(|(s, _, _)| s.chars().count()).sum();
-    let grads = gradient_segments(&p.border_gradient, total);
+    // The gradient sampled by BORDER ORDINAL, not row position (T13): the
+    // swatch's border is six glyphs in a sixty-column line, and indexing
+    // by row position samples only t≈0 and t≈1 — three near-identical
+    // dark greys where the theme's whole point is the bright mid-sweep
+    // (review #21, measured). Six glyphs carry the sweep compressed; the
+    // card's own border rows span the full width and need no compression.
+    let nborder: usize = segs
+        .iter()
+        .filter(|(_, _, b)| *b)
+        .map(|(s, _, _)| s.chars().count())
+        .sum();
     // The renderer's own grounding rule (layout panel merge): the panel's
-    // bg under every style that lacks one, and under the bare gaps.
+    // bg under every style that lacks one, and under the bare gaps. (The
+    // renderer lays the WHOLE panel string as the base span; only the
+    // bg= part matters here because every shipped panel is a lone bg= —
+    // a panel carrying extra attributes would ground the card, not the
+    // swatch gaps.)
     let bg = p
         .panel
         .split(',')
@@ -726,26 +790,34 @@ pub fn swatch(t: &Theme) -> String {
             format!("{style},{bg}")
         }
     };
-    let mut out = format!("  {:<16} ", t.name);
-    let mut at = 0usize;
+    // Operator file stems become theme names: strip control characters
+    // (an escape sequence in a filename must not reach the terminal raw)
+    // and pad by COLUMNS, the T6 discipline.
+    let name: String = t.name.chars().filter(|c| !c.is_control()).collect();
+    let pad = 17usize.saturating_sub(cols(&name)).max(1);
+    let mut out = format!("  {name}{}", " ".repeat(pad));
+    let mut bi = 0usize;
     for (text, style, is_border) in &segs {
-        if *is_border && !grads.is_empty() {
+        if *is_border && p.border_gradient.len() >= 2 {
             for ch in text.chars() {
-                let st = grads
-                    .iter()
-                    .find(|(s, e, _)| at >= *s && at < *e)
-                    .map(|(_, _, st)| st.as_str())
-                    .unwrap_or(style);
+                let tpos = if nborder <= 1 {
+                    0.0
+                } else {
+                    bi as f32 / (nborder - 1) as f32
+                };
+                let st = gradient_at(&p.border_gradient, tpos).unwrap_or_else(|| style.to_string());
                 out.push_str("\x1b[0m");
-                out.push_str(&style_to_ansi(&ground(st)));
+                out.push_str(&style_to_ansi(&ground(&st)));
                 out.push(ch);
-                at += 1;
+                bi += 1;
             }
         } else {
             out.push_str("\x1b[0m");
             out.push_str(&style_to_ansi(&ground(style)));
             out.push_str(text);
-            at += text.chars().count();
+            if *is_border {
+                bi += text.chars().count();
+            }
         }
     }
     out.push_str("\x1b[0m");
@@ -957,17 +1029,51 @@ mod tests {
     }
 
     #[test]
-    fn swatch_borders_sweep_when_the_theme_has_a_gradient() {
-        let s = swatch(&builtin("chrome").unwrap());
-        let fgs: std::collections::HashSet<&str> = s
-            .split("38;2;")
-            .skip(1)
-            .map(|rest| rest.split('m').next().unwrap_or(""))
-            .collect();
+    fn gradient_swatch_carries_the_whole_sweep() {
+        // Review #21: indexing by row position sampled only the dark ends
+        // (t≈0.02, t≈0.99) — the bright mid-sweep, the theme's point,
+        // never appeared. Pinned per glyph: border glyph i of 6 must wear
+        // exactly the colour at t = i/5.
+        let t = builtin("chrome").unwrap();
+        let s = swatch(&t);
+        for i in 0..6 {
+            let tpos = i as f32 / 5.0;
+            let expect = style_to_ansi(&gradient_at(&t.palette.border_gradient, tpos).unwrap());
+            assert!(
+                s.contains(&expect),
+                "border glyph {i} missing its sweep colour {expect:?} in {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_file_is_named_not_silently_shadowed() {
+        // Review #21: EACCES fell through to the builtin with no message —
+        // the operator edits a file that has no effect and is told nothing.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_themes("perm");
+        let path = dir.join("nord.toml");
+        std::fs::write(&path, "x = 1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (t, msgs) = load("nord", Some(&dir));
+        assert_eq!(t, builtin("nord").unwrap());
+        assert!(!msgs.is_empty(), "the problem must be named");
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editor_artifacts_are_not_themes() {
+        // Review #21, measured: emacs lock `.#aura.toml` stems to `.#aura`
+        // and passed the extension filter into the theme list.
+        let dir = temp_themes("locks");
+        std::fs::write(dir.join(".#aura.toml"), "junk").unwrap();
+        let names = available(Some(&dir));
         assert!(
-            fgs.len() >= 5,
-            "gradient swatch should carry many distinct fg colours, got {fgs:?}"
+            names.iter().all(|n| !n.starts_with('.')),
+            "artifact minted a theme: {names:?}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

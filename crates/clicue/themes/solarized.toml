@@ -5,7 +5,9 @@
 glyph-set = "unicode-rounded"
 
 [palette]
-border = "fg=#586e75"
+# border brightened from the upstream palette: the card outline must clear
+# ~3:1 against the panel or the box disappears into its own ground (review #21).
+border = "fg=#657b83"
 accent = "fg=#268bd2"
 text = "fg=#93a1a1"
 gloss = "fg=#586e75"

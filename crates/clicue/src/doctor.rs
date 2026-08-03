@@ -540,7 +540,7 @@ pub fn theme_findings(active: &str, dir: Option<&std::path::Path>) -> Vec<Findin
                 let Some(stem) = p.file_stem().and_then(|x| x.to_str()) else {
                     continue;
                 };
-                if stem == active {
+                if stem == active || stem.starts_with('.') {
                     continue;
                 }
                 let ok = std::fs::read_to_string(&p)

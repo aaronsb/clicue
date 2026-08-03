@@ -368,4 +368,40 @@ mod tests {
         assert!(d.contains(&format!("+ {INSTALL_LINE}")));
         assert!(!d.contains("- a"));
     }
+    #[test]
+    fn uninstall_removes_only_pristine_theme_files() {
+        // Review #21: the one destructive path over the operator's config
+        // directory, pinned in all four behaviours.
+        let dir = std::env::temp_dir().join(format!("clicue-uninstall-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        let r = crate::theme::sync_all(&dir);
+        assert!(r.seeded > 0);
+        // one edited seed, one operator file that was never seeded
+        let edited = dir.join("aura.toml");
+        let mut c = std::fs::read_to_string(&edited).unwrap();
+        c.push_str("# my tweak\n");
+        std::fs::write(&edited, c).unwrap();
+        std::fs::write(
+            dir.join("mine.toml"),
+            "[palette]\naccent = \"fg=#123456\"\n",
+        )
+        .unwrap();
+        let removed = remove_pristine_themes(&dir);
+        assert_eq!(removed, crate::theme::builtin_names().len() - 1);
+        assert!(edited.exists(), "an edited file is operator data");
+        assert!(
+            dir.join("mine.toml").exists(),
+            "a never-seeded file is untouchable"
+        );
+        assert!(dir.exists(), "a non-empty directory stays");
+        // all-pristine directory disappears entirely
+        std::fs::remove_file(&edited).unwrap();
+        std::fs::remove_file(dir.join("mine.toml")).unwrap();
+        crate::theme::sync_all(&dir);
+        remove_pristine_themes(&dir);
+        assert!(!dir.exists(), "an emptied directory goes too");
+    }
 }

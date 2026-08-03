@@ -95,8 +95,14 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             let loaded = clicue::config::load();
             println!("theme: {} (current)", loaded.config.theme);
             for name in theme::available(dir.as_deref()) {
-                let (t, _) = theme::load(&name, dir.as_deref());
-                println!("{}", theme::swatch(&t));
+                let (t, msgs) = theme::load(&name, dir.as_deref());
+                if msgs.is_empty() {
+                    println!("{}", theme::swatch(&t));
+                } else {
+                    // The swatch shows the FALLBACK — say so, or the list
+                    // hides exactly the breakage doctor reports.
+                    println!("{}  ← file broken; fallback shown", theme::swatch(&t));
+                }
             }
             println!("\nset:      clicue theme <name>");
             println!("preview:  clicue theme preview <name>");
@@ -116,10 +122,20 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             }
             let path = clicue::config::config_path()?;
             clicue::config::set_key_line(&path, "theme", &name)?;
-            println!(
-                "theme is now {name} ({}) — applied live; the daemon reloads within a second",
-                path.display()
-            );
+            if msgs.is_empty() {
+                println!(
+                    "theme is now {name} ({}) — applied live; the daemon reloads within a second",
+                    path.display()
+                );
+            } else {
+                // A broken file for a shipped name resolves to the shipped
+                // theme, so the guard above passes — but claiming plain
+                // success would hide what the warnings just said.
+                println!(
+                    "theme is now {name} — but its file is broken (warnings above): cards render \
+                     the shipped fallback until it loads cleanly. `clicue doctor` tracks it."
+                );
+            }
             Ok(())
         }
         ThemeCmd::Bare(words) => {
