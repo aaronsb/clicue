@@ -88,6 +88,10 @@ mod tests {
         assert!(text.contains("bare printable characters are typing"));
         assert!(text.contains("memo=clicue"));
         assert!(text.contains("clicue-off"));
+        // Redirections on `exec` are permanent: `exec {fd}>&- 2>/dev/null`
+        // rewires the SHELL's stderr to /dev/null for the session. The
+        // shim must never grow that spelling back (spec §8a).
+        assert!(!text.contains(">&- 2>"), "fatal exec suppression is back");
     }
 
     #[test]

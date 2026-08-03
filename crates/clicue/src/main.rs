@@ -36,8 +36,11 @@ enum Command {
     },
     /// Probe a live zsh for conflicts and silent degradations
     Doctor,
-    /// Show the effective configuration with provenance
-    Config,
+    /// Show the effective configuration, or set one value
+    Config {
+        #[command(subcommand)]
+        cmd: Option<ConfigCmd>,
+    },
     /// List, set, or preview themes
     Theme {
         #[command(subcommand)]
@@ -60,6 +63,16 @@ enum ThemeCmd {
     Set { name: String },
     /// Render a sample card with a theme
     Preview { name: String },
+    /// `clicue theme <name>` — the obvious spelling sets the theme
+    #[command(external_subcommand)]
+    Bare(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Set a top-level value (theme, ranking, tier1-rows, …) — validated,
+    /// applied live by the daemon within a second
+    Set { key: String, value: String },
 }
 
 #[derive(Subcommand)]
@@ -87,8 +100,13 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
     match cmd.unwrap_or(ThemeCmd::List) {
         ThemeCmd::List => {
             let loaded = clicue::config::load();
-            println!("theme: {}", loaded.config.theme);
-            println!("available: {}", theme::available(dir.as_deref()).join("  "));
+            println!("theme: {} (current)", loaded.config.theme);
+            for name in theme::available(dir.as_deref()) {
+                let (t, _) = theme::load(&name, dir.as_deref());
+                println!("{}", theme::swatch(&t));
+            }
+            println!("\nset:      clicue theme <name>");
+            println!("preview:  clicue theme preview <name>");
             Ok(())
         }
         ThemeCmd::Set { name } => {
@@ -105,9 +123,23 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             }
             let path = clicue::config::config_path()?;
             clicue::config::set_key_line(&path, "theme", &name)?;
-            println!("theme is now {name} ({})", path.display());
-            println!("restart the daemon to apply: pkill -f 'clicue daemon' (it respawns on the next keystroke)");
+            println!(
+                "theme is now {name} ({}) — applied live; the daemon reloads within a second",
+                path.display()
+            );
             Ok(())
+        }
+        ThemeCmd::Bare(words) => {
+            let known = theme::available(dir.as_deref());
+            match words.as_slice() {
+                [one] if known.contains(one) => {
+                    theme_cmd(Some(ThemeCmd::Set { name: one.clone() }))
+                }
+                [one] => anyhow::bail!("no theme named {one:?} — available: {}", known.join("  ")),
+                _ => anyhow::bail!(
+                    "usage: clicue theme [<name> | list | set <name> | preview <name>]"
+                ),
+            }
         }
         ThemeCmd::Preview { name } => {
             let (t, msgs) = theme::load(&name, dir.as_deref());
@@ -306,7 +338,22 @@ fn main() -> Result<()> {
             let code = clicue::doctor::run()?;
             std::process::exit(code);
         }
-        Command::Config => {
+        Command::Config {
+            cmd: Some(ConfigCmd::Set { key, value }),
+        } => {
+            // theme names get the same validation the theme verb applies
+            if key == "theme" {
+                return theme_cmd(Some(ThemeCmd::Set { name: value }));
+            }
+            let path = clicue::config::config_path()?;
+            clicue::config::set_scalar(&path, &key, &value)?;
+            println!(
+                "{key} = {value} ({}) — applied live; the daemon reloads within a second",
+                path.display()
+            );
+            Ok(())
+        }
+        Command::Config { cmd: None } => {
             let loaded = clicue::config::load();
             let shown = clicue::config::config_path()
                 .map(|p| p.display().to_string())

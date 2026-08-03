@@ -480,6 +480,27 @@ fn style_to_ansi(style: &str) -> String {
     }
 }
 
+/// One line of theme, in the theme's own colours: enough to choose from
+/// a list without running a full preview per name.
+pub fn swatch(t: &Theme) -> String {
+    let r = "\x1b[0m";
+    let a = |s: &str| style_to_ansi(s);
+    let g = &t.glyphs;
+    let p = &t.palette;
+    format!(
+        "  {:<8} {}{}{}{}{r} {}{}{r} {}gi{r}{}t{r}  {}the stupid content tracker{r}  {}t status{r}  {}Tab cycle{r} {}{}{}{}{r}",
+        t.name,
+        a(&p.border), g.tl, g.h, g.h,
+        a(&p.accent), g.sel,
+        a(&p.matched), a(&p.text),
+        a(&p.gloss),
+        a(&p.ghost),
+        a(&p.hint),
+        a(&p.border), g.h, g.h, g.tr,
+        r = r,
+    )
+}
+
 /// Render a sample card with this theme at the given width, ANSI-coloured.
 pub fn preview(theme: &Theme, cols: u16) -> String {
     use crate::layout::{CardInput, Dims, KeyLabels, LayoutCfg, View};
