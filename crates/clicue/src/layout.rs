@@ -579,15 +579,20 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         let ecap = maxlines.saturating_sub(t1n + 5).max(1);
         er = er.min(ecap);
     }
-    let mut gr = r2.saturating_sub(er);
-    if er > 0 {
-        gr = gr.saturating_sub(1); // the explanation's own border
-    }
-    // Nav pane rows: structure-driven only (H7 — a count filling in
-    // must never add a row), clamped, taken from the grid's share like
-    // the explanation. Children pack into cells later; two rows of them
-    // is a pane's whole budget, with "+n more" carrying the rest. Both
-    // panes (here and going) are counted.
+    // r2 is the enforced share for EVERYTHING below tier 1 (H1); its
+    // tenants are the explanation (budgeted first, S5), the place panes,
+    // and the grid, in that order. Panes fit WHOLE or not at all — a
+    // clipped pane reads as a broken card — and the going pane is a
+    // FIXED shape (border + 4 body rows, padded blank) because attention
+    // retargets it within one buffer, and a pane that changes height
+    // with the selection is H7's exact hazard [MEASURED: a 24-line pty
+    // pushed the legend off-screen as the preview grew; pane rows also
+    // leaked past the budget entirely and clipped the card's bottom].
+    // In one-box mode (no grid) r1 carries the whole share and holds
+    // only t1n cue rows — the surplus belongs to the panes exactly as
+    // r2 does when the grid exists.
+    let mut avail = r1.saturating_sub(t1n) + r2;
+    avail = avail.saturating_sub(er + usize::from(er > 0));
     let pane_rows = |n: &crate::nav::NavPane| {
         1 + usize::from(!n.breadcrumb.is_empty())
             + n.stack.len().min(4)
@@ -595,8 +600,17 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             + (if n.children.is_empty() { 0 } else { 2 })
             + usize::from(!n.siblings.is_empty() || n.hidden > 0)
     };
-    let nav_rows = input.nav.map_or(0, pane_rows) + input.nav_going.map_or(0, pane_rows);
-    gr = gr.saturating_sub(nav_rows);
+    const GOING_ROWS: usize = 5;
+    let here_rows = input.nav.map_or(0, pane_rows);
+    let show_here = input.nav.is_some() && here_rows <= avail;
+    let show_going = show_here && input.nav_going.is_some() && here_rows + GOING_ROWS <= avail;
+    if show_here {
+        avail -= here_rows;
+    }
+    if show_going {
+        avail -= GOING_ROWS;
+    }
+    let gr = avail;
 
     // C1: column basis over everything tier 1 CAN show — the first t1n
     // cues (the window slides within them) plus the explain rows. Not the
@@ -979,12 +993,22 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     // Both panes are one renderer with two titles — the symmetry is the
     // feature (`cd .` draws the same place twice; `cd ..` shows here as
     // a styled child on the going map).
-    for (np, title, beside) in [
-        (input.nav, " you are here ", "beside you"),
-        (input.nav_going, " you are going ", "beside it"),
+    for (np, title, beside, fixed) in [
+        (
+            if show_here { input.nav } else { None },
+            " you are here ",
+            "beside you",
+            false,
+        ),
+        (
+            if show_going { input.nav_going } else { None },
+            " you are going ",
+            "beside it",
+            true,
+        ),
     ]
     .into_iter()
-    .filter_map(|(n, t, b)| n.map(|n| (n, t, b)))
+    .filter_map(|(n, t, b, fx)| n.map(|n| (n, t, b, fx)))
     {
         let (jl, jr) = if rows.is_empty() {
             (&g.tl, &g.tr)
@@ -1005,6 +1029,16 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             rows.push(row);
         };
 
+        let body_start = rows.len();
+        if fixed && np.breadcrumb.is_empty() && np.children.is_empty() && np.siblings.is_empty() {
+            // The reserved box before any destination is attended or
+            // typed: say what it is for instead of sitting blank.
+            line(
+                &mut rows,
+                "engage and arrow to preview a destination".into(),
+                &p.gloss,
+            );
+        }
         if !np.breadcrumb.is_empty() {
             line(&mut rows, np.breadcrumb.join(" › "), &p.text);
         }
@@ -1102,6 +1136,14 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
                 fit_ellipsis(&parts.join("  ·  "), body),
                 &p.gloss,
             );
+        }
+        if fixed {
+            while rows.len() - body_start < GOING_ROWS - 1 {
+                line(&mut rows, String::new(), &p.gloss);
+            }
+            while rows.len() - body_start > GOING_ROWS - 1 {
+                rows.pop();
+            }
         }
     }
 

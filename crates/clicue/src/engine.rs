@@ -299,13 +299,20 @@ impl Engine {
         } else {
             None
         };
-        let (pane, going) = self.nav_panes(
+        let (pane, mut going) = self.nav_panes(
             sess,
             &pos,
             req.nav.as_ref(),
             set.nav_grid_dir.as_deref(),
             attended.as_deref(),
         );
+        // H7 at pane granularity: attention (arrowing) can summon the
+        // going pane within one buffer, so its BOX must exist from the
+        // first render — a placeholder reserves the rows; layout pads
+        // every going pane to the same fixed shape.
+        if going.is_none() && pane.is_some() && set.nav_grid_dir.is_some() {
+            going = Some(nav::NavPane::default());
+        }
         let grid_label = set.nav_grid_dir.as_ref().map(|d| {
             format!(
                 "inside {}",
@@ -419,8 +426,15 @@ impl Engine {
             },
             Mode::Arg => {
                 let mut set = self.arg_cues(sess, buffer, pos);
-                let live_spoke = sess.live.as_ref().map(|h| h.pos == buffer).unwrap_or(false);
-                if !live_spoke {
+                // Scanner cues stand down only when the harvest was
+                // actually USED (live_membership), not merely present:
+                // for a path prefix (`cd ../`) the flag branch never
+                // consults the live harvest (H1 gates it on dash/empty),
+                // and gating on presence left ZERO candidates — the
+                // completion key then delegated and zsh inserted over
+                // the card [MEASURED, deterministic once the harvest
+                // landed on the same Tab].
+                if !set.live_membership {
                     if let Some((dirs, base)) = self.nav_dir_cues(sess, pos, navctx) {
                         if !dirs.is_empty() {
                             if set.info {
@@ -668,6 +682,23 @@ impl Engine {
         let ctx = navctx?;
         if !self.navigational(sess, pos) {
             return None;
+        }
+        // Only the verbs that go somewhere NEW take a directory; popd and
+        // dirs argue about the stack, and offering them children was a
+        // wrong-argument proposal.
+        {
+            let words: Vec<&str> = pos.words.iter().map(|s| s.as_str()).collect();
+            let eff = sources::effective_command(&words)?;
+            let verb = sess
+                .env
+                .aliases
+                .get(eff)
+                .and_then(|e| e.split_whitespace().next())
+                .filter(|w| nav::is_navigational(w))
+                .unwrap_or(eff);
+            if !matches!(verb, "cd" | "chdir" | "pushd") {
+                return None;
+            }
         }
         let pfx = pos.pfx.as_str();
         let dotted = format!("{pfx}/");

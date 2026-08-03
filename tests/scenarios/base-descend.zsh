@@ -11,17 +11,17 @@ source "${0:a:h}/../harness.zsh"
 pty_start plain
 
 pty_type 'cd ../'
-pty_drain 0.5
+pty_drain 1.0
 pty_key $'\t'
-pty_drain 0.8
+pty_drain 1.5
 t_plain "$PTY_OUT"
 [[ $REPLY == *'↑↓ browse'* ]] || t_fail "Tab did not engage on a path base"
 PTY_OUT=''
 
 pty_key $'\e[B'
-pty_drain 0.4
+pty_drain 0.8
 pty_key $'\r'
-pty_drain 0.6
+pty_drain 1.0
 t_plain "$PTY_OUT"
 [[ $REPLY == *'../'* ]] || t_fail "the pick lost its ../ base"
 

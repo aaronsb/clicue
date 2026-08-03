@@ -216,6 +216,20 @@ consumed `../../`) is re-prepended to harvested words on insert — the old rule
 covered only dash clusters, and this path was unreachable before pathlike
 buffers kept their card.
 
+**The going pane is a fixed shape, and panes fit whole or not at all.** Both
+rules arrived from an 80×24 pty **[MEASURED]**. Attention retargets the going
+pane within one buffer, so a pane whose height tracked its content was H7's
+exact hazard — the card grew as the preview did and pushed the legend
+off-screen. The going box is therefore border + four body rows, padded blank,
+reserved (with a hint line) from the first render in which arrowing could
+summon it. And pane rows were being carved from the grid's share without being
+clamped to it — past the budget they simply leaked, and ZLE clipped the card's
+bottom. The r2 share now has explicit tenants in order: explanation first
+(S5), then the here pane, then the going pane, each fitting WHOLE or dropping
+whole — a missing pane reads better than a mangled card — then the grid takes
+the remainder. Consequence stated plainly: an 80×24 terminal shows one pane,
+not two; both panes plus an explanation want ~30 lines.
+
 ### 3. Resolution and existence
 
 Every navigation target the operator has typed resolves against relayed place and
