@@ -204,7 +204,8 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             let c = corpus::build()?;
             corpus::save(&c, &cache)?;
             println!(
-                "corpus built: {} ({} glosses, {} invocations)",
+                "corpus built: {} ({} glosses, {} invocations) — applied live; \
+                 the daemon reloads within a second",
                 cache.display(),
                 c.gloss.len(),
                 c.invoke.len()
@@ -292,11 +293,9 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                 if removed == 1 { "y" } else { "ies" },
                 if flags_removed == 1 { "" } else { "s" }
             );
-            // A running daemon memoises tables it has already served.
-            println!(
-                "restart the daemon to forget everywhere: pkill -x clicue \
-                 (it respawns on the next keystroke)"
-            );
+            // The daemon watches the corpus cache: the swap builds a fresh
+            // flag store too, so the memoised tables go with it.
+            println!("applied live; the daemon reloads within a second");
             Ok(())
         }
     }

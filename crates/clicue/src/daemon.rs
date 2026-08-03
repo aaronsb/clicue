@@ -127,35 +127,113 @@ fn bind(path: &Path) -> Result<(UnixListener, File)> {
 pub fn run() -> Result<()> {
     let path = socket_path()?;
     let (listener, _lock) = bind(&path)?; // lock lives as long as serve()
-    let render = reloading_render(crate::config::config_path().ok(), Duration::from_secs(1))?;
+    let render = reloading_render(WatchSet::daemon_inputs(), Duration::from_secs(1))?;
     serve_with(listener, render)
 }
 
-fn cfg_stat(path: &Path) -> Option<(SystemTime, u64)> {
-    let m = fs::metadata(path).ok()?;
+/// Everything the daemon derives itself from, watched by ONE reloader so
+/// every verb that rewrites an input applies live the same way: the
+/// config file (`config set`, `theme set`), the corpus cache (`data
+/// rebuild`, `data forget`), and the operator theme files. What is NOT
+/// here is deliberate: the flag store is written by the daemon's own
+/// harvest ingests, and watching it would make the daemon reload itself
+/// on every first-Tab.
+#[derive(Default, Clone)]
+pub struct WatchSet {
+    pub files: Vec<PathBuf>,
+    /// Watched by entry list + per-entry mtime, so create, edit, and
+    /// delete all register (a directory's own mtime misses in-place edits).
+    pub dirs: Vec<PathBuf>,
+}
+
+impl WatchSet {
+    pub fn daemon_inputs() -> WatchSet {
+        let mut w = WatchSet::default();
+        if let Ok(p) = crate::config::config_path() {
+            if let Some(parent) = p.parent() {
+                w.dirs.push(parent.join("themes"));
+            }
+            w.files.push(p);
+        }
+        if let Ok(p) = crate::corpus::cache_path() {
+            w.files.push(p);
+        }
+        w
+    }
+
+    fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.dirs.is_empty()
+    }
+}
+
+/// mtime + length: mtime granularity can be coarse, and a same-second
+/// rewrite usually changes length; both together is the cheap stat that
+/// registers every real edit.
+type FileStamp = Option<(SystemTime, u64)>;
+
+/// One comparable snapshot of every watched input.
+type InputsStamp = (Vec<FileStamp>, Vec<Vec<(std::ffi::OsString, FileStamp)>>);
+
+fn file_stat(m: std::io::Result<fs::Metadata>) -> FileStamp {
+    let m = m.ok()?;
     Some((m.modified().ok()?, m.len()))
 }
 
-/// Engine that follows the config file: when its mtime/size changes, the
-/// next request (rate-limited to one stat per `min_interval`) swaps in a
-/// freshly built engine. Sessions are shared across swaps, so open shells
-/// keep their hello universes, dismissals and live harvests; a rebuild
-/// that fails keeps the current engine. This is why `theme set` and
-/// `config set` never ask for a daemon restart — and why an invalid edit
-/// behaves exactly like a daemon restart would (per-key fallback with
-/// warnings), never worse.
-pub fn reloading_render(cfg: Option<PathBuf>, min_interval: Duration) -> Result<Render> {
+fn inputs_stat(watch: &WatchSet) -> InputsStamp {
+    let files = watch
+        .files
+        .iter()
+        .map(|p| file_stat(fs::metadata(p)))
+        .collect();
+    let dirs = watch
+        .dirs
+        .iter()
+        .map(|d| {
+            let mut entries: Vec<_> = fs::read_dir(d)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| (e.file_name(), file_stat(e.metadata())))
+                .collect();
+            entries.sort();
+            entries
+        })
+        .collect();
+    (files, dirs)
+}
+
+/// Engine that follows its inputs: when any watched file or directory
+/// changes, the next request (rate-limited to one stat pass per
+/// `min_interval`) swaps in a freshly built engine. Sessions are shared
+/// across swaps, so open shells keep their hello universes, dismissals
+/// and live harvests; a swap that fails keeps the current engine. This is
+/// why `theme set`, `config set`, `data rebuild` and `data forget` never
+/// ask for a daemon restart — and why an invalid edit behaves exactly
+/// like a daemon restart would (per-key fallback with warnings), never
+/// worse. Swaps LOAD the corpus as-is (S7): only the daemon's first
+/// engine rebuilds a stale corpus, so a swap can never enter a rebuild
+/// loop against a histfile that moves with every command.
+pub fn reloading_render(watch: WatchSet, min_interval: Duration) -> Result<Render> {
+    use crate::engine::CorpusPolicy;
+    use std::sync::atomic::{AtomicBool, Ordering};
     let sessions = crate::engine::SharedSessions::default();
+    let started = std::sync::Arc::new(AtomicBool::new(false));
     let mk = move || -> Result<Render> {
-        let engine = std::sync::Arc::new(crate::engine::Engine::new_shared(sessions.clone())?);
+        let policy = if started.swap(true, Ordering::SeqCst) {
+            CorpusPolicy::LoadOnly
+        } else {
+            CorpusPolicy::RebuildIfStale
+        };
+        let engine =
+            std::sync::Arc::new(crate::engine::Engine::new_shared(sessions.clone(), policy)?);
         Ok(std::sync::Arc::new(move |req| engine.handle(req)) as Render)
     };
-    reloading_with(cfg, min_interval, mk)
+    reloading_with(watch, min_interval, mk)
 }
 
 /// The swap mechanism, factory-injected so tests need no real engine.
 fn reloading_with(
-    cfg: Option<PathBuf>,
+    watch: WatchSet,
     min_interval: Duration,
     factory: impl Fn() -> Result<Render> + Send + Sync + 'static,
 ) -> Result<Render> {
@@ -164,17 +242,16 @@ fn reloading_with(
     let factory = std::sync::Arc::new(factory);
     let building = std::sync::Arc::new(AtomicBool::new(false));
     // Stat AFTER the first build: a write landing during it must trigger
-    // a reload, not be mistaken for the state already built.
-    let state = std::sync::Arc::new(Mutex::new((
-        Instant::now(),
-        cfg.as_deref().and_then(cfg_stat),
-    )));
+    // a reload, not be mistaken for the state already built. (The first
+    // engine may itself write the corpus cache — a stamp taken before it
+    // would see that write as an operator action and swap for nothing.)
+    let state = std::sync::Arc::new(Mutex::new((Instant::now(), Some(inputs_stat(&watch)))));
     Ok(std::sync::Arc::new(move |req| {
-        if let Some(p) = &cfg {
+        if !watch.is_empty() {
             let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
             if st.0.elapsed() >= min_interval {
                 st.0 = Instant::now();
-                let now = cfg_stat(p);
+                let now = Some(inputs_stat(&watch));
                 if now != st.1 && !building.swap(true, Ordering::SeqCst) {
                     st.1 = now;
                     // Build OFF the request path: an engine build takes far
@@ -435,16 +512,23 @@ mod tests {
         fs::write(&cfg, "theme = \"aura\"\n").unwrap();
         let gen = std::sync::Arc::new(AtomicUsize::new(0));
         let g = gen.clone();
-        let render = reloading_with(Some(cfg.clone()), Duration::ZERO, move || {
-            let n = g.fetch_add(1, Ordering::SeqCst) + 1;
-            if n == 3 {
-                anyhow::bail!("boom"); // third build fails: engine must survive
-            }
-            Ok(std::sync::Arc::new(move |_req| Reply {
-                card: format!("gen{n}"),
-                ..Reply::stand_down()
-            }) as Render)
-        })
+        let render = reloading_with(
+            WatchSet {
+                files: vec![cfg.clone()],
+                dirs: vec![],
+            },
+            Duration::ZERO,
+            move || {
+                let n = g.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 3 {
+                    anyhow::bail!("boom"); // third build fails: engine must survive
+                }
+                Ok(std::sync::Arc::new(move |_req| Reply {
+                    card: format!("gen{n}"),
+                    ..Reply::stand_down()
+                }) as Render)
+            },
+        )
         .unwrap();
         let req = || serde_json::from_str::<Request>(&request_line(VERSION)).unwrap();
         // Swaps land asynchronously (built off the request path): poll.
@@ -467,6 +551,59 @@ mod tests {
         // build 3 fails (async): the current engine survives, and the
         // cleared stamp retries on a later interval WITHOUT another edit
         fs::write(&cfg, "theme = \"plain\"\n").unwrap();
+        until("gen4");
+    }
+
+    #[test]
+    fn reload_watches_every_input_kind() {
+        // One reloader for every input (S7): the corpus cache (`data
+        // rebuild` / `data forget` rewrite it) and the theme files apply
+        // live through the same swap as the config file.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = temp_dir("reload-inputs");
+        let corpus = dir.join("corpus.json");
+        let themes = dir.join("themes");
+        fs::create_dir_all(&themes).unwrap();
+        fs::write(&corpus, "{}").unwrap();
+        let gen = std::sync::Arc::new(AtomicUsize::new(0));
+        let g = gen.clone();
+        let render = reloading_with(
+            WatchSet {
+                files: vec![corpus.clone()],
+                dirs: vec![themes.clone()],
+            },
+            Duration::ZERO,
+            move || {
+                let n = g.fetch_add(1, Ordering::SeqCst) + 1;
+                Ok(std::sync::Arc::new(move |_req| Reply {
+                    card: format!("gen{n}"),
+                    ..Reply::stand_down()
+                }) as Render)
+            },
+        )
+        .unwrap();
+        let req = || serde_json::from_str::<Request>(&request_line(VERSION)).unwrap();
+        let until = |want: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let got = render(req()).card;
+                if got == want {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "expected {want}, stuck at {got}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        assert_eq!(render(req()).card, "gen1");
+        // A corpus rewrite (what `data rebuild` does) swaps.
+        fs::write(&corpus, "{\"stamp\":\"rebuilt\"}").unwrap();
+        until("gen2");
+        // A theme file APPEARING swaps…
+        fs::write(themes.join("mine.toml"), "accent = \"#ff0000\"\n").unwrap();
+        until("gen3");
+        // …and an in-place EDIT swaps too (dir mtime alone would miss it;
+        // the length differs so coarse mtime granularity cannot hide it).
+        fs::write(themes.join("mine.toml"), "accent = \"#00ff00\"  \n").unwrap();
         until("gen4");
     }
 

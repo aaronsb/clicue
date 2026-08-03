@@ -143,6 +143,11 @@ always safe.
 | `corpus.json` | glosses, history frequency, invocation statistics | automatic at daemon start when stale |
 | `flags/<cmd>.json` | a command's documented options, harvested from compsys | automatic on first `Tab` |
 
+`clicue data rebuild` and `clicue data forget` apply **live**, like every other
+verb that rewrites daemon state: the daemon watches its inputs — config,
+corpus, theme files — through one reloader and swaps within a second, open
+shells keeping their state.
+
 ```zsh
 clicue data status         # current? how big?
 clicue data rebuild        # synchronously, now

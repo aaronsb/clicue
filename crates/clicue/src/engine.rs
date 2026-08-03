@@ -78,21 +78,36 @@ fn now_epoch() -> u64 {
 /// functions), dismissals, or live harvests.
 pub(crate) type SharedSessions = std::sync::Arc<Mutex<HashMap<Session, Sess>>>;
 
+/// How a fresh engine treats the corpus cache (S7). `RebuildIfStale` is
+/// for the daemon's FIRST engine — start is the one place a whatis-sized
+/// build cost is acceptable, and the place trailing history folds in.
+/// Every hot-reload swap is `LoadOnly`: a live histfile moves with every
+/// command, so a swap that rebuilt-if-stale would build (and save, and
+/// re-trigger the corpus watch) on every config edit — and could chase a
+/// busy shell in a rebuild loop. Either way a missing or unreadable cache
+/// falls back to a build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorpusPolicy {
+    RebuildIfStale,
+    LoadOnly,
+}
+
 impl Engine {
     /// Load corpus (rebuild if missing/stale — daemon start is the one
     /// place that cost is acceptable), theme, and the PATH universe.
     pub fn new() -> Result<Engine> {
-        Self::new_shared(SharedSessions::default())
+        Self::new_shared(SharedSessions::default(), CorpusPolicy::RebuildIfStale)
     }
 
     /// The hot-reload entry: a fresh engine over EXISTING sessions.
-    pub(crate) fn new_shared(sessions: SharedSessions) -> Result<Engine> {
+    pub(crate) fn new_shared(sessions: SharedSessions, policy: CorpusPolicy) -> Result<Engine> {
         let cache = corpus::cache_path()?;
         let dirs = corpus::path_dirs();
         let histfile = corpus::default_histfile()?;
         let current = corpus::stamp(&histfile, &dirs);
-        let corp = match corpus::load(&cache) {
-            Ok(c) if !corpus::is_stale(&c, &current) => c,
+        let corp = match (corpus::load(&cache), policy) {
+            (Ok(c), CorpusPolicy::LoadOnly) => c,
+            (Ok(c), CorpusPolicy::RebuildIfStale) if !corpus::is_stale(&c, &current) => c,
             _ => {
                 let c = corpus::build()?;
                 let _ = corpus::save(&c, &cache);
