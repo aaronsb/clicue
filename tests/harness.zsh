@@ -113,5 +113,11 @@ pty_stop() {
   fi
 }
 
-# Strip ANSI control sequences for content assertions.
-t_plain() { REPLY=${1//$'\x1b'\[[0-9;]#[A-Za-z]/} }
+# Strip ANSI control sequences for content assertions. Always strip BEFORE
+# matching words: zsh's redisplay paints per CHARACTER, each wrapped in its
+# own colour escape, so a word like 'browsing' never appears contiguously
+# in the raw stream — raw greps silently fail [MEASURED, twice in one day].
+t_plain() {
+  setopt localoptions extendedglob   # `#` in the pattern needs it
+  REPLY=${1//$'\x1b'\[[0-9;]#[A-Za-z]/}
+}
