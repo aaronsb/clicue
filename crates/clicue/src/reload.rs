@@ -83,10 +83,13 @@ fn inputs_stat(watch: &WatchSet) -> InputsStamp {
                 .into_iter()
                 .flatten()
                 .flatten()
-                // metadata by PATH, not DirEntry::metadata: the entry
-                // form is symlink_metadata and never sees the target
-                // change — stow/chezmoi-managed configs are all
-                // symlinks, and files/ already follows links.
+                // Skip dotfiles: editor artifacts (vim .swp, emacs
+                // .#lock) and our own seed tmp files would otherwise
+                // trigger a swap per keystroke of a live edit session.
+                // Stat by PATH, not DirEntry::metadata — the entry form
+                // is symlink_metadata and never sees a stowed target
+                // change (review #19/#21, measured).
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
                 .map(|e| (e.file_name(), file_stat(fs::metadata(e.path()))))
                 .collect();
             entries.sort();
@@ -341,6 +344,36 @@ mod tests {
         // the length differs so coarse mtime granularity cannot hide it).
         fs::write(themes.join("mine.toml"), "accent = \"#00ff00\"  \n").unwrap();
         until(&render, "gen4");
+    }
+
+    #[test]
+    fn dotfile_churn_does_not_swap() {
+        // Editor artifacts (vim .swp, emacs .#lock) and seed tmp files
+        // land in the watched directory during live edits — they must not
+        // trigger swaps (review #21).
+        let dir = temp_dir("dotfiles");
+        let themes = dir.join("themes");
+        fs::create_dir_all(&themes).unwrap();
+        let gen = std::sync::Arc::new(AtomicUsize::new(0));
+        let render = reloading_with(
+            WatchSet {
+                files: vec![],
+                dirs: vec![themes.clone()],
+            },
+            Duration::ZERO,
+            counting_factory(&gen),
+        )
+        .unwrap();
+        assert_eq!(render(request()).card, "gen1");
+        fs::write(themes.join(".aura.toml.swp"), "editor junk").unwrap();
+        fs::write(themes.join(".#mine.toml"), "lock").unwrap();
+        for _ in 0..10 {
+            assert_eq!(render(request()).card, "gen1", "dotfile churn swapped");
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        // A real file still registers.
+        fs::write(themes.join("mine.toml"), "accent = \"fg=#ff0000\"\n").unwrap();
+        until(&render, "gen2");
     }
 
     #[test]

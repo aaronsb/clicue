@@ -79,6 +79,14 @@ document these; the doctor tests for them.
   invocation ranking exists because of it) — report as info, not a warning,
   so the operator is not told to change a setting the tool already
   accommodates. (build-corpus.zsh:173–176)
+- D5 [domain] Theme health, minimally: the ACTIVE theme must load cleanly —
+  a broken file degrades to a fallback with a message only on the daemon's
+  stderr, which nobody reads, so doctor is where the fallback becomes
+  visible (degraded, with the loader's own messages). Other theme files
+  that fail to load are listed as info — harmless until selected — with
+  the two recovery gestures named (preview shows errors; delete
+  regenerates). A healthy report states the active theme and the count
+  available.
 
 ## T — terminal quirks
 

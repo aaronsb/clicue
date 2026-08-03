@@ -164,14 +164,32 @@ fn confirm(prompt: &str) -> Result<bool> {
 /// manager present → instructions; else append with diff + confirmation.
 pub fn install(opts: &InstallOpts) -> Result<i32> {
     let probe = crate::doctor::run_probe()?;
-    let findings = crate::doctor::evaluate(
+    let mut findings = crate::doctor::evaluate(
         &probe,
         &crate::doctor::check_daemon(),
         &crate::doctor::corpus_state(),
     );
+    findings.extend(crate::doctor::check_themes());
     let code = crate::doctor::print_findings(&findings, &mut std::io::stdout());
     if code != 0 && !opts.force {
         bail!("doctor found fighters — resolve them, or rerun with --force");
+    }
+
+    // Theme files before rc wiring (T14): seed what is missing (reinstall
+    // is the restore-a-deleted-file gesture), update unedited files to
+    // this binary's templates, keep every edit.
+    if let Some(dir) = crate::config::themes_dir() {
+        let r = crate::theme::sync_all(&dir);
+        if r.seeded + r.updated + r.kept > 0 {
+            println!(
+                "themes ({}): {} seeded, {} updated to v{}, {} kept (edited)",
+                dir.display(),
+                r.seeded,
+                r.updated,
+                env!("CARGO_PKG_VERSION"),
+                r.kept
+            );
+        }
     }
 
     if let Some(mgr) = manager_of(&probe) {
@@ -233,8 +251,36 @@ pub fn uninstall(yes: bool) -> Result<i32> {
         return Ok(1);
     }
     std::fs::write(&rc, after).with_context(|| format!("writing {}", rc.display()))?;
+    // "Removes exactly what install added": a seeded theme file the
+    // operator EDITED is no longer what install added — it stays.
+    if let Some(dir) = crate::config::themes_dir() {
+        let removed = remove_pristine_themes(&dir);
+        if removed > 0 {
+            println!(
+                "removed {removed} unedited theme file(s) from {}",
+                dir.display()
+            );
+        }
+    }
     println!("uninstalled. Running shells keep the shim until they exit (`clicue-off` disables it live).");
     Ok(0)
+}
+
+/// Delete seeded theme files whose fingerprint is intact — unedited by
+/// the operator, whichever clicue version wrote them; edited files are
+/// operator data and stay. The directory itself goes too once empty.
+pub fn remove_pristine_themes(dir: &std::path::Path) -> usize {
+    let mut removed = 0;
+    for name in crate::theme::builtin_names() {
+        let path = dir.join(format!("{name}.toml"));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if crate::theme::is_pristine(&content) && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir); // only succeeds when empty
+    removed
 }
 
 #[cfg(test)]
@@ -321,5 +367,41 @@ mod tests {
         let d = render_diff(Path::new("/tmp/rc"), before, &after);
         assert!(d.contains(&format!("+ {INSTALL_LINE}")));
         assert!(!d.contains("- a"));
+    }
+    #[test]
+    fn uninstall_removes_only_pristine_theme_files() {
+        // Review #21: the one destructive path over the operator's config
+        // directory, pinned in all four behaviours.
+        let dir = std::env::temp_dir().join(format!("clicue-uninstall-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        let r = crate::theme::sync_all(&dir);
+        assert!(r.seeded > 0);
+        // one edited seed, one operator file that was never seeded
+        let edited = dir.join("aura.toml");
+        let mut c = std::fs::read_to_string(&edited).unwrap();
+        c.push_str("# my tweak\n");
+        std::fs::write(&edited, c).unwrap();
+        std::fs::write(
+            dir.join("mine.toml"),
+            "[palette]\naccent = \"fg=#123456\"\n",
+        )
+        .unwrap();
+        let removed = remove_pristine_themes(&dir);
+        assert_eq!(removed, crate::theme::builtin_names().len() - 1);
+        assert!(edited.exists(), "an edited file is operator data");
+        assert!(
+            dir.join("mine.toml").exists(),
+            "a never-seeded file is untouchable"
+        );
+        assert!(dir.exists(), "a non-empty directory stays");
+        // all-pristine directory disappears entirely
+        std::fs::remove_file(&edited).unwrap();
+        std::fs::remove_file(dir.join("mine.toml")).unwrap();
+        crate::theme::sync_all(&dir);
+        remove_pristine_themes(&dir);
+        assert!(!dir.exists(), "an emptied directory goes too");
     }
 }

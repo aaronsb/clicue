@@ -1,0 +1,15 @@
+# clicue theme "dracula" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+
+glyph-set = "unicode-rounded"
+
+[palette]
+border = "fg=#bd93f9"
+accent = "fg=#50fa7b"
+text = "fg=#f8f8f2"
+gloss = "fg=#6272a4"
+hint = "fg=#6272a4"
+ghost = "fg=#6272a4"
+selected = "fg=#f8f8f2,bg=#44475a"
+match = "fg=#ff79c6,bold"

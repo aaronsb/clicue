@@ -1,0 +1,15 @@
+# clicue theme "monokai" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+
+glyph-set = "unicode-rounded"
+
+[palette]
+border = "fg=#75715e"
+accent = "fg=#a6e22e"
+text = "fg=#f8f8f2"
+gloss = "fg=#75715e"
+hint = "fg=#75715e"
+ghost = "fg=#75715e"
+selected = "fg=#f8f8f2,bg=#49483e"
+match = "fg=#f92672,bold"

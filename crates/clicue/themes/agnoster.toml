@@ -1,0 +1,16 @@
+# clicue theme "agnoster" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+
+glyph-set = "unicode-rounded"
+
+[palette]
+border = "fg=#8ad0f0"
+accent = "fg=#ffd700"
+text = "fg=#ffffff"
+gloss = "fg=#a8d8ee"
+hint = "fg=#74b4d4"
+ghost = "fg=#74b4d4"
+selected = "fg=#ffffff,bg=#0a84c1"
+match = "fg=#ffd700,bold"
+panel = "bg=#00506e"

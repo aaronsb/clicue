@@ -132,207 +132,52 @@ pub fn base() -> Theme {
     }
 }
 
-fn aura() -> Theme {
-    Theme {
-        name: "aura".into(),
-        palette: Palette {
-            border: "fg=#a277ff".into(),
-            accent: "fg=#61ffca".into(),
-            text: "fg=#edecee".into(),
-            gloss: "fg=#9692a8".into(),
-            hint: "fg=#6d6a7f".into(),
-            ghost: "fg=#6d6a7f".into(),
-            selected: "fg=#ffffff,bg=#3d375e".into(),
-            matched: "fg=#61ffca,bold".into(),
-            panel: String::new(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
+/// Every shipped theme except `base`, authored as the SAME TOML the
+/// operator edits and embedded at compile time — one representation per
+/// theme (T14). `base` alone stays in code: the fallback contract cannot
+/// depend on the parser it backstops. A test pins every entry as parsing
+/// and validating clean.
+const EMBEDDED: &[(&str, &str)] = &[
+    ("aura", include_str!("../themes/aura.toml")),
+    ("base", include_str!("../themes/base.toml")),
+    ("mono", include_str!("../themes/mono.toml")),
+    ("plain", include_str!("../themes/plain.toml")),
+    ("monokai", include_str!("../themes/monokai.toml")),
+    ("dracula", include_str!("../themes/dracula.toml")),
+    ("nord", include_str!("../themes/nord.toml")),
+    ("gruvbox", include_str!("../themes/gruvbox.toml")),
+    ("solarized", include_str!("../themes/solarized.toml")),
+    (
+        "solarized-light",
+        include_str!("../themes/solarized-light.toml"),
+    ),
+    ("tokyo-night", include_str!("../themes/tokyo-night.toml")),
+    ("catppuccin", include_str!("../themes/catppuccin.toml")),
+    ("agnoster", include_str!("../themes/agnoster.toml")),
+    ("chrome", include_str!("../themes/chrome.toml")),
+    ("solid-metal", include_str!("../themes/solid-metal.toml")),
+    ("valentine", include_str!("../themes/valentine.toml")),
+    ("halloween", include_str!("../themes/halloween.toml")),
+];
+
+/// The embedded template text for a shipped theme name.
+pub fn template(name: &str) -> Option<&'static str> {
+    EMBEDDED.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
 }
 
-fn mono() -> Theme {
-    Theme {
-        name: "mono".into(),
-        palette: Palette {
-            border: "fg=default".into(),
-            accent: "bold".into(),
-            text: "fg=default".into(),
-            gloss: "fg=#808080".into(),
-            hint: "fg=#808080".into(),
-            ghost: "fg=#808080".into(),
-            selected: "fg=white,bg=#444444".into(),
-            matched: "bold".into(),
-            panel: String::new(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
-}
-
-fn plain() -> Theme {
-    Theme {
-        name: "plain".into(),
-        palette: Palette {
-            border: "fg=blue".into(),
-            accent: "fg=cyan".into(),
-            text: "fg=default".into(),
-            gloss: "fg=default".into(),
-            hint: "fg=default".into(),
-            ghost: "fg=default".into(),
-            selected: "fg=white,bg=blue".into(),
-            matched: "fg=cyan,bold".into(),
-            panel: String::new(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_ascii(),
-    }
-}
-
+/// A shipped theme, parsed from its embedded template. `base` is special:
+/// the coded contract answers even if parsing itself were broken.
 pub fn builtin(name: &str) -> Option<Theme> {
-    match name {
-        "base" => Some(base()),
-        "aura" => Some(aura()),
-        "mono" => Some(mono()),
-        "plain" => Some(plain()),
-        "monokai" => Some(monokai()),
-        "dracula" => Some(dracula()),
-        "nord" => Some(nord()),
-        "gruvbox" => Some(gruvbox()),
-        "agnoster" => Some(agnoster()),
-        "chrome" => Some(chrome()),
-        _ => None,
+    if name == "base" {
+        return Some(base());
     }
+    template(name).and_then(|src| from_toml(name, src).ok())
 }
 
-pub fn builtin_names() -> &'static [&'static str] {
-    &[
-        "aura", "base", "mono", "plain", "monokai", "dracula", "nord", "gruvbox", "agnoster",
-        "chrome",
-    ]
-}
-
-fn monokai() -> Theme {
-    Theme {
-        name: "monokai".into(),
-        palette: Palette {
-            border: "fg=#75715e".into(),
-            accent: "fg=#a6e22e".into(),
-            text: "fg=#f8f8f2".into(),
-            gloss: "fg=#75715e".into(),
-            hint: "fg=#75715e".into(),
-            ghost: "fg=#75715e".into(),
-            selected: "fg=#f8f8f2,bg=#49483e".into(),
-            matched: "fg=#f92672,bold".into(),
-            panel: String::new(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
-}
-
-fn dracula() -> Theme {
-    Theme {
-        name: "dracula".into(),
-        palette: Palette {
-            border: "fg=#bd93f9".into(),
-            accent: "fg=#50fa7b".into(),
-            text: "fg=#f8f8f2".into(),
-            gloss: "fg=#6272a4".into(),
-            hint: "fg=#6272a4".into(),
-            ghost: "fg=#6272a4".into(),
-            selected: "fg=#f8f8f2,bg=#44475a".into(),
-            matched: "fg=#ff79c6,bold".into(),
-            panel: String::new(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
-}
-
-fn nord() -> Theme {
-    Theme {
-        name: "nord".into(),
-        palette: Palette {
-            border: "fg=#81a1c1".into(),
-            accent: "fg=#88c0d0".into(),
-            text: "fg=#eceff4".into(),
-            gloss: "fg=#616e88".into(),
-            hint: "fg=#616e88".into(),
-            ghost: "fg=#616e88".into(),
-            selected: "fg=#eceff4,bg=#434c5e".into(),
-            matched: "fg=#a3be8c,bold".into(),
-            panel: String::new(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
-}
-
-fn gruvbox() -> Theme {
-    Theme {
-        name: "gruvbox".into(),
-        palette: Palette {
-            border: "fg=#d79921".into(),
-            accent: "fg=#b8bb26".into(),
-            text: "fg=#ebdbb2".into(),
-            gloss: "fg=#928374".into(),
-            hint: "fg=#928374".into(),
-            ghost: "fg=#928374".into(),
-            selected: "fg=#ebdbb2,bg=#504945".into(),
-            matched: "fg=#fabd2f,bold".into(),
-            panel: String::new(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
-}
-
-/// The panel showcase: powerline-segment blues, card on its own ground.
-fn agnoster() -> Theme {
-    Theme {
-        name: "agnoster".into(),
-        palette: Palette {
-            border: "fg=#8ad0f0".into(),
-            accent: "fg=#ffd700".into(),
-            text: "fg=#ffffff".into(),
-            gloss: "fg=#a8d8ee".into(),
-            hint: "fg=#74b4d4".into(),
-            ghost: "fg=#74b4d4".into(),
-            selected: "fg=#ffffff,bg=#0a84c1".into(),
-            matched: "fg=#ffd700,bold".into(),
-            panel: "bg=#00506e".into(),
-            border_gradient: Vec::new(),
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
-}
-
-/// The gradient showcase: horizontal borders sweep dark→bright→dark,
-/// which the eye reads as brushed metal under a light.
-fn chrome() -> Theme {
-    Theme {
-        name: "chrome".into(),
-        palette: Palette {
-            border: "fg=#9ca3af".into(),
-            accent: "fg=#ffffff,bold".into(),
-            text: "fg=#e5e7eb".into(),
-            gloss: "fg=#9ca3af".into(),
-            hint: "fg=#6b7280".into(),
-            ghost: "fg=#6b7280".into(),
-            selected: "fg=#f9fafb,bg=#374151".into(),
-            matched: "fg=#ffffff,bold".into(),
-            panel: String::new(),
-            border_gradient: vec![
-                "#4b5563".into(),
-                "#d1d5db".into(),
-                "#f9fafb".into(),
-                "#9ca3af".into(),
-                "#374151".into(),
-            ],
-        },
-        glyphs: glyphs_unicode_rounded(),
-    }
+pub fn builtin_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = EMBEDDED.iter().map(|(n, _)| *n).collect();
+    names.sort_unstable();
+    names
 }
 
 // ── TOML theme files ─────────────────────────────────────────────────────
@@ -529,41 +374,196 @@ pub fn from_toml(name: &str, src: &str) -> Result<Theme, Vec<String>> {
     merge(name, file)
 }
 
-/// Resolve a theme by name: builtins first, then `<dir>/<name>.toml`.
-/// Never fails: any problem returns the base plus messages naming it —
-/// the operator must be able to tell WHICH theme they are looking at (T3).
+/// Resolve a theme by name — the FILE first (T14): `<dir>/<name>.toml` is
+/// what the operator edits and what install seeded; the embedded template
+/// is the fallback and regeneration source, never a shadow over an edit.
+/// Never fails: any problem returns a working theme plus messages naming
+/// it — the operator must be able to tell WHICH theme they are looking at
+/// (T3). A broken FILE for a shipped name falls back to that shipped
+/// theme (closer to intent than base), and is never rewritten: mid-edit
+/// is its normal cause and live reload its normal observer.
 pub fn load(name: &str, themes_dir: Option<&Path>) -> (Theme, Vec<String>) {
+    if let Some(dir) = themes_dir {
+        let path = dir.join(format!("{name}.toml"));
+        match std::fs::read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                // An unreadable file (EACCES, EISDIR…) is broken in every
+                // sense that matters to the operator: the edits they make
+                // to it have no effect, so the fallback must be NAMED
+                // exactly like a parse failure (review #21).
+                let mut errs = vec![format!(
+                    "theme '{name}': {} unreadable ({e})",
+                    path.display()
+                )];
+                return match builtin(name) {
+                    Some(t) => {
+                        errs.push(format!("'{name}': using the built-in"));
+                        (t, errs)
+                    }
+                    None => {
+                        errs.push(format!("'{name}': using base"));
+                        (base(), errs)
+                    }
+                };
+            }
+            Ok(src) => {
+                return match from_toml(name, &src) {
+                    Ok(t) => (t, Vec::new()),
+                    Err(mut errs) => match builtin(name) {
+                        Some(t) => {
+                            errs.push(format!(
+                            "theme '{name}': {} rejected — using the built-in (delete the file to regenerate it)",
+                            path.display()
+                        ));
+                            (t, errs)
+                        }
+                        None => {
+                            errs.push(format!("theme '{name}' rejected — using base"));
+                            (base(), errs)
+                        }
+                    },
+                }
+            }
+        }
+    }
     if let Some(t) = builtin(name) {
         return (t, Vec::new());
     }
-    let Some(dir) = themes_dir else {
-        return (
-            base(),
-            vec![format!(
-                "theme '{name}' not found (no themes directory) — using base"
-            )],
-        );
-    };
-    let path = dir.join(format!("{name}.toml"));
-    let src = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                base(),
-                vec![format!(
-                    "theme '{name}' not found at {} — using base",
-                    path.display()
-                )],
-            )
-        }
-    };
-    match from_toml(name, &src) {
-        Ok(t) => (t, Vec::new()),
-        Err(mut errs) => {
-            errs.push(format!("theme '{name}' rejected — using base"));
-            (base(), errs)
+    (
+        base(),
+        vec![format!("theme '{name}' not found — using base")],
+    )
+}
+
+/// Provenance line a seeded file opens with, and the fingerprint line it
+/// closes with. The fingerprint (FNV-1a over everything above it) is the
+/// pristine test: intact means never hand-edited, WHATEVER clicue version
+/// wrote it — which is what lets `clicue install` update old unedited
+/// files without being able to reconstruct old templates. The version is
+/// for humans and reporting; it decides nothing.
+const SEED_PREFIX: &str = "# seeded by clicue v";
+const FINGERPRINT_PREFIX: &str = "# template-fingerprint: ";
+
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// What a seeded file contains for this template, today.
+fn seeded_content(template: &str) -> String {
+    let body = format!("{SEED_PREFIX}{}\n{template}", env!("CARGO_PKG_VERSION"));
+    format!(
+        "{body}{FINGERPRINT_PREFIX}{:016x}\n",
+        fnv64(body.as_bytes())
+    )
+}
+
+/// Everything above the fingerprint line, and the fingerprint if present.
+fn split_fingerprint(content: &str) -> (String, Option<u64>) {
+    let mut body = String::new();
+    let mut fp = None;
+    for line in content.lines() {
+        if let Some(hex) = line.strip_prefix(FINGERPRINT_PREFIX) {
+            fp = u64::from_str_radix(hex.trim(), 16).ok();
+        } else {
+            body.push_str(line);
+            body.push('\n');
         }
     }
+    (body, fp)
+}
+
+/// Intact fingerprint = never hand-edited. Version-independent: an old
+/// binary's seed passes under a new binary, which is the whole point.
+pub fn is_pristine(content: &str) -> bool {
+    let (body, fp) = split_fingerprint(content);
+    fp == Some(fnv64(body.as_bytes()))
+}
+
+/// The template portion of a seeded file: body minus the seed header.
+fn seeded_template(content: &str) -> String {
+    let (body, _) = split_fingerprint(content);
+    body.lines()
+        .filter(|l| !l.starts_with(SEED_PREFIX))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// Atomic seed write (tmp + rename, the corpus writer's rule): the
+/// daemon's reloader and another process's CLI may read while a seed
+/// lands, and a torn TOML would parse as a broken theme.
+fn seed_file(dir: &Path, name: &str, template: &str) -> bool {
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = dir.join(format!(".{name}.toml.tmp.{}", std::process::id()));
+    if std::fs::write(&tmp, seeded_content(template)).is_err() {
+        return false;
+    }
+    let ok = std::fs::rename(&tmp, dir.join(format!("{name}.toml"))).is_ok();
+    if !ok {
+        // Debris in a directory operators browse and the reloader watches.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    ok
+}
+
+/// `load`, plus the regeneration half of T14: a MISSING file whose name
+/// is a shipped theme is written back from the template before loading,
+/// so the file is always the thing actually read and deleting it is the
+/// reset-to-default gesture. An existing file is never written, however
+/// broken. Best-effort: an unwritable directory just means the embedded
+/// template serves directly.
+pub fn load_or_seed(name: &str, themes_dir: Option<&Path>) -> (Theme, Vec<String>) {
+    if let Some(dir) = themes_dir {
+        if let Some(tpl) = template(name) {
+            if !dir.join(format!("{name}.toml")).exists() {
+                seed_file(dir, name, tpl);
+            }
+        }
+    }
+    load(name, themes_dir)
+}
+
+/// What one `clicue install` (or reinstall) did to the themes directory.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SyncReport {
+    /// Written where no file existed (first install, or restoring a
+    /// mistaken deletion — reinstall is the recovery gesture).
+    pub seeded: usize,
+    /// Unedited files rewritten to the current template.
+    pub updated: usize,
+    /// Hand-edited files left exactly as they are.
+    pub kept: usize,
+}
+
+/// Bring the themes directory up to this binary's templates: seed what is
+/// missing, update what is pristine, keep every edit (T14).
+pub fn sync_all(dir: &Path) -> SyncReport {
+    let mut r = SyncReport::default();
+    for (name, tpl) in EMBEDDED {
+        let path = dir.join(format!("{name}.toml"));
+        match std::fs::read_to_string(&path) {
+            Err(_) => {
+                if seed_file(dir, name, tpl) {
+                    r.seeded += 1;
+                }
+            }
+            Ok(existing) => {
+                if !is_pristine(&existing) {
+                    r.kept += 1;
+                } else if seeded_template(&existing) != *tpl && seed_file(dir, name, tpl) {
+                    // Template changed (not merely the version line):
+                    // an unedited file follows the binary.
+                    r.updated += 1;
+                }
+            }
+        }
+    }
+    r
 }
 
 /// Names an operator can switch to: builtins plus installed TOML files.
@@ -575,6 +575,12 @@ pub fn available(themes_dir: Option<&Path>) -> Vec<String> {
                 let p = e.path();
                 if p.extension().and_then(|x| x.to_str()) == Some("toml") {
                     if let Some(stem) = p.file_stem().and_then(|x| x.to_str()) {
+                        // Editor artifacts are dotfiles with our extension
+                        // (emacs lock `.#aura.toml` stems to `.#aura`) —
+                        // live editing must not mint themes (review #21).
+                        if stem.starts_with('.') {
+                            continue;
+                        }
                         if !names.iter().any(|n| n == stem) {
                             names.push(stem.to_string());
                         }
@@ -606,6 +612,33 @@ fn parse_hex(s: &str) -> Option<(f32, f32, f32)> {
 /// frame for no visible gain at card widths. Offsets are relative to the
 /// row start; the caller shifts them. Invalid stops yield no spans (the
 /// flat border style stays underneath).
+/// Piecewise-linear interpolation along parsed stops at t ∈ [0,1].
+fn lerp_stops(rgb: &[(f32, f32, f32)], t: f32) -> String {
+    let x = t.clamp(0.0, 1.0) * (rgb.len() - 1) as f32;
+    let i = (x.floor() as usize).min(rgb.len() - 2);
+    let f = x - i as f32;
+    let (r0, g0, b0) = rgb[i];
+    let (r1, g1, b1) = rgb[i + 1];
+    let (r, g, b) = (
+        (r0 + (r1 - r0) * f).round() as u8,
+        (g0 + (g1 - g0) * f).round() as u8,
+        (b0 + (b1 - b0) * f).round() as u8,
+    );
+    format!("fg=#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Colour at position t along the stop list — the same interpolation
+/// gradient_segments applies, exposed for consumers that sample by
+/// ordinal rather than row position (the swatch, T13: six border glyphs
+/// carry the whole sweep compressed, or they carry only its dark ends).
+pub(crate) fn gradient_at(stops: &[String], t: f32) -> Option<String> {
+    if stops.len() < 2 {
+        return None;
+    }
+    let rgb: Option<Vec<(f32, f32, f32)>> = stops.iter().map(|s| parse_hex(s)).collect();
+    Some(lerp_stops(&rgb?, t))
+}
+
 pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, String)> {
     if width == 0 || stops.len() < 2 {
         return Vec::new();
@@ -626,17 +659,7 @@ pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, S
         } else {
             mid / (width - 1) as f32
         };
-        let x = t * (rgb.len() - 1) as f32;
-        let i = (x.floor() as usize).min(rgb.len() - 2);
-        let f = x - i as f32;
-        let (r0, g0, b0) = rgb[i];
-        let (r1, g1, b1) = rgb[i + 1];
-        let (r, g, b) = (
-            (r0 + (r1 - r0) * f).round() as u8,
-            (g0 + (g1 - g0) * f).round() as u8,
-            (b0 + (b1 - b0) * f).round() as u8,
-        );
-        let style = format!("fg=#{r:02x}{g:02x}{b:02x}");
+        let style = lerp_stops(&rgb, t);
         // coalesce equal neighbours (flat stretches of the gradient)
         match out.last_mut() {
             Some(last) if last.2 == style => last.1 = end,
@@ -708,24 +731,97 @@ fn style_to_ansi(style: &str) -> String {
 }
 
 /// One line of theme, in the theme's own colours: enough to choose from
-/// a list without running a full preview per name.
+/// a list without running a full preview per name. Drawn in the theme's
+/// FULL ground (T13): a panel theme's swatch sits on its panel and a
+/// gradient theme's border glyphs sweep, exactly as the card will — a
+/// black swatch for a solid-blue theme misinforms the one choice the
+/// swatch exists to serve.
 pub fn swatch(t: &Theme) -> String {
-    let r = "\x1b[0m";
-    let a = |s: &str| style_to_ansi(s);
-    let g = &t.glyphs;
     let p = &t.palette;
-    format!(
-        "  {:<8} {}{}{}{}{r} {}{}{r} {}gi{r}{}t{r}  {}the stupid content tracker{r}  {}t status{r}  {}Tab cycle{r} {}{}{}{}{r}",
-        t.name,
-        a(&p.border), g.tl, g.h, g.h,
-        a(&p.accent), g.sel,
-        a(&p.matched), a(&p.text),
-        a(&p.gloss),
-        a(&p.ghost),
-        a(&p.hint),
-        a(&p.border), g.h, g.h, g.tr,
-        r = r,
-    )
+    let g = &t.glyphs;
+    // (text, style, is_border) — border chars take the per-char gradient.
+    let segs: Vec<(String, &str, bool)> = vec![
+        (format!("{}{}{}", g.tl, g.h, g.h), &p.border, true),
+        (" ".into(), "", false),
+        (g.sel.clone(), &p.accent, false),
+        (" ".into(), "", false),
+        ("gi".into(), &p.matched, false),
+        ("t".into(), &p.text, false),
+        ("  ".into(), "", false),
+        ("the stupid content tracker".into(), &p.gloss, false),
+        ("  ".into(), "", false),
+        ("t status".into(), &p.ghost, false),
+        ("  ".into(), "", false),
+        ("Tab cycle".into(), &p.hint, false),
+        (" ".into(), "", false),
+        (format!("{}{}{}", g.h, g.h, g.tr), &p.border, true),
+    ];
+    // The gradient sampled by BORDER ORDINAL, not row position (T13): the
+    // swatch's border is six glyphs in a sixty-column line, and indexing
+    // by row position samples only t≈0 and t≈1 — three near-identical
+    // dark greys where the theme's whole point is the bright mid-sweep
+    // (review #21, measured). Six glyphs carry the sweep compressed; the
+    // card's own border rows span the full width and need no compression.
+    let nborder: usize = segs
+        .iter()
+        .filter(|(_, _, b)| *b)
+        .map(|(s, _, _)| s.chars().count())
+        .sum();
+    // The renderer's own grounding rule (layout panel merge): the panel's
+    // bg under every style that lacks one, and under the bare gaps. (The
+    // renderer lays the WHOLE panel string as the base span; only the
+    // bg= part matters here because every shipped panel is a lone bg= —
+    // a panel carrying extra attributes would ground the card, not the
+    // swatch gaps.)
+    let bg = p
+        .panel
+        .split(',')
+        .find(|part| part.trim_start().starts_with("bg="))
+        .unwrap_or(&p.panel)
+        .trim();
+    let ground = |style: &str| -> String {
+        if p.panel.is_empty() {
+            style.to_string()
+        } else if style.is_empty() {
+            bg.to_string()
+        } else if style.contains("bg=") {
+            style.to_string()
+        } else {
+            format!("{style},{bg}")
+        }
+    };
+    // Operator file stems become theme names: strip control characters
+    // (an escape sequence in a filename must not reach the terminal raw)
+    // and pad by COLUMNS, the T6 discipline.
+    let name: String = t.name.chars().filter(|c| !c.is_control()).collect();
+    let pad = 17usize.saturating_sub(cols(&name)).max(1);
+    let mut out = format!("  {name}{}", " ".repeat(pad));
+    let mut bi = 0usize;
+    for (text, style, is_border) in &segs {
+        if *is_border && p.border_gradient.len() >= 2 {
+            for ch in text.chars() {
+                let tpos = if nborder <= 1 {
+                    0.0
+                } else {
+                    bi as f32 / (nborder - 1) as f32
+                };
+                let st = gradient_at(&p.border_gradient, tpos).unwrap_or_else(|| style.to_string());
+                out.push_str("\x1b[0m");
+                out.push_str(&style_to_ansi(&ground(&st)));
+                out.push(ch);
+                bi += 1;
+            }
+        } else {
+            out.push_str("\x1b[0m");
+            out.push_str(&style_to_ansi(&ground(style)));
+            out.push_str(text);
+            if *is_border {
+                bi += text.chars().count();
+            }
+        }
+    }
+    out.push_str("\x1b[0m");
+    out
 }
 
 /// Render a sample card with this theme at the given width, ANSI-coloured.
@@ -808,12 +904,184 @@ mod tests {
         }
     }
 
+    fn temp_themes(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("clicue-themes-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Parallel tests race bind()'s process-global umask window, which
+        // can strip the search bit from a dir created inside it. Assert
+        // the mode explicitly rather than trusting creation-time.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        dir
+    }
+
+    #[test]
+    fn every_embedded_template_parses_and_validates() {
+        // T14: the template IS the theme — an embedded file that fails to
+        // parse would ship a theme that silently degrades to base.
+        for (name, src) in EMBEDDED {
+            let t = from_toml(name, src)
+                .unwrap_or_else(|e| panic!("{name}: embedded template broken: {e:?}"));
+            assert!(validate(&t).is_empty(), "{name} failed validation");
+        }
+    }
+
+    #[test]
+    fn coded_base_and_its_template_agree() {
+        // base is the one theme in code (the fallback contract cannot
+        // depend on the parser it backstops) — its template must not
+        // drift from it.
+        let t = from_toml("base", template("base").unwrap()).unwrap();
+        assert_eq!(
+            t,
+            base(),
+            "themes/base.toml drifted from the coded contract"
+        );
+    }
+
+    #[test]
+    fn seeded_files_regenerate_update_and_respect_edits() {
+        let dir = temp_themes("sync");
+        // A missing file regenerates on load (delete = reset).
+        let (t, msgs) = load_or_seed("nord", Some(&dir));
+        assert!(msgs.is_empty());
+        assert_eq!(t, builtin("nord").unwrap());
+        let path = dir.join("nord.toml");
+        let seeded = std::fs::read_to_string(&path).unwrap();
+        assert!(is_pristine(&seeded), "fresh seed must self-verify");
+        assert!(seeded.starts_with(SEED_PREFIX), "provenance line missing");
+        // sync tops up the rest, touches nothing twice.
+        let r = sync_all(&dir);
+        assert_eq!(r.seeded, EMBEDDED.len() - 1);
+        assert_eq!(
+            sync_all(&dir),
+            SyncReport::default(),
+            "second sync is a no-op"
+        );
+        // An OLD pristine seed (different template, intact fingerprint)
+        // updates — the version-skew case a byte-compare cannot handle.
+        let old_body = format!("{SEED_PREFIX}0.0.1\n# some previous template\n");
+        let old = format!(
+            "{old_body}{FINGERPRINT_PREFIX}{:016x}\n",
+            fnv64(old_body.as_bytes())
+        );
+        std::fs::write(&path, &old).unwrap();
+        let r = sync_all(&dir);
+        assert_eq!((r.updated, r.kept), (1, 0), "pristine old seed must update");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            seeded_content(template("nord").unwrap())
+        );
+        // An EDIT (fingerprint broken) is kept, forever.
+        let edited = seeded.replace("#81a1c1", "#123456");
+        std::fs::write(&path, &edited).unwrap();
+        assert!(!is_pristine(&edited));
+        let r = sync_all(&dir);
+        assert_eq!((r.updated, r.kept), (0, 1), "edited file must be kept");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_file_shadows_the_builtin() {
+        let dir = temp_themes("shadow");
+        std::fs::write(
+            dir.join("aura.toml"),
+            "glyph-set = \"unicode-rounded\"\n[palette]\naccent = \"fg=#123456\"\n",
+        )
+        .unwrap();
+        let (t, msgs) = load("aura", Some(&dir));
+        assert!(msgs.is_empty());
+        assert_eq!(t.palette.accent, "fg=#123456", "edit must win over builtin");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_file_falls_back_to_the_builtin_untouched() {
+        // Mid-edit is the broken file's normal cause: fall back to the
+        // BUILTIN (closer to intent than base), never rewrite the file.
+        let dir = temp_themes("broken");
+        let garbage = "glyph-set = \"unicode-rounded\"\n[palette]\naccent = \"\"\n";
+        std::fs::write(dir.join("dracula.toml"), garbage).unwrap();
+        let (t, msgs) = load("dracula", Some(&dir));
+        assert_eq!(t, builtin("dracula").unwrap());
+        assert!(!msgs.is_empty(), "the problem must be named");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("dracula.toml")).unwrap(),
+            garbage,
+            "a broken file must never be rewritten"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn swatch_draws_in_the_themes_ground() {
+        // T13: agnoster's panel is #00506e — the swatch must carry that bg,
+        // and a panel-less theme must carry none.
+        let s = swatch(&builtin("agnoster").unwrap());
+        assert!(s.contains("48;2;0;80;110"), "panel bg missing: {s:?}");
+        let s = swatch(&builtin("aura").unwrap());
+        assert!(
+            !s.contains("48;2;"),
+            "aura has no panel, swatch invented one"
+        );
+    }
+
+    #[test]
+    fn gradient_swatch_carries_the_whole_sweep() {
+        // Review #21: indexing by row position sampled only the dark ends
+        // (t≈0.02, t≈0.99) — the bright mid-sweep, the theme's point,
+        // never appeared. Pinned per glyph: border glyph i of 6 must wear
+        // exactly the colour at t = i/5.
+        let t = builtin("chrome").unwrap();
+        let s = swatch(&t);
+        for i in 0..6 {
+            let tpos = i as f32 / 5.0;
+            let expect = style_to_ansi(&gradient_at(&t.palette.border_gradient, tpos).unwrap());
+            assert!(
+                s.contains(&expect),
+                "border glyph {i} missing its sweep colour {expect:?} in {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_file_is_named_not_silently_shadowed() {
+        // Review #21: EACCES fell through to the builtin with no message —
+        // the operator edits a file that has no effect and is told nothing.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_themes("perm");
+        let path = dir.join("nord.toml");
+        std::fs::write(&path, "x = 1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (t, msgs) = load("nord", Some(&dir));
+        assert_eq!(t, builtin("nord").unwrap());
+        assert!(!msgs.is_empty(), "the problem must be named");
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn editor_artifacts_are_not_themes() {
+        // Review #21, measured: emacs lock `.#aura.toml` stems to `.#aura`
+        // and passed the extension filter into the theme list.
+        let dir = temp_themes("locks");
+        std::fs::write(dir.join(".#aura.toml"), "junk").unwrap();
+        let names = available(Some(&dir));
+        assert!(
+            names.iter().all(|n| !n.starts_with('.')),
+            "artifact minted a theme: {names:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn base_is_terminal_default_not_aura() {
         // T4: the prototype shipped a base byte-identical to aura's hexes.
         let b = base();
         assert!(!b.palette.border.contains('#'));
-        assert_ne!(b.palette, aura().palette);
+        assert_ne!(b.palette, builtin("aura").unwrap().palette);
     }
 
     #[test]

@@ -65,3 +65,47 @@ daemon; `clicue theme` lists, sets, and previews.
   scalar because zsh's pad flags do not expand subscripted parameters —
   only `${(pl:n::$var:)}` works. [MEASURED] The daemon renders; this dies.
   (theme.zsh:70–81)
+- T13 [domain] The list swatch is drawn in the theme's FULL ground: a panel
+  theme's swatch sits on its panel (the renderer's own grounding rule —
+  panel bg under every style without one, gaps included), and a gradient
+  theme's borders sweep. The sweep is indexed by border ORDINAL, not row
+  position: the swatch's border is six glyphs in a sixty-column line, and
+  positional indexing samples only the dark ends — the bright mid-sweep,
+  the theme's whole point, never appears (review #21, measured). Six
+  glyphs carry the sweep compressed; positional fidelity with the card is
+  deliberately traded for showing the gradient at all. A black swatch for
+  a solid-blue theme (the 2026-08-03 report) misinforms the one choice
+  the swatch exists to serve.
+- T14 [domain] Themes are FILES, with ONE representation each: every
+  shipped theme is authored as the same TOML the operator edits, embedded
+  in the binary at compile time (`themes/*.toml`, `include_str!`), and
+  parsed by the same loader as user files. `base` alone stays in code —
+  the fallback contract cannot depend on the parser it backstops — and a
+  test pins its template equal to the coded contract. Resolution order:
+  `<themes>/<name>.toml` first, embedded template second, base last — the
+  file is what the operator edits (live, via the S7 reloader), the
+  template is the fallback and regeneration source, never a shadow over
+  an edit. A MISSING file whose name is shipped regenerates on load
+  (`load_or_seed`): deleting a theme file is the reset-to-default
+  gesture, and reinstalling restores a mistaken deletion. A BROKEN file
+  is never rewritten — mid-edit is its normal cause and live reload its
+  normal observer — and falls back to the shipped theme of the same name,
+  messages naming the file. Seeded files carry two machine lines: a
+  version provenance header (`# seeded by clicue vX.Y.Z`, for humans and
+  reporting) and a fingerprint footer (FNV-1a over everything above it) —
+  the fingerprint, not the version, is the pristine test, so "unedited"
+  survives version skew: an old binary's seed is recognized by a new one
+  without reconstructing old templates. `clicue install` syncs: seeds
+  what is missing, updates pristine files whose template changed, keeps
+  every edit forever; uninstall removes only pristine files — an edited
+  file is operator data, not something install added. Dotfiles are
+  invisible end to end: not themes (an emacs lock `.#aura.toml` stems to
+  `.#aura` and passed an extension-only filter), not watched (live-edit
+  artifacts and dot-named seed tmp files must not churn engine swaps —
+  this also closes the second self-trigger path S7's reasoning did not
+  enumerate). An UNREADABLE file is broken in every sense that matters —
+  the operator's edits have no effect — and is named exactly like a parse
+  failure, never silently shadowed. The tool surface must not contradict
+  the fallback: `theme set` on a broken-but-shipped name says the
+  fallback is serving, and `theme list` marks the swatch it drew from a
+  fallback.

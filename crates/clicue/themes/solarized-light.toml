@@ -1,0 +1,18 @@
+# clicue theme "solarized-light" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+
+glyph-set = "unicode-rounded"
+
+[palette]
+# border brightened from the upstream palette: the card outline must clear
+# ~3:1 against the panel or the box disappears into its own ground (review #21).
+border = "fg=#657b83"
+accent = "fg=#268bd2"
+text = "fg=#073642"
+gloss = "fg=#93a1a1"
+hint = "fg=#93a1a1"
+ghost = "fg=#93a1a1"
+selected = "fg=#002b36,bg=#eee8d5"
+match = "fg=#cb4b16,bold"
+panel = "bg=#fdf6e3"
