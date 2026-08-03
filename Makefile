@@ -5,7 +5,7 @@
 
 CARGO ?= cargo
 
-.PHONY: build release test check fmt clippy proto-test install clean help
+.PHONY: build release test check e2e fmt clippy proto-test install clean help
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -20,6 +20,9 @@ test: ## Rust tests
 	$(CARGO) test
 
 check: fmt clippy test ## Everything CI would run
+
+e2e: build ## Sandboxed pty scenarios: real shell, real daemon, real keys
+	zsh tests/run.zsh
 
 fmt: ## Formatting check
 	$(CARGO) fmt --all --check
