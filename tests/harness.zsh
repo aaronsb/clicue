@@ -31,7 +31,10 @@ typeset -g PTY_OUT=''            # everything drained since last reset
 typeset -g T_SANDBOX=''          # this scenario's sandbox dir
 typeset -g T_STATUS=0
 typeset -gi T_DAEMON_PID=0
-typeset -g CLICUE_BIN=${CLICUE_BIN:-$T_ROOT/../target/debug/clicue}
+# :A canonicalizes — compinit's full rehash resolves a path entry with
+# `..` in it to the WRONG binary (the installed one shadowed the build
+# under test in every scenario until this bit) [MEASURED].
+typeset -g CLICUE_BIN=${${CLICUE_BIN:-$T_ROOT/../target/debug/clicue}:A}
 
 # Cleanup runs on EVERY exit path — a failed pty_start or an aborted
 # scenario must not leak its daemon or sandbox.
@@ -72,6 +75,16 @@ pty_start() {
   path=( ${CLICUE_BIN:h} $path )
   zpty clicue_pty 'zsh -i'
   pty_drain 1.5
+  # Integrity gate: the pty MUST resolve `clicue` to the binary under
+  # test — a wrong resolution invalidates every assertion after it.
+  PTY_OUT=''
+  zpty -w clicue_pty ' print "T-BIN=$(whence -p clicue)"'
+  pty_drain 0.5
+  t_plain "$PTY_OUT"
+  if [[ $REPLY != *"T-BIN=$CLICUE_BIN"* ]]; then
+    print -u2 "sandbox shell resolves the wrong clicue (want $CLICUE_BIN); got: ${REPLY##*T-BIN=}"
+    exit 2
+  fi
   PTY_OUT=''
 }
 

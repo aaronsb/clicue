@@ -18,6 +18,13 @@ use anyhow::{bail, Context, Result};
 pub const INSTALL_LINE: &str = r#"eval "$(clicue init zsh)""#;
 /// Marker comment so uninstall can also remove an annotated line.
 pub const MARKER: &str = "# clicue — live command guidance (managed by `clicue install`)";
+/// compinit, added ONLY when the probed shell never ran it (stock macOS
+/// zshrc, fresh zsh): the compsys bridge needs _main_complete, and a
+/// doctor warning alone leaves a stock install half-working with no
+/// visible reason. Tagged so uninstall removes exactly this line and
+/// never a compinit the operator wrote themselves.
+pub const COMPINIT_LINE: &str =
+    "autoload -Uz compinit && compinit -i   # clicue: flag harvesting needs compsys";
 
 /// Which rc file owns the shim line: `$ZDOTDIR/.zshrc` when ZDOTDIR is
 /// set in the probed shell, else `~/.zshrc`.
@@ -32,8 +39,9 @@ pub fn installed_in(text: &str) -> bool {
     })
 }
 
-/// Appended block: marker + line, separated from existing content.
-pub fn with_line_appended(text: &str) -> String {
+/// Appended block: marker (+ compinit when the shell lacks it) + line,
+/// separated from existing content.
+pub fn with_line_appended(text: &str, add_compinit: bool) -> String {
     let mut out = text.to_string();
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
@@ -43,6 +51,10 @@ pub fn with_line_appended(text: &str) -> String {
     }
     out.push_str(MARKER);
     out.push('\n');
+    if add_compinit {
+        out.push_str(COMPINIT_LINE);
+        out.push('\n');
+    }
     out.push_str(INSTALL_LINE);
     out.push('\n');
     out
@@ -58,6 +70,9 @@ pub fn with_line_removed(text: &str) -> String {
         }
         if !t.starts_with('#') && t.contains("clicue init zsh") {
             continue;
+        }
+        if t == COMPINIT_LINE {
+            continue; // ours, by exact spelling — never a hand-written compinit
         }
         out.push(l);
     }
@@ -180,7 +195,10 @@ pub fn install(opts: &InstallOpts) -> Result<i32> {
         );
         return Ok(0);
     }
-    let after = with_line_appended(&before);
+    // compinit=0 in the probe means the loaded shell has no compsys —
+    // the stock-zshrc case; the block carries its own fix.
+    let add_compinit = probe.get("compinit").map(|v| v != "1").unwrap_or(true);
+    let after = with_line_appended(&before, add_compinit);
     println!("{}", render_diff(&rc, &before, &after));
     if !opts.yes && !confirm(&format!("append to {}?", rc.display()))? {
         println!("nothing written.");
@@ -223,13 +241,34 @@ pub fn uninstall(yes: bool) -> Result<i32> {
 mod tests {
     use super::*;
 
+    /// Removal matches this literal by exact spelling: changing it
+    /// orphans the compinit lines OLDER versions wrote into rc files —
+    /// which, unlike an orphaned marker, changes shell behavior. A
+    /// respelling requires a removal migration for the old form.
+    #[test]
+    fn compinit_line_literal_is_the_on_disk_contract() {
+        assert_eq!(
+            COMPINIT_LINE,
+            "autoload -Uz compinit && compinit -i   # clicue: flag harvesting needs compsys"
+        );
+        // -i: skip insecure dirs silently instead of prompting at every
+        // startup (Homebrew's group-writable share/zsh is the classic
+        // trigger; a doctor probe with stdin closed would abort on the
+        // prompt and misreport compinit=0 forever).
+        assert!(COMPINIT_LINE.contains("compinit -i"));
+    }
+
     #[test]
     fn append_is_idempotent_via_installed_in() {
         let rc = "export PATH=$PATH:/opt/bin\n";
         assert!(!installed_in(rc));
-        let once = with_line_appended(rc);
+        let once = with_line_appended(rc, false);
         assert!(installed_in(&once));
         assert!(once.contains(MARKER));
+        assert!(
+            !once.contains("compinit"),
+            "compsys-having shells get no compinit"
+        );
         assert!(once.ends_with('\n'));
         // a commented-out line does not count as installed
         let commented = format!("# {INSTALL_LINE}\n");
@@ -239,11 +278,16 @@ mod tests {
     #[test]
     fn remove_round_trips_to_original() {
         let rc = "# mine\nalias ll='ls -l'\n";
-        let installed = with_line_appended(rc);
+        let installed = with_line_appended(rc, true);
+        assert!(installed.contains(COMPINIT_LINE));
         let removed = with_line_removed(&installed);
         assert!(!installed_in(&removed));
         assert!(removed.contains("alias ll"));
         assert!(!removed.contains(MARKER));
+        assert!(!removed.contains("compinit"), "our compinit line goes too");
+        // an operator's own compinit spelling survives removal
+        let theirs = "autoload -Uz compinit\ncompinit -u\n";
+        assert_eq!(with_line_removed(theirs), theirs);
     }
 
     #[test]
@@ -273,7 +317,7 @@ mod tests {
     #[test]
     fn diff_shows_only_the_change() {
         let before = "a\nb\n";
-        let after = with_line_appended(before);
+        let after = with_line_appended(before, false);
         let d = render_diff(Path::new("/tmp/rc"), before, &after);
         assert!(d.contains(&format!("+ {INSTALL_LINE}")));
         assert!(!d.contains("- a"));
