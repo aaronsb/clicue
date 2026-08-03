@@ -9,6 +9,8 @@ switches to explaining what you have already typed, so `rm -rf` tells you what `
 and `-f` actually do, and how often you have run that exact invocation before.
 Choosing from the card composes the command; it never runs it.
 
+![clicue demo](docs/demo/clicue.gif)
+
 clicue is **not** a completion engine. zsh's compsys represents decades of work by
 many people, and clicue consumes its output rather than reimplementing it —
 candidates, argument positions and insertion semantics all come from compsys. What
@@ -19,26 +21,32 @@ about your own habits that no manual page knows.
 ## Quick start
 
 ```zsh
-# 1. build the description corpus (~3,400 glosses from installed man pages)
-zsh -i -c 'source /path/to/clicue/prototype/build-corpus.zsh'
-
-# 2. load it from your zsh config, AFTER any completion setup
-zstyle ':clicue:*' theme aura
-source /path/to/clicue/prototype/clicue.zsh
+cargo install --path crates/clicue   # or: make install
+clicue install                       # doctor-gated; appends ONE line to your zshrc
 ```
 
-`prototype/45-clicue.example` is a documented, known-working configuration — copy it
-into your `conf.d` and edit. **All `zstyle` settings must come before the `source`
-line**, because keys are bound at source time.
+`clicue install` probes your live shell first and refuses on genuine conflicts
+(zsh-autocomplete, a second card UI) with the reason named. On a stock zshrc it
+supplies everything it needs, including `compinit` if your shell never ran one. With
+a plugin manager (oh-my-zsh, zinit, antidote, zim) it prints where the line goes
+instead of editing. Open a new shell; the daemon auto-spawns on your first
+keystroke.
 
-Loading clicue costs ~5 ms; the corpus loads lazily on the first card, not at
-startup.
+Anything odd later: `clicue doctor` diagnoses the live shell — load-order fights,
+stolen key bindings, silent degradations — each finding with its severity and the
+concrete fix. `clicue uninstall` removes exactly what install added. `clicue-off`
+detaches the current shell only.
+
+Configuration lives in `~/.config/clicue/config.toml` and applies **live**: the
+daemon reloads within a second of any change, no restart, open shells keep their
+state. `clicue config` shows the effective result with provenance; `clicue config
+set <key> <value>` writes one value, validated before it lands.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| `Tab` | advance your position in the candidate space: cycle the primary card, or insert the cue when it is already the whole answer |
+| `Tab` | advance your position in the candidate space: cycle the primary card, or insert the cue when it is already the whole answer. In argument position, the first press also harvests the command's documented flags |
 | `↑` `↓` | walk the selection once you have started cycling; continues into the second box |
 | `←` `→` | jump a grid column; outside the grid, `→` accepts the ghost-text proposal |
 | `PgUp` `PgDn` | move by one visible page of the grid |
@@ -63,45 +71,41 @@ window when a list is worth the room.
 
 Unmodified `↑`/`↓` always reach command history. That is enforced in code, not merely
 intended. No bare printable character is ever bound — binding `q` as an alternate
-dismiss would break every command containing a q.
+dismiss would break every command containing a q. clicue binds **last** and captures
+whatever owned each key before it, delegating to that owner whenever the card is not
+engaged — so `Down` is still your history-substring-search on an empty line. If
+something in your rc rebinds a key *after* clicue, `clicue doctor` names it.
 
 ## Themes
 
 ```zsh
-zstyle ':clicue:*' theme aura    # default: rounded Unicode box drawing
-zstyle ':clicue:*' theme plain   # pure ASCII, for a font or TERM you cannot trust
-zstyle ':clicue:*' theme mono    # Unicode, but weight and dimming instead of hue
+clicue theme            # every theme as a one-line swatch, in its own colours
+clicue theme dracula    # set it — applies live, open shells included
+clicue theme preview chrome
 ```
 
-`clicue-theme <name>` switches without restarting; `clicue-theme` alone lists what is
-available. A theme owns colours and box glyphs and nothing else, and every key is
-validated at load — a theme that forgets one falls back to the built-in default
-rather than rendering a broken card. Themes are treated as an accessibility surface,
-not a skin: see design value 3 in [SPEC.md](SPEC.md).
+Ten built-ins: `aura` (default), `base` (pure ASCII, deliberately colourless — the
+renders-anywhere contract), `mono`, `plain`, `monokai`, `dracula`, `nord`,
+`gruvbox`, and two engine showcases — `agnoster` paints the card on its own solid
+background so it stands off the terminal, and `chrome` sweeps a gradient along the
+borders that reads as brushed metal.
+
+A theme owns colours and box glyphs and nothing else; every key is validated at load
+and a broken theme falls back to the built-in default rather than rendering a broken
+card. Custom themes are TOML files in `~/.config/clicue/themes/` — partial files are
+legal and merge over `base`; `panel = "bg=#…"` and `border-gradient = ["#…", …]`
+opt into the showcase machinery. Themes are treated as an accessibility surface, not
+a skin: see design value 3 in [SPEC.md](SPEC.md).
 
 ## Ranking
 
-Which cue comes first is an experiment, switchable mid-session and — more usefully —
-answerable when an order looks wrong:
-
-```zsh
-clicue-rank                # frecency
-clicue-rank why gi         # the numbers behind the order
-clicue-rank frequency      # switch for this session
-```
-
-```
-ranking: frecency   prefix: gi   candidates: 31
-NAME                          COUNT     AGE WEIGHT      SCORE
-git                              44      0d    16        704
-github-backup                     1     28d     4          4
-```
-
-`frecency` (the default) weights your own count by how recently you used it — today
-×16, this week ×8, this month ×4, six months ×2, older ×1 — so a favourite from last
-year does not outrank what you ran an hour ago. `frequency` is count alone;
-`recency` is last-used alone. All three read data derived from history at build time;
-nothing is instrumented, so `HIST_IGNORE_SPACE` remains a per-command opt-out.
+`ranking = "frecency"` (the default) weights your own count by how recently you used
+it — today ×16, this week ×8, this month ×4, six months ×2, older ×1 — so a
+favourite from last year does not outrank what you ran an hour ago. `frequency` is
+count alone; `recency` is last-used alone. Switch with `clicue config set ranking
+recency`. All three read data derived from history; nothing is instrumented, so
+`HIST_IGNORE_SPACE` remains a per-command opt-out and `clicue data forget <cmd>`
+removes a habit retroactively.
 
 These settings govern **command position**. Past the command, cues rank on recency
 alone and the switch does not apply, because counting does not survive there: if your
@@ -113,52 +117,53 @@ newest occurrence, so that is what argument position sorts on.
 
 What it offers there also depends on the command. Where the arguments are worth
 replaying — `ssh`, `git`, `ffmpeg` — the cue is a whole remembered line, values
-included, so `ssh <partial-host><Tab>` cycles the hosts you actually use. Where the
-arguments are paths — `rm`, `ls`, `cat`, `tar` and the rest — only the flags are
-offered, so a directory you deleted last month is never proposed back to you. Below
-either, the second card holds the command's full documented option set.
+included. Where the arguments are paths — `rm`, `ls`, `cat`, `tar` and the rest —
+only the flags are offered, so a directory you deleted last month is never proposed
+back to you. Below either, the second card holds the command's full documented
+option set, harvested through compsys on the first `Tab`.
 
-## Caches
+## Data
 
-Both live under `$XDG_CACHE_HOME/clicue` and are derived data — deleting them is
+Everything lives under `$XDG_CACHE_HOME/clicue` and is derived — deleting it is
 always safe.
 
 | File | What | Rebuild |
 |---|---|---|
-| `corpus.zsh` | glosses, history frequency, invocation statistics | automatic when stale, in the background |
-| `flags/<cmd>.zsh` | a command's documented options, harvested from compsys | automatic on first use |
-
-Both are versioned and invalidated automatically. The corpus is stamped with the
-history file's mtime and size plus the mtimes of your `$path` directories, so it
-notices both "I have run more commands" and "something was installed or removed". A
-stale corpus is rebuilt in the background at the next prompt — never on the keystroke
-path, and at most once per shell.
+| `corpus.json` | glosses, history frequency, invocation statistics | automatic at daemon start when stale |
+| `flags/<cmd>.json` | a command's documented options, harvested from compsys | automatic on first `Tab` |
 
 ```zsh
-clicue-cache status    # is it current, how big, when was it built
-clicue-cache rebuild   # synchronously, now
-clicue-cache gc        # drop cached flag sets for commands that no longer exist
-clicue-cache clear     # all of it; safe, it is derived data
-zstyle ':clicue:*' auto-rebuild no    # if you would rather rebuild by hand
+clicue data status         # current? how big?
+clicue data rebuild        # synchronously, now
+clicue data inspect git    # everything clicue knows about one command
+clicue data forget git     # habits AND harvested flags, gone
 ```
 
-## Status
+## Architecture
 
-Working prototype, in daily use by its author. Not packaged, not versioned, no
-install script. `prototype/test.zsh` holds 225 in-process assertions; run it after
-any change.
+One Rust binary ([ADR-100](docs/architecture/core/ADR-100-rebuild-as-a-rust-daemon-behind-a-generated-zsh-shim.md)):
+a per-user daemon owns every decision; a **generated** zsh shim (`clicue init zsh`,
+the zoxide pattern) owns only what must live in-process — ZLE hooks, POSTDISPLAY
+tenancy, key delegation, the compadd shadow. Newline-delimited JSON over a Unix
+socket, 5 ms deadline, and on any failure the card is *absent*, never degraded. The
+behavioural contract is [spec/](spec/) — 190+ invariants extracted from the
+prototype, each tagged domain vs zsh-hazard, with measurements. The prototype
+(`prototype/`) is frozen as the reference implementation.
 
-The card sizes itself to the terminal on every render — no SIGWINCH hook, since zsh
-maintains `COLUMNS` and `LINES` already, so a resize takes effect on the next
-keystroke. `max-width` (default 120) and `max-lines` (default `auto` — the window
-less the prompt) are *caps*: the terminal is the hard limit and always wins, and the
-card is drawn at most `COLUMNS-1` wide because zsh's redisplay wraps in the last
-column rather than writing it. Resizing while a card is already on screen leaves the
-terminal to reflow the old one until you next press a key.
+```zsh
+make check    # fmt, clippy -D warnings, unit tests
+make e2e      # sandboxed pty scenarios: real shell, real daemon, real keystrokes
+make demo     # re-record docs/demo/clicue.cast (+ .gif) with tests/../docs/demo/record.zsh
+```
 
-- [SPEC.md](SPEC.md) — design values and every measured finding, tagged by
-  confidence. Read design values 0, 1 and 5 first; they were learned expensively and
-  constrain everything else.
+The e2e harness (`tests/`) gives every scenario its own HOME, config, daemon and
+socket; profiles reproduce hostile real-world configs (`menu select=1` hid a real
+bug from every friendlier sandbox). The demo is the same harness with the output
+relayed to asciinema — update the docs by running `make demo` again.
+
+- [SPEC.md](SPEC.md) — design values and every measured finding from the prototype
+  era, tagged by confidence. Read design values 0, 1 and 5 first; they were learned
+  expensively and constrain everything else.
 - [MOTIVATION.md](MOTIVATION.md) — why this exists: the asymmetry between the typed
   interfaces agents get and the byte streams humans get on the same machine.
 
