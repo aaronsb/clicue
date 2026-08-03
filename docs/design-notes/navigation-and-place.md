@@ -205,6 +205,17 @@ navigation's ghost is the engaged cue or nothing — the top-cue stem ghosted
 (the scanner folds them to a count); a dot-leaf offers nothing until compsys
 speaks.
 
+**Attention drives the map.** While the operator arrows over destination
+candidates, the going pane previews the *highlighted* one — breadcrumb, its
+children, its siblings — reverting to the typed target when disengaged. This is
+the Miller attention model arriving through the pane that already existed:
+arrow onto `ai/` and you are looking inside it before you commit. It composes
+with the base flow (`cd ../../<Tab>`, arrow, Enter) into pure
+navigate-by-looking. One hardening came with it: compsys's IPREFIX (the
+consumed `../../`) is re-prepended to harvested words on insert — the old rule
+covered only dash clusters, and this path was unreachable before pathlike
+buffers kept their card.
+
 ### 3. Resolution and existence
 
 Every navigation target the operator has typed resolves against relayed place and

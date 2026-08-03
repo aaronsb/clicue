@@ -289,8 +289,23 @@ impl Engine {
         let completing =
             set.nav_grid_dir.is_some() && cues.iter().any(|c| c.suffix.as_deref() == Some("/"));
         let explain = self.explain_rows(sess, &pos, req.nav.as_ref(), completing);
-        let (pane, going) =
-            self.nav_panes(sess, &pos, req.nav.as_ref(), set.nav_grid_dir.as_deref());
+        // While the operator arrows over destination candidates, the
+        // going pane previews the HIGHLIGHTED one — attention drives the
+        // map. Otherwise it follows the typed target.
+        let attended: Option<String> = if sess.state.engaged {
+            cues.get(sess.state.sel.max(1) - 1)
+                .filter(|c| c.suffix.as_deref() == Some("/"))
+                .map(|c| c.insert.clone())
+        } else {
+            None
+        };
+        let (pane, going) = self.nav_panes(
+            sess,
+            &pos,
+            req.nav.as_ref(),
+            set.nav_grid_dir.as_deref(),
+            attended.as_deref(),
+        );
         let grid_label = set.nav_grid_dir.as_ref().map(|d| {
             format!(
                 "inside {}",
@@ -461,11 +476,12 @@ impl Engine {
         pos: &state::Position,
         navctx: Option<&NavContext>,
         grid_covers: Option<&std::path::Path>,
+        attended: Option<&str>,
     ) -> (Option<nav::NavPane>, Option<nav::NavPane>) {
         let mut here = self.nav_here(sess, pos, navctx);
         let mut going = here
             .is_some()
-            .then(|| self.nav_going(sess, pos, navctx))
+            .then(|| self.nav_going(sess, pos, navctx, attended))
             .flatten();
         // Children already navigable in the grid are not repeated as
         // pane rows — the map keeps orientation (breadcrumb, stack,
@@ -495,10 +511,23 @@ impl Engine {
         _sess: &Sess,
         pos: &state::Position,
         navctx: Option<&NavContext>,
+        attended: Option<&str>,
     ) -> Option<nav::NavPane> {
         let ctx = navctx?;
         let home = std::env::var("HOME").ok();
-        let dest = if pos.pfx.is_empty() {
+        let dest = if let Some(target) = attended {
+            let r = nav::resolve_target(
+                target,
+                &ctx.pwd,
+                ctx.oldpwd.as_deref(),
+                &ctx.dirstack,
+                home.as_deref(),
+            )?;
+            if !r.exists {
+                return None;
+            }
+            r.path
+        } else if pos.pfx.is_empty() {
             // Bare stack verbs have a determined landing; bare cd's
             // implicit home is withheld — nothing was typed to explain.
             let words: Vec<&str> = pos.words.iter().map(|s| s.as_str()).collect();
@@ -800,7 +829,12 @@ impl Engine {
                 if !rel.is_empty() && !w.starts_with(rel) {
                     continue;
                 }
-                let norm = if !w.starts_with('-') && live.iprefix.starts_with('-') {
+                // What compsys consumed (IPREFIX) is part of the word:
+                // the insert must carry it or a `cd ../../<Tab>` pick
+                // would strip the base and insert a bare name. The old
+                // dash-only rule was this rule's flag-cluster special
+                // case.
+                let norm = if !live.iprefix.is_empty() && !w.starts_with(&live.iprefix) {
                     format!("{}{w}", live.iprefix)
                 } else {
                     w.clone()
@@ -1515,6 +1549,63 @@ mod tests {
                 other => panic!("expected insert, got {other:?}"),
             }
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn going_pane_previews_the_attended_candidate() {
+        use crate::protocol::NavContext;
+        let root = std::env::temp_dir().join(format!("clicue-engine-att-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("pwd/aaa/inside-aaa")).unwrap();
+        std::fs::create_dir_all(root.join("pwd/bbb/inside-bbb")).unwrap();
+        let pwd = root.join("pwd").to_string_lossy().into_owned();
+        let e = engine_with(test_corpus());
+        let with_nav = |ev: Event, buf: &str| {
+            let mut r = req(ev, buf);
+            r.cols = 200;
+            r.lines = 50;
+            r.nav = Some(NavContext {
+                pwd: pwd.clone(),
+                oldpwd: None,
+                dirstack: vec![],
+            });
+            r
+        };
+        e.handle(with_nav(Event::Redraw, "cd "));
+        // Engage: selection sits on a dir candidate; the going pane
+        // previews IT before anything is typed or inserted.
+        let r = e.handle(with_nav(
+            Event::Key {
+                name: "accept".into(),
+            },
+            "cd ",
+        ));
+        assert!(
+            r.card.contains("you are going"),
+            "attended preview: {}",
+            r.card
+        );
+        // End: selection lands on the last candidate (bbb); the going
+        // pane must be ITS inside, not the first candidate's.
+        let r = e.handle(with_nav(Event::Key { name: "end".into() }, "cd "));
+        assert!(
+            r.card.contains("inside-bbb") && !r.card.contains("inside-aaa"),
+            "the going pane must follow the selection: {}",
+            r.card
+        );
+        // Home: back to the first — the preview follows back.
+        let r = e.handle(with_nav(
+            Event::Key {
+                name: "home".into(),
+            },
+            "cd ",
+        ));
+        assert!(
+            r.card.contains("inside-aaa") && !r.card.contains("inside-bbb"),
+            "the preview must follow the selection back: {}",
+            r.card
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
