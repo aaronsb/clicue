@@ -1,0 +1,16 @@
+# clicue theme "halloween" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+
+glyph-set = "unicode-rounded"
+
+[palette]
+border = "fg=#f97316"
+accent = "fg=#a78bfa"
+text = "fg=#f4ecd8"
+gloss = "fg=#7c6f9f"
+hint = "fg=#7c6f9f"
+ghost = "fg=#7c6f9f"
+selected = "fg=#1c1025,bg=#f97316"
+match = "fg=#84cc16,bold"
+panel = "bg=#1c1025"

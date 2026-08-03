@@ -71,19 +71,26 @@ daemon; `clicue theme` lists, sets, and previews.
   2026-08-03 report) misinforms the one choice the swatch exists to serve.
   The swatch applies the renderer's own grounding rule — panel bg under
   every style without one, gaps included.
-- T14 [domain] Themes are FILES. Resolution order: `<themes>/<name>.toml`
-  first, compiled-in builtin second, base last — the file is what the
-  operator edits (live, via the S7 reloader), the builtin is the fallback
-  and the regeneration template, never a shadow over an edit. A MISSING
-  file whose name is a builtin is regenerated from the template on load
-  (`load_or_seed`), so the file is always the thing actually read and
-  deleting it is the reset-to-default gesture. A BROKEN file is never
-  rewritten — mid-edit is its normal cause and live reload its normal
-  observer — and falls back to the builtin of the same name (closer to
-  intent than base), messages naming the file. `clicue install` seeds
-  every builtin's file (idempotent: existing files untouched, re-running
-  after an upgrade tops up new themes); uninstall removes only files
-  still byte-identical to their template — an edited file is operator
-  data, not something install added. Serialization and parsing are pinned
-  as inverses by a per-builtin round-trip test: a file that reproduces a
-  different theme ships every operator a subtly different default.
+- T14 [domain] Themes are FILES, with ONE representation each: every
+  shipped theme is authored as the same TOML the operator edits, embedded
+  in the binary at compile time (`themes/*.toml`, `include_str!`), and
+  parsed by the same loader as user files. `base` alone stays in code —
+  the fallback contract cannot depend on the parser it backstops — and a
+  test pins its template equal to the coded contract. Resolution order:
+  `<themes>/<name>.toml` first, embedded template second, base last — the
+  file is what the operator edits (live, via the S7 reloader), the
+  template is the fallback and regeneration source, never a shadow over
+  an edit. A MISSING file whose name is shipped regenerates on load
+  (`load_or_seed`): deleting a theme file is the reset-to-default
+  gesture, and reinstalling restores a mistaken deletion. A BROKEN file
+  is never rewritten — mid-edit is its normal cause and live reload its
+  normal observer — and falls back to the shipped theme of the same name,
+  messages naming the file. Seeded files carry two machine lines: a
+  version provenance header (`# seeded by clicue vX.Y.Z`, for humans and
+  reporting) and a fingerprint footer (FNV-1a over everything above it) —
+  the fingerprint, not the version, is the pristine test, so "unedited"
+  survives version skew: an old binary's seed is recognized by a new one
+  without reconstructing old templates. `clicue install` syncs: seeds
+  what is missing, updates pristine files whose template changed, keeps
+  every edit forever; uninstall removes only pristine files — an edited
+  file is operator data, not something install added.

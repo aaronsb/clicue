@@ -1,0 +1,15 @@
+# clicue theme "aura" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+
+glyph-set = "unicode-rounded"
+
+[palette]
+border = "fg=#a277ff"
+accent = "fg=#61ffca"
+text = "fg=#edecee"
+gloss = "fg=#9692a8"
+hint = "fg=#6d6a7f"
+ghost = "fg=#6d6a7f"
+selected = "fg=#ffffff,bg=#3d375e"
+match = "fg=#61ffca,bold"

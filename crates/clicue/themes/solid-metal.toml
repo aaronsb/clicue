@@ -1,0 +1,17 @@
+# clicue theme "solid-metal" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+
+glyph-set = "unicode-rounded"
+
+[palette]
+border = "fg=#8b949e"
+accent = "fg=#7ee787"
+text = "fg=#e6edf3"
+gloss = "fg=#8b949e"
+hint = "fg=#6e7681"
+ghost = "fg=#6e7681"
+selected = "fg=#ffffff,bg=#37414f"
+match = "fg=#f0b849,bold"
+panel = "bg=#23272e"
+border-gradient = ["#3d434b", "#aeb6bf", "#e6e9ec", "#7d858f", "#2c3138"]

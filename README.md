@@ -107,14 +107,18 @@ every colour is generic issue). Seasonal, because why not: `valentine` and
 
 **Every theme is a file.** `clicue install` seeds each one as its own TOML in
 `~/.config/clicue/themes/`; edit any of them and the change applies live in
-open shells. Delete a file and it regenerates from the built-in template —
-deleting **is** the reset-to-default gesture. A file that fails validation
-falls back to the built-in of the same name (never a half-applied card) with
-the problem named, and is never overwritten — you were probably mid-edit.
-Partial files are legal and merge over `base`; `panel = "bg=#…"` and
-`border-gradient = ["#…", …]` opt into the showcase machinery. New files
-beside the seeded ones become themes too. Themes are treated as an
-accessibility surface, not a skin: see design value 3 in [SPEC.md](SPEC.md).
+open shells. Delete a file and it regenerates from the shipped template —
+deleting **is** the reset-to-default gesture, and reinstalling restores
+anything missing. Each seeded file carries a fingerprint marking it unedited:
+on upgrade, `clicue install` updates unedited files to the newest templates
+and never touches one you have changed, whichever version wrote it. A file
+that fails validation falls back to the shipped theme of the same name (never
+a half-applied card) with the problem named, and is never overwritten — you
+were probably mid-edit. Partial files are legal and merge over `base`;
+`panel = "bg=#…"` and `border-gradient = ["#…", …]` opt into the showcase
+machinery. New files beside the seeded ones become themes too. Themes are
+treated as an accessibility surface, not a skin: see design value 3 in
+[SPEC.md](SPEC.md).
 
 ## Ranking
 
