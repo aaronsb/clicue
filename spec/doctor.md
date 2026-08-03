@@ -33,6 +33,15 @@ document these; the doctor tests for them.
   whatever owned it, so an exotic owner still works — but two candidate UIs
   on one keystroke is a choice the operator should make knowingly. Report
   the observed owner by name. (keys.zsh:536–538)
+- F3 [domain] With the shim loaded, every sequence it binds must still
+  point at a `_clicue_*` widget once the rc has finished loading — a later
+  `bindkey` silently disconnects that key (Down went to
+  history-substring-search and the grid was unreachable, while doctor
+  reported no fighters [MEASURED 2026-08-02]). Probe every spelling the
+  shim binds, including the application-mode `^[O…` variants (zle runs in
+  smkx). Remedy in the message: bind BEFORE clicue — the shim captures the
+  previous owner and delegates to it whenever the card is not engaged, so
+  the original behavior survives when clicue binds last.
 
 ## X — coexistence (verify, then pass)
 

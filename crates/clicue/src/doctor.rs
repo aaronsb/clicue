@@ -64,6 +64,21 @@ print -r -- "autosuggest_async=${+functions[_zsh_autosuggest_async_response]}"
 print -r -- "tab_owner=${${(z)$(bindkey '^I')}[2]:-none}"
 print -r -- "up_owner=${${(z)$(bindkey '^[[A')}[2]:-none}"
 print -r -- "down_owner=${${(z)$(bindkey '^[[B')}[2]:-none}"
+print -r -- "right_owner=${${(z)$(bindkey '^[[C')}[2]:-none}"
+print -r -- "left_owner=${${(z)$(bindkey '^[[D')}[2]:-none}"
+print -r -- "up_o_owner=${${(z)$(bindkey '^[OA')}[2]:-none}"
+print -r -- "down_o_owner=${${(z)$(bindkey '^[OB')}[2]:-none}"
+print -r -- "right_o_owner=${${(z)$(bindkey '^[OC')}[2]:-none}"
+print -r -- "left_o_owner=${${(z)$(bindkey '^[OD')}[2]:-none}"
+print -r -- "enter_owner=${${(z)$(bindkey '^M')}[2]:-none}"
+print -r -- "home_owner=${${(z)$(bindkey '^[[H')}[2]:-none}"
+print -r -- "end_owner=${${(z)$(bindkey '^[[F')}[2]:-none}"
+print -r -- "home_o_owner=${${(z)$(bindkey '^[OH')}[2]:-none}"
+print -r -- "end_o_owner=${${(z)$(bindkey '^[OF')}[2]:-none}"
+print -r -- "home_t_owner=${${(z)$(bindkey '^[[1~')}[2]:-none}"
+print -r -- "end_t_owner=${${(z)$(bindkey '^[[4~')}[2]:-none}"
+print -r -- "pgup_owner=${${(z)$(bindkey '^[[5~')}[2]:-none}"
+print -r -- "pgdn_owner=${${(z)$(bindkey '^[[6~')}[2]:-none}"
 print -r -- "ext_history=${options[extendedhistory]}"
 print -r -- "ignore_all_dups=${options[histignorealldups]}"
 print -r -- "histsize=$HISTSIZE"
@@ -266,17 +281,75 @@ pub fn evaluate(
             "clicue shim already loaded",
             "This shell already runs the shim; `clicue install` would be a no-op.".into(),
         ));
+        // Keys the shim binds must still POINT at the shim once the rc has
+        // finished loading. A later bindkey silently disconnects that key:
+        // the operator's Down going to history-substring-search instead of
+        // the card is how "there's no way into the grid" happens — while
+        // doctor reports no fighters. Binding order is the whole fallback
+        // design: clicue binds LAST, captures the previous owner, and
+        // delegates to it whenever the card is not engaged.
+        // Every sequence the shim binds, INCLUDING the application-mode
+        // (smkx) ^[O… variants — zle enables smkx while editing, so many
+        // terminals send those during live keystrokes; a plugin rebinding
+        // only that spelling steals keys a CSI-only probe calls clean.
+        // Skips: "" is a probe key an older probe never emitted; "none"
+        // is defensive (an unbound key actually reports `undefined-key`,
+        // which stays FLAGGED — the shim bound all of these, so unbound
+        // means someone ran bindkey -r after it). (doctor F3)
+        let stolen: Vec<String> = [
+            ("Tab", "^I", "tab_owner"),
+            ("Up", "^[[A", "up_owner"),
+            ("Down", "^[[B", "down_owner"),
+            ("Right", "^[[C", "right_owner"),
+            ("Left", "^[[D", "left_owner"),
+            ("Up", "^[OA", "up_o_owner"),
+            ("Down", "^[OB", "down_o_owner"),
+            ("Right", "^[OC", "right_o_owner"),
+            ("Left", "^[OD", "left_o_owner"),
+            ("Enter", "^M", "enter_owner"),
+            ("Home", "^[[H", "home_owner"),
+            ("End", "^[[F", "end_owner"),
+            ("Home", "^[OH", "home_o_owner"),
+            ("End", "^[OF", "end_o_owner"),
+            ("Home", "^[[1~", "home_t_owner"),
+            ("End", "^[[4~", "end_t_owner"),
+            ("PgUp", "^[[5~", "pgup_owner"),
+            ("PgDn", "^[[6~", "pgdn_owner"),
+        ]
+        .iter()
+        .filter_map(|(name, seq, key)| {
+            let owner = get(key);
+            (!owner.is_empty() && owner != "none" && !owner.starts_with("_clicue_"))
+                .then(|| format!("{name} ({seq}) → {owner}"))
+        })
+        .collect();
+        if !stolen.is_empty() {
+            f.push(finding(
+                Severity::Fighter,
+                "keys rebound after clicue loaded",
+                format!(
+                    "{}. Something in the rc binds these AFTER the shim, so they never \
+                     reach the card (arrows cannot enter the grid, Enter cannot compose). \
+                     Move those bindkey calls BEFORE the clicue eval — the shim captures \
+                     the previous owner and delegates to it whenever the card is not \
+                     engaged, so the original behavior survives when clicue binds last.",
+                    stolen.join(", ")
+                ),
+            ));
+        }
     }
     let tab_owner = get("tab_owner");
-    if !matches!(
-        tab_owner,
-        "" | "none"
-            | "expand-or-complete"
-            | "complete-word"
-            | "expand-or-complete-prefix"
-            | "menu-complete"
-            | "_clicue_w_accept"
-    ) && !truthy(probe, "fzf_tab")
+    if !truthy(probe, "shim_loaded")
+        && !matches!(
+            tab_owner,
+            "" | "none"
+                | "expand-or-complete"
+                | "complete-word"
+                | "expand-or-complete-prefix"
+                | "menu-complete"
+                | "_clicue_w_accept"
+        )
+        && !truthy(probe, "fzf_tab")
         && !truthy(probe, "autocomplete")
     {
         f.push(finding(
@@ -439,7 +512,8 @@ pub fn print_findings(findings: &[Finding], out: &mut impl Write) -> i32 {
     if fighters > 0 {
         let _ = writeln!(
             out,
-            "{fighters} fighter(s) found — resolve before `clicue install`."
+            "{fighters} fighter(s) found — resolve them (before `clicue install`, \
+             or in the rc if clicue is already loaded)."
         );
         1
     } else {
@@ -477,6 +551,52 @@ mod tests {
         assert_eq!(m.get("zsh_version").unwrap(), "5.9");
         assert_eq!(m.get("tab_owner").unwrap(), "fzf-tab-complete");
         assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn keys_rebound_after_the_shim_are_a_fighter() {
+        // The real incident: 50-keybindings ran after 45-clicue and Down
+        // went to history-substring-search — no way into the grid, while
+        // doctor said "no fighters".
+        let probe = probe_with(&[
+            ("shim_loaded", "1"),
+            ("tab_owner", "_clicue_w_accept"),
+            ("up_owner", "history-substring-search-up"),
+            ("down_owner", "history-substring-search-down"),
+            ("right_owner", "_clicue_w_right"),
+            ("enter_owner", "_clicue_w_enter"),
+            ("ext_history", "on"),
+            ("whatis", "1"),
+            ("compinit", "1"),
+        ]);
+        let f = evaluate(&probe, &DaemonStatus::Answering, "current");
+        let hit = f
+            .iter()
+            .find(|x| x.title.contains("rebound after clicue"))
+            .expect("stolen keys must be a finding");
+        assert!(matches!(hit.severity, Severity::Fighter));
+        assert!(hit
+            .detail
+            .contains("Down (^[[B) → history-substring-search-down"));
+        assert!(
+            !hit.detail.contains("Enter (^M)"),
+            "intact keys are not listed"
+        );
+    }
+
+    #[test]
+    fn intact_shim_bindings_raise_no_rebind_finding() {
+        let probe = probe_with(&[
+            ("shim_loaded", "1"),
+            ("tab_owner", "_clicue_w_accept"),
+            ("up_owner", "_clicue_w_up"),
+            ("down_owner", "_clicue_w_down"),
+            ("ext_history", "on"),
+            ("whatis", "1"),
+            ("compinit", "1"),
+        ]);
+        let f = evaluate(&probe, &DaemonStatus::Answering, "current");
+        assert!(!f.iter().any(|x| x.title.contains("rebound after clicue")));
     }
 
     #[test]

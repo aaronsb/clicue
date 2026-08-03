@@ -51,6 +51,10 @@ pty_start() {
   print -l 'git status' 'git log' 'ls -la' 'ffmpeg -i in.mp4 out.mkv' \
     > $T_SANDBOX/.zsh_history
   cp "$T_ROOT/profiles/$profile.zshrc" $T_SANDBOX/.zshrc || exit 2
+  # Pin layout values scenarios depend on — a changed default must fail
+  # the default's own test, not silently reshape every scenario.
+  mkdir -p $T_SANDBOX/.config/clicue
+  print 'tier1-rows = 10' > $T_SANDBOX/.config/clicue/config.toml
   # The daemon is OURS: sandboxed env, tracked pid, killed in pty_stop.
   # (The shim would auto-spawn one detached — untracked processes leak.)
   HOME=$T_SANDBOX XDG_RUNTIME_DIR=$T_SANDBOX/run XDG_CACHE_HOME=$T_SANDBOX/cache \
@@ -113,5 +117,11 @@ pty_stop() {
   fi
 }
 
-# Strip ANSI control sequences for content assertions.
-t_plain() { REPLY=${1//$'\x1b'\[[0-9;]#[A-Za-z]/} }
+# Strip ANSI control sequences for content assertions. Always strip BEFORE
+# matching words: zsh's redisplay paints per CHARACTER, each wrapped in its
+# own colour escape, so a word like 'browsing' never appears contiguously
+# in the raw stream — raw greps silently fail [MEASURED, twice in one day].
+t_plain() {
+  setopt localoptions extendedglob   # `#` in the pattern needs it
+  REPLY=${1//$'\x1b'\[[0-9;?]#[A-Za-z]/}   # '?' covers private modes (\e[?2004h)
+}
