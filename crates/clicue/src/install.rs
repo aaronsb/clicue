@@ -24,7 +24,7 @@ pub const MARKER: &str = "# clicue — live command guidance (managed by `clicue
 /// visible reason. Tagged so uninstall removes exactly this line and
 /// never a compinit the operator wrote themselves.
 pub const COMPINIT_LINE: &str =
-    "autoload -Uz compinit && compinit   # clicue: flag harvesting needs compsys";
+    "autoload -Uz compinit && compinit -i   # clicue: flag harvesting needs compsys";
 
 /// Which rc file owns the shim line: `$ZDOTDIR/.zshrc` when ZDOTDIR is
 /// set in the probed shell, else `~/.zshrc`.
@@ -241,6 +241,23 @@ pub fn uninstall(yes: bool) -> Result<i32> {
 mod tests {
     use super::*;
 
+    /// Removal matches this literal by exact spelling: changing it
+    /// orphans the compinit lines OLDER versions wrote into rc files —
+    /// which, unlike an orphaned marker, changes shell behavior. A
+    /// respelling requires a removal migration for the old form.
+    #[test]
+    fn compinit_line_literal_is_the_on_disk_contract() {
+        assert_eq!(
+            COMPINIT_LINE,
+            "autoload -Uz compinit && compinit -i   # clicue: flag harvesting needs compsys"
+        );
+        // -i: skip insecure dirs silently instead of prompting at every
+        // startup (Homebrew's group-writable share/zsh is the classic
+        // trigger; a doctor probe with stdin closed would abort on the
+        // prompt and misreport compinit=0 forever).
+        assert!(COMPINIT_LINE.contains("compinit -i"));
+    }
+
     #[test]
     fn append_is_idempotent_via_installed_in() {
         let rc = "export PATH=$PATH:/opt/bin\n";
@@ -248,6 +265,10 @@ mod tests {
         let once = with_line_appended(rc, false);
         assert!(installed_in(&once));
         assert!(once.contains(MARKER));
+        assert!(
+            !once.contains("compinit"),
+            "compsys-having shells get no compinit"
+        );
         assert!(once.ends_with('\n'));
         // a commented-out line does not count as installed
         let commented = format!("# {INSTALL_LINE}\n");

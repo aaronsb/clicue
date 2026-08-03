@@ -10,12 +10,18 @@ pty_start stock
 
 # install from inside the sandboxed shell (probe sees the stock rc)
 pty_exec 'clicue install --yes >$HOME/install.log 2>&1; print RC=$?'
-pty_drain 2.0   # the install runs a full doctor probe (nested zsh -i)
+# sentinel wait, not a fixed drain: the install runs a full doctor probe
+# (nested zsh -i) whose duration varies by machine
+local -F deadline=$(( EPOCHREALTIME + 30 ))
+while [[ $PTY_OUT != *'RC='* ]] && (( EPOCHREALTIME < deadline )); do
+  pty_drain 0.3
+done
 t_plain "$PTY_OUT"
 [[ $REPLY == *'RC=0'* ]] || t_fail "clicue install failed"
-pty_exec 'grep -c "clicue init zsh" $ZDOTDIR/.zshrc'
+PTY_OUT=''
+pty_exec 'print COUNT=$(grep -c "clicue init zsh" $ZDOTDIR/.zshrc)'
 t_plain "$PTY_OUT"
-[[ $REPLY == *1* ]] || t_fail "install line not appended"
+[[ $REPLY == *'COUNT=1'* ]] || t_fail "install line not appended exactly once"
 
 # reload: the freshly installed rc must come up with shim + compsys
 pty_exec 'exec zsh -i'
@@ -29,8 +35,9 @@ pty_drain 0.4
 t_plain "$PTY_OUT"
 [[ $REPLY == *'╭'* ]] || t_fail "no card after stock install"
 # tar's documented set proves the harvest crossed compsys — which only
-# exists because the installer added compinit
-[[ $REPLY == *'-'[A-Za-z]* ]] || t_fail "no flag cues harvested"
+# exists because the installer added compinit. Require a real tar desc,
+# not any hyphenated word in card copy.
+[[ $REPLY == *archive* ]] || t_fail "no tar flag descriptions harvested"
 [[ $REPLY == *' -- '* ]] && t_fail "compsys listing leaked"
 
 t_done
