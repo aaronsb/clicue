@@ -28,6 +28,9 @@ zmodload zsh/zpty zsh/datetime zsh/system zsh/zselect
 typeset -g T_ROOT=${0:a:h}
 
 typeset -g PTY_OUT=''            # everything drained since last reset
+typeset -gi T_ECHO=0             # 1 = relay drained output to stdout live
+                                 #     (the demo recorder's hook)
+typeset -ga T_SEED_HISTORY=()    # optional richer history for the sandbox
 typeset -g T_SANDBOX=''          # this scenario's sandbox dir
 typeset -g T_STATUS=0
 typeset -gi T_DAEMON_PID=0
@@ -50,9 +53,14 @@ pty_start() {
   [[ -x $CLICUE_BIN ]] || { print -u2 "no clicue binary at $CLICUE_BIN (make build)"; exit 2 }
   T_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/clicue-e2e-XXXXXX")
   mkdir -p $T_SANDBOX/run $T_SANDBOX/cache
-  # A small real history so the corpus has something to rank.
-  print -l 'git status' 'git log' 'ls -la' 'ffmpeg -i in.mp4 out.mkv' \
-    > $T_SANDBOX/.zsh_history
+  # A small real history so the corpus has something to rank; scenarios
+  # (and the demo) may seed their own richer one via T_SEED_HISTORY.
+  if (( ${#T_SEED_HISTORY} )); then
+    print -l -- "${(@)T_SEED_HISTORY}" > $T_SANDBOX/.zsh_history
+  else
+    print -l 'git status' 'git log' 'ls -la' 'ffmpeg -i in.mp4 out.mkv' \
+      > $T_SANDBOX/.zsh_history
+  fi
   cp "$T_ROOT/profiles/$profile.zshrc" $T_SANDBOX/.zshrc || exit 2
   # Pin layout values scenarios depend on — a changed default must fail
   # the default's own test, not silently reshape every scenario.
@@ -95,6 +103,7 @@ pty_drain() {
   while (( EPOCHREALTIME < quiet )); do
     if zpty -rt clicue_pty chunk 2>/dev/null; then
       PTY_OUT+=$chunk
+      (( T_ECHO )) && print -rn -- "$chunk"
       quiet=$(( EPOCHREALTIME + $1 ))
     fi
   done

@@ -5,7 +5,7 @@
 
 CARGO ?= cargo
 
-.PHONY: build release test check e2e fmt clippy proto-test install clean help
+.PHONY: build release test check e2e demo fmt clippy proto-test install clean help
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -23,6 +23,12 @@ check: fmt clippy test ## Everything CI would run
 
 e2e: build ## Sandboxed pty scenarios: real shell, real daemon, real keys
 	zsh tests/run.zsh
+
+demo: build ## Record docs/demo/clicue.cast (+ .gif when agg is installed)
+	asciinema rec --overwrite --cols 100 --rows 32 -c "zsh docs/demo/record.zsh" docs/demo/clicue.cast
+	@command -v agg >/dev/null 2>&1 \
+	  && agg --font-size 14 docs/demo/clicue.cast docs/demo/clicue.gif \
+	  || echo "agg not installed — .cast only"
 
 fmt: ## Formatting check
 	$(CARGO) fmt --all --check
