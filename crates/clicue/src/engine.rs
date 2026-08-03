@@ -265,6 +265,14 @@ impl Engine {
             sess.grid = None;
             return reply(String::new(), Vec::new(), String::new(), String::new());
         };
+        // The Filesystem stand-down, decided where the command class is
+        // known: compsys owns completing a path everywhere, but for a
+        // navigational command the path is exactly what the card
+        // explains — `cd ../..` must keep its pane and resolution row.
+        if pos.pathlike && !self.navigational(sess, &pos) {
+            sess.grid = None;
+            return reply(String::new(), Vec::new(), String::new(), String::new());
+        }
 
         let now = now_epoch();
         let set = self.cues_for(sess, &req.buffer, &pos, now, req.nav.as_ref());
@@ -282,7 +290,16 @@ impl Engine {
         let selected_stem = cues
             .get(sel_idx)
             .and_then(|c| sources::cue_stem(&c.insert, &pos.pfx));
-        let hist_stem = sources::history_stem(&sess.window, &req.buffer);
+        // No whole-line history ghost for navigational commands: the
+        // cue path already refuses remembered lines (F1), and a relative
+        // path remembered from a different cwd is the design note's
+        // 91%-unanchorable finding proposed as ghost text — `cd ..` once
+        // ghosted an old `cd ....` line into apparent nonsense.
+        let hist_stem = if self.navigational(sess, &pos) {
+            None
+        } else {
+            sources::history_stem(&sess.window, &req.buffer)
+        };
         let top_stem = cues
             .first()
             .and_then(|c| sources::cue_stem(&c.insert, &pos.pfx));
@@ -755,7 +772,9 @@ impl Engine {
         sess.state.on_buffer(buffer);
 
         // What the card is currently showing decides what keys can do.
-        let pos = state::analyze(buffer, 1).ok();
+        let pos = state::analyze(buffer, 1)
+            .ok()
+            .filter(|p| !p.pathlike || self.navigational(sess, p));
         let now = now_epoch();
         let set = match &pos {
             Some(p) if req.keymap != "menuselect" && !sess.state.dismissed(buffer) => {
@@ -1180,6 +1199,64 @@ mod tests {
             "off means off: {}",
             rep.card
         );
+    }
+
+    #[test]
+    fn pathlike_stands_down_except_for_navigation() {
+        use crate::protocol::NavContext;
+        let e = engine_with(test_corpus());
+        let nav = Some(NavContext {
+            pwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            oldpwd: None,
+            dirstack: vec![],
+        });
+
+        // A path under a non-navigational command: compsys owns it, the
+        // card stays away — the pre-existing Filesystem rule.
+        let mut r = req(Event::Redraw, "cat src/ma");
+        r.nav = nav.clone();
+        assert!(e.handle(r).card.is_empty(), "cat src/ma must stand down");
+
+        // The same shape under cd keeps the card: the path is exactly
+        // what the pane resolves. `../..` from temp_dir resolves and the
+        // row says where it lands (caught live: the card vanished).
+        let mut r = req(Event::Redraw, "cd ../..");
+        r.cols = 200;
+        r.nav = nav;
+        let rep = e.handle(r);
+        assert!(
+            rep.card.contains("→") && rep.card.contains("you are here"),
+            "cd ../.. must keep pane and resolution: {}",
+            rep.card
+        );
+    }
+
+    #[test]
+    fn no_history_ghost_for_navigational_commands() {
+        use crate::protocol::NavContext;
+        let e = engine_with(test_corpus());
+        // Seed a remembered line that extends the buffer: `cd ....` after
+        // `cd ..` — the ghost once proposed the `..` remainder, composing
+        // apparent nonsense from another cwd's habit (caught live).
+        let mut lf = req(Event::LineFinish, "");
+        lf.hist = vec![HistEntry(9001, "cd ....".into())];
+        e.handle(lf);
+
+        let mut r = req(Event::Redraw, "cd ..");
+        r.nav = Some(NavContext {
+            pwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            oldpwd: None,
+            dirstack: vec![],
+        });
+        let rep = e.handle(r);
+        assert!(
+            rep.ghost.is_empty(),
+            "no whole-line ghost for navigation, got {:?}",
+            rep.ghost
+        );
+        // The non-navigational ghost is untouched.
+        let rep = e.handle(req(Event::Redraw, "cargo b"));
+        assert_eq!(rep.ghost, "uild");
     }
 
     #[test]

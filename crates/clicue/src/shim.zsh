@@ -653,7 +653,11 @@ _clicue_w_up()       { _clicue_key arrow-up    "${_clicue_fb[up]:-up-line-or-his
 _clicue_w_down()     { _clicue_key arrow-down  "${_clicue_fb[down]:-down-line-or-history}" }
 _clicue_w_left()     { _clicue_key arrow-left  "${_clicue_fb[left]:-backward-char}" }
 _clicue_w_right()    { _clicue_key arrow-right "${_clicue_fb[right]:-forward-char}" }
-_clicue_w_enter()    { _clicue_key insert      "${_clicue_fb[enter]:-accept-line}" }
+# Wire name "enter", matching the engine's dispatch — this was "insert"
+# once, which no engine arm matched, so every Enter fell through to
+# accept-line and RAN the command while the legend advertised ⏎ insert
+# (E1/E2 violated in one word, caught live 2026-08-03).
+_clicue_w_enter()    { _clicue_key enter       "${_clicue_fb[enter]:-accept-line}" }
 _clicue_w_home()     { _clicue_key home        "${_clicue_fb[home]:-beginning-of-line}" }
 _clicue_w_end()      { _clicue_key end         "${_clicue_fb[end]:-end-of-line}" }
 _clicue_w_pgup()     { _clicue_key page-up     "${_clicue_fb[pgup]:-beginning-of-buffer-or-history}" }

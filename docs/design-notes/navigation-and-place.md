@@ -169,6 +169,20 @@ note found 91% of cd lines are relative and therefore useless as *proposals*; as
 Enter instead of after. This is also where the empty-history audience lives: the
 lesson "commands act where you are" is not told, it is made ambient.
 
+Two more rules arrived from the first minutes of live use **[MEASURED]**:
+
+- **A pathlike word stands the card down only for non-navigational commands.**
+  The blanket Filesystem stand-down (any word with `/` or leading `~`) predates
+  commands for which the path IS the content: `cd ../..` lost its entire card at
+  the second dot. Pathlike is now a fact on the analyzed position; the engine —
+  which knows the command class — renders the verdict. `cat src/ma` still belongs
+  to compsys.
+- **No whole-line history ghost for navigational commands.** The pathish decision
+  kept remembered lines out of cd's cues (F1) but the ghost never got the rule:
+  `cd ..` ghosted the remainder of an old `cd ....` line — a relative path from
+  another cwd, the 91% finding proposed as ghost text. Navigation's ghost comes
+  from the engaged cue or nothing.
+
 ### 4. Failure-only recommendation
 
 > **Recommend only at the moment the typed line is about to fail. Otherwise,

@@ -26,6 +26,13 @@ pub struct Position {
     pub words: Vec<String>,
     /// The segment ends in whitespace (a fresh word position).
     pub trailing: bool,
+    /// The word under the cursor is unambiguously filesystem (`/` or a
+    /// leading `~`). Compsys owns completing it — but whether that means
+    /// standing DOWN is the caller's call, not this function's: for a
+    /// navigational command a path is exactly what the card explains
+    /// (design note navigation-and-place.md), so the verdict needs the
+    /// command class, which pure buffer analysis does not have.
+    pub pathlike: bool,
 }
 
 /// Why clicue is standing down for this event.
@@ -35,9 +42,6 @@ pub enum StandDown {
     TooShort,
     /// Command position starting with `-`, `.` or `/` — pathish typing.
     PathLike,
-    /// Argument token is unambiguously filesystem (`/` or `~` present) —
-    /// compsys owns this entirely (clicue.zsh:303).
-    Filesystem,
     /// zsh's own completion menu owns the display (clicue.zsh:250).
     MenuSelect,
     /// Operator dismissed this exact buffer (Esc; clicue.zsh:239–245).
@@ -118,15 +122,14 @@ pub fn analyze(buffer: &str, min_input: usize) -> Result<Position, StandDown> {
             optctx: false,
             words,
             trailing,
+            pathlike: false,
         });
     }
 
     // ── argument position ───────────────────────────────────────────
     let cmd = words[0].clone();
     let last = words.last().cloned().unwrap_or_default();
-    if last.contains('/') || last.starts_with('~') {
-        return Err(StandDown::Filesystem);
-    }
+    let pathlike = last.contains('/') || last.starts_with('~');
     // Path from non-flag tokens BEFORE the word being typed. With a
     // trailing space every word is complete; otherwise the last word is
     // the one being typed and does not extend the path.
@@ -152,6 +155,7 @@ pub fn analyze(buffer: &str, min_input: usize) -> Result<Position, StandDown> {
         optctx,
         words,
         trailing,
+        pathlike,
     })
 }
 
@@ -293,8 +297,15 @@ mod tests {
         assert_eq!(p.cmdpath, "gh:org:list");
         assert!(p.optctx);
 
-        assert_eq!(analyze("cat src/ma", 1), Err(StandDown::Filesystem));
-        assert_eq!(analyze("ls ~/pro", 1), Err(StandDown::Filesystem));
+        // Pathlike is a FACT on the position now, not a verdict — the
+        // engine stands down unless the command is navigational.
+        assert!(analyze("cat src/ma", 1).unwrap().pathlike);
+        assert!(analyze("ls ~/pro", 1).unwrap().pathlike);
+        assert!(analyze("cd ../..", 1).unwrap().pathlike);
+        assert!(
+            analyze("cat src/ma ", 1).unwrap().pathlike,
+            "same fact after the trailing space — unchanged from the Err era"
+        );
     }
 
     #[test]
