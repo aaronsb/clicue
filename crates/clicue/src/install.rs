@@ -15,7 +15,13 @@ use anyhow::{bail, Context, Result};
 
 /// The one line. `eval` of the emitted shim is the zoxide pattern: the
 /// shim is generated output, so shim and daemon versions cannot drift.
-pub const INSTALL_LINE: &str = r#"eval "$(clicue init zsh)""#;
+/// Guarded on `command -v`: a package manager removing the binary
+/// (`pacman -R clicue`) must not leave every new shell printing
+/// "command not found" — absent beats degraded applies to the rc line
+/// too. Removal matches on the `clicue init zsh` substring, so older
+/// unguarded lines still uninstall.
+pub const INSTALL_LINE: &str =
+    r#"command -v clicue >/dev/null && eval "$(clicue init zsh)""#;
 /// Marker comment so uninstall can also remove an annotated line.
 pub const MARKER: &str = "# clicue — live command guidance (managed by `clicue install`)";
 /// compinit, added ONLY when the probed shell never ran it (stock macOS

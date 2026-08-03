@@ -1,0 +1,16 @@
+post_install() {
+  echo "clicue is inert until wired in: run 'clicue install' (doctor-gated,"
+  echo "shows the diff before touching your zshrc)."
+}
+
+post_upgrade() {
+  echo "Re-run 'clicue install' to update unedited theme files to this"
+  echo "version's templates (edited files are never touched), then"
+  echo "'pkill -x clicue' — the daemon respawns on the next keystroke."
+}
+
+pre_remove() {
+  echo "Tip: 'clicue uninstall' first removes the zshrc line and unedited"
+  echo "theme files. The installed rc line is guarded by 'command -v', so"
+  echo "shells stay quiet either way."
+}
