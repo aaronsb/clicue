@@ -78,20 +78,29 @@ review ranked as its top finding. Tags per `spec/README.md`.
   (corpus.zsh:136–149; build-corpus.zsh:408–410)
 - S5 [zsh-hazard, dies] zstat accepts one `+spec` per call — a second is
   parsed as a filename and the component vanishes silently. [MEASURED]
-- S6 [domain] Not every stamp mismatch means the same thing. zsh appends each
-  command to HISTFILE as it runs, so in a live shell the corpus is always at
-  least one command behind — `clicue data` itself moves the history before it
-  can look, and a rebuild can never present as "current" for more than zero
-  keystrokes. [MEASURED 2026-08-03] Status reporting therefore distinguishes
-  *trailing history* (the working state of derived data; folds in at the next
-  scheduled build) from *structural* staleness (format version or `$path`
-  changed — glosses may be missing or wrong; worth a hand rebuild). The
-  rebuild trigger itself stays exact-match: folding new history at the next
-  build point is precisely what the trigger is for. Corollary: the stamp is
-  taken BEFORE the inputs are read — an input changing mid-build (whatis
-  takes seconds) then mismatches and reschedules, instead of hiding behind a
-  stamp newer than the data it describes.
   (corpus.zsh:122–126; build-corpus.zsh:315–317)
+- S6 [domain] Not every stamp mismatch means the same thing. zsh appends each
+  command to HISTFILE as it runs — `clicue data` itself moves the history
+  before it can look — so in a live shell the corpus is always at least one
+  command behind, and a rebuild can never present as "current" for more than
+  zero keystrokes. [MEASURED 2026-08-03] Status reporting therefore
+  distinguishes *trailing history* (the working state of derived data;
+  resolved at the next daemon start or an explicit `clicue data rebuild` —
+  there is no background schedule, and the wording must not imply one) from
+  *structural* staleness (format version or `$path` changed — glosses may be
+  missing or wrong; worth a hand rebuild). A vanished histfile still reads
+  as trailing: a structural verdict there would advise a rebuild that erases
+  the only remaining copy of the habits. Every reporting surface routes
+  through the one classifier — two surfaces disagreeing about the same
+  corpus undermines the one that is right. The rebuild trigger itself stays
+  exact-match: folding new history at the next build point is what it is
+  for. Two guards keep the classifier honest: the stamp grammar lives in a
+  single render/parse pair beside the producer (S2 — one owner per fact,
+  pinned by a round-trip test), and the stamp is taken BEFORE the inputs
+  are read, so a change landing mid-build (whatis takes seconds)
+  reschedules instead of hiding behind a stamp newer than the data it
+  describes. (corpus.rs `StampParts`/`staleness`/`build_with`; main.rs data
+  status; doctor.rs corpus_state)
 
 ## L — load and lifecycle
 

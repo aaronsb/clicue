@@ -455,23 +455,25 @@ pub fn corpus_state() -> String {
     match corpus::cache_path() {
         Ok(cache) => match corpus::load(&cache) {
             Ok(c) => {
-                let stale = corpus::default_histfile()
-                    .map(|h| corpus::is_stale(&c, &corpus::stamp(&h, &corpus::path_dirs())))
-                    .unwrap_or(true);
-                if stale {
-                    format!(
+                // Same classifier as `clicue data` (S6): two surfaces
+                // disagreeing about the same corpus undermine the right one.
+                // Trailing history is the working state of a live shell.
+                let state = corpus::default_histfile()
+                    .map(|h| corpus::staleness(&c, &corpus::stamp(&h, &corpus::path_dirs())))
+                    .unwrap_or(corpus::Staleness::Structural);
+                match state {
+                    corpus::Staleness::Structural => format!(
                         "{} — STALE ({} glosses, {} invocations); run `clicue data rebuild`",
                         cache.display(),
                         c.gloss.len(),
                         c.invoke.len()
-                    )
-                } else {
-                    format!(
+                    ),
+                    _ => format!(
                         "{} — current ({} glosses, {} invocations)",
                         cache.display(),
                         c.gloss.len(),
                         c.invoke.len()
-                    )
+                    ),
                 }
             }
             Err(_) => format!(

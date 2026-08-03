@@ -185,7 +185,7 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                     let state = match corpus::staleness(&c, &current) {
                         corpus::Staleness::Current => "current",
                         corpus::Staleness::TrailingHistory => {
-                            "current (trailing live history — new commands fold in at the daemon's next corpus build)"
+                            "current (trailing live history — folds in at the next daemon start, or now via `clicue data rebuild`)"
                         }
                         corpus::Staleness::Structural => {
                             "STALE — corpus format or installed commands changed; run `clicue data rebuild`"

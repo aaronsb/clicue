@@ -400,20 +400,67 @@ pub fn build_from_parts(
 
 // ── IO: stamp, scan, build, persist ─────────────────────────────────────
 
+/// The stamp's grammar, render and parse in ONE pair (S2: one owner per
+/// fact — the classifier below must not be able to drift from the
+/// producer; a round-trip test pins them together). Components:
+/// `v{FORMAT_VERSION}`, then `h{mtime}.{len}` for the histfile (the only
+/// component with a letter prefix; absent when the file is), then one
+/// bare mtime per `$path` directory, order-sensitive.
+#[derive(Debug, PartialEq, Eq)]
+struct StampParts {
+    version: String,
+    history: Option<String>,
+    dirs: Vec<String>,
+}
+
+impl StampParts {
+    fn render(&self) -> String {
+        let mut s = self.version.clone();
+        if let Some(h) = &self.history {
+            s.push(':');
+            s.push_str(h);
+        }
+        for d in &self.dirs {
+            s.push(':');
+            s.push_str(d);
+        }
+        s
+    }
+    fn parse(s: &str) -> StampParts {
+        let mut comps = s.split(':');
+        let version = comps.next().unwrap_or("").to_string();
+        let mut history = None;
+        let mut dirs = Vec::new();
+        for c in comps {
+            if c.starts_with('h') {
+                history = Some(c.to_string());
+            } else {
+                dirs.push(c.to_string());
+            }
+        }
+        StampParts {
+            version,
+            history,
+            dirs,
+        }
+    }
+}
+
 /// Input stamp (S1): format version, histfile mtime+size, `$PATH` dir
 /// mtimes. Computed in exactly one place — this function (S2).
 pub fn stamp(histfile: &Path, path_dirs: &[PathBuf]) -> String {
     use std::os::unix::fs::MetadataExt;
-    let mut s = format!("v{FORMAT_VERSION}");
-    if let Ok(meta) = fs::metadata(histfile) {
-        s.push_str(&format!(":h{}.{}", meta.mtime(), meta.len()));
+    StampParts {
+        version: format!("v{FORMAT_VERSION}"),
+        history: fs::metadata(histfile)
+            .ok()
+            .map(|m| format!("h{}.{}", m.mtime(), m.len())),
+        dirs: path_dirs
+            .iter()
+            .filter_map(|d| fs::metadata(d).ok().map(|m| m.mtime().to_string()))
+            .collect(),
     }
-    for d in path_dirs {
-        if let Ok(meta) = fs::metadata(d) {
-            s.push_str(&format!(":{}", meta.mtime()));
-        }
-    }
-    s
+    .render()
 }
 
 /// A stale corpus is still served (S3); staleness only schedules a rebuild.
@@ -441,12 +488,12 @@ pub fn staleness(corpus: &Corpus, current_stamp: &str) -> Staleness {
     if corpus.stamp == current_stamp {
         return Staleness::Current;
     }
-    // Stamp grammar (S1): `v{N}` `:h{mtime}.{len}` `:{dir-mtime}`* — the
-    // history component is the only one carrying an `h` prefix.
-    fn structural(s: &str) -> Vec<&str> {
-        s.split(':').filter(|c| !c.starts_with('h')).collect()
-    }
-    if structural(&corpus.stamp) == structural(current_stamp) {
+    let a = StampParts::parse(&corpus.stamp);
+    let b = StampParts::parse(current_stamp);
+    if a.version == b.version && a.dirs == b.dirs {
+        // Only the history component moved — including gone entirely: a
+        // structural verdict for a vanished histfile would advise a
+        // rebuild that erases the only remaining copy of the habits.
         Staleness::TrailingHistory
     } else {
         Staleness::Structural
@@ -504,23 +551,31 @@ pub fn read_histfile(path: &Path) -> String {
 }
 
 /// Full build with IO: read HISTFILE, run whatis, scan PATH, stamp.
-/// The stamp is taken BEFORE the inputs are read: an input that changes
-/// mid-build (whatis takes seconds) then mismatches and schedules another
-/// pass, instead of being masked behind a stamp newer than the data.
 pub fn build() -> Result<Corpus> {
     let histfile = default_histfile()?;
     let dirs = path_dirs();
-    let taken = stamp(&histfile, &dirs);
-    let history_text = read_histfile(&histfile);
-    let installed = scan_path(&dirs);
-    let whatis_text = std::process::Command::new("whatis")
-        .args(["-w", "*"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    Ok(build_with(&histfile, &dirs, || {
+        std::process::Command::new("whatis")
+            .args(["-w", "*"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    }))
+}
+
+/// The stamp is taken BEFORE the inputs are read (S6): an input that
+/// changes mid-build (whatis takes seconds) then mismatches and schedules
+/// another pass, instead of being masked behind a stamp newer than the
+/// data. `whatis` is a seam so a test can mutate the inputs mid-build and
+/// hold that ordering in place.
+pub fn build_with(histfile: &Path, dirs: &[PathBuf], whatis: impl FnOnce() -> String) -> Corpus {
+    let taken = stamp(histfile, dirs);
+    let history_text = read_histfile(histfile);
+    let installed = scan_path(dirs);
+    let whatis_text = whatis();
     let mut corpus = build_from_parts(&history_text, &whatis_text, &installed);
     corpus.stamp = taken;
-    Ok(corpus)
+    corpus
 }
 
 /// `$XDG_CACHE_HOME/clicue/corpus.json`, falling back to `~/.cache`.
@@ -709,8 +764,53 @@ sshd (8)             - OpenSSH daemon
             staleness(&c, "v1:h100.200:300:400:500"),
             Staleness::Structural
         );
-        // Histfile appearing where there was none is still only history.
+        // Histfile appearing where there was none is still only history —
+        // and vanishing likewise: a structural verdict there would advise
+        // a rebuild that erases the only remaining copy of the habits.
         c.stamp = "v1:300:400".into();
         assert_eq!(staleness(&c, "v1:h5.6:300:400"), Staleness::TrailingHistory);
+        c.stamp = "v1:h5.6:300:400".into();
+        assert_eq!(staleness(&c, "v1:300:400"), Staleness::TrailingHistory);
+    }
+
+    #[test]
+    fn stamp_grammar_round_trips() {
+        // S2/S6: render and parse are one pair — a component added to one
+        // side without the other breaks here, not silently in production.
+        for s in ["v1:h100.200:300:400", "v1:300:400", "v3", "v1:h1.2"] {
+            assert_eq!(StampParts::parse(s).render(), s);
+        }
+    }
+
+    #[test]
+    fn the_stamp_predates_the_reads() {
+        // S6 corollary: an input mutated mid-build (here, from inside the
+        // whatis seam) must leave the corpus stamped OLDER than the file,
+        // so the change reschedules instead of being masked.
+        let dir = std::env::temp_dir().join(format!("clicue-stamp-order-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        let hist = dir.join("hist");
+        fs::write(&hist, ": 1700000000:0;git status\n").unwrap();
+        let pre = stamp(&hist, &[]);
+        let c = build_with(&hist, &[], || {
+            fs::write(
+                &hist,
+                "a much longer replacement that changes the recorded length\n",
+            )
+            .unwrap();
+            String::new()
+        });
+        assert_eq!(
+            c.stamp, pre,
+            "stamp must be taken before the inputs are read"
+        );
+        assert_ne!(
+            stamp(&hist, &[]),
+            pre,
+            "the mid-build change stays visible to the next staleness check"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }
