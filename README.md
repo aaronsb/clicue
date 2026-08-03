@@ -73,7 +73,9 @@ The card's **width fits its content**: two short candidates do not get a
 120-column box, and a long remembered `git clone git@…` line gets the room it
 needs instead of clipping against a fixed column. `min-width` and `max-width`
 bound it, each either absolute columns or a percentage of the terminal
-(`clicue config set min-width 40%`; defaults 30% and 120). Width holds still
+(`clicue config set min-width 40%`; defaults 30% and 120 — on a very wide
+terminal the percentage meets the 120-column cap and every card sits at the
+cap; raise `max-width` if you want content-fit back there). Width holds still
 while you scroll and navigate — it is sized to the candidate set, not to
 whatever happens to be on screen — and a literal floor keeps the legend
 legible however small the minimum.

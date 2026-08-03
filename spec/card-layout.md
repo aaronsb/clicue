@@ -19,7 +19,10 @@ policed by hand at the theme layer. The daemon must measure **columns**
   redisplay wraps rather than writes in the last column; a card exactly
   `COLUMNS` wide pushes every row's closing border onto its own line. Verified
   in a 104-column pty; the bug hid because the max-width cap happened to leave
-  one column of slack at the author's 121-column terminal. (render.zsh:297-310;
+  one column of slack at the author's 121-column terminal. The property is
+  asserted from 12 columns up: below that arithmetic minimum the gloss
+  column's floor-1 exceeds the window (pre-existing, unchanged by W5/W6 —
+  a sub-12-column terminal is not running a usable shell). (render.zsh:297-310;
   property-tested across widths, test.zsh:994-1016)
 - W2 [domain] Width is capped at 120 columns by default (a cap, not a target —
   long rows scan poorly), configurable (`max-width`). Both bounds accept
@@ -140,8 +143,10 @@ policed by hand at the theme layer. The daemon must measure **columns**
   clipped every explanation on candidate-less cards. Not the visible window
   and not tier-2 items: under W6 the width follows this measurement, and a
   basis that changes as the operator scrolls or pages is a card that
-  resizes mid-navigation. The gloss bar clips a grid selection to the same
-  basis for the same reason. (573-588)
+  resizes mid-navigation. The gloss bar shows a grid selection at the room
+  its own row already has (never driving the width): tier-1 alignment does
+  no work on that row when the grid holds focus, and the row's job is to
+  say what is selected. (573-588)
 - C2 [domain] Names take what the room allows: when the card fit its content
   (W6) the name column is exactly the longest label; squeezed against
   `max-width`, glosses keep their measured need down to the old baseline of

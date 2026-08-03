@@ -249,6 +249,20 @@ pub fn load_str(src: &str) -> Loaded {
         }
     }
 
+    // Statically comparable bounds only — Cols vs Pct depends on the
+    // terminal and is resolved (max wins) at render.
+    let inverted = match (cfg.min_width, cfg.max_width) {
+        (WidthBound::Cols(a), WidthBound::Cols(b)) => a > b,
+        (WidthBound::Pct(a), WidthBound::Pct(b)) => a > b,
+        _ => false,
+    };
+    if inverted {
+        warnings.push(format!(
+            "min-width = {} exceeds max-width = {} — max-width wins at render",
+            cfg.min_width, cfg.max_width
+        ));
+    }
+
     Loaded {
         config: cfg,
         from_file,
