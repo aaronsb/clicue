@@ -63,8 +63,13 @@ publish-guard:
 	@test "$$(git describe --exact-match --tags HEAD 2>/dev/null)" = "v$(VERSION)" \
 	  || { echo "HEAD is not at v$(VERSION) — the artifact would not match the tag" >&2; exit 1; }
 
-publish: publish-guard package ## Upload the artifact to the GitHub release, then push AUR
-	gh release upload v$(VERSION) dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz.sha256 $(if $(FORCE),--clobber,)
+publish: publish-guard package ## Upload artifacts to the GitHub release, then push AUR
+	# The release-asset PKGBUILD carries a REAL checksum — unlike the repo
+	# copy (SKIP by design), an asset is not inside the tarball it sums, so
+	# no circularity. `makepkg` against these two files is the no-AUR path.
+	cp packaging/aur/PKGBUILD packaging/aur/clicue.install dist/
+	cd dist && updpkgsums PKGBUILD
+	gh release upload v$(VERSION) dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz.sha256 dist/PKGBUILD dist/clicue.install $(if $(FORCE),--clobber,)
 	zsh packaging/publish-aur.zsh
 
 clean:
