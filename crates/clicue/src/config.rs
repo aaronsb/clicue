@@ -53,6 +53,12 @@ pub struct Config {
     pub history_window: usize,
     /// 0 = familiarity collapse disabled (the prototype's default).
     pub familiar_percentile: u8,
+    /// The "you are here" pane: `fisheye` | `off`. Kept as text like
+    /// `ranking`; `off` disables nav scanning entirely — no hidden I/O
+    /// behind a hidden pane (design note "off means off"). `columns` is
+    /// designed but unimplemented and is refused rather than accepted as
+    /// a spelling that lies (design value 1).
+    pub nav_view: String,
     /// command → what it emulates (`ls = "lsd"`): the declared-emulation
     /// map that alias resolution consults first (compsys-bridge A-rules).
     pub emulates: BTreeMap<String, String>,
@@ -71,6 +77,7 @@ impl Default for Config {
             tier2_rows: None,
             history_window: 2000,
             familiar_percentile: 0,
+            nav_view: "fisheye".into(),
             emulates: BTreeMap::new(),
             keys: KeysCfg::default(),
         }
@@ -184,6 +191,23 @@ pub fn load_str(src: &str) -> Loaded {
                 take_usize(&key, &value, &mut v, &mut warnings, &mut took);
                 if took {
                     cfg.tier2_rows = Some(v);
+                }
+            }
+            "nav-view" => {
+                take_string(&key, &value, &mut cfg.nav_view, &mut warnings, &mut took);
+                if took && !matches!(cfg.nav_view.as_str(), "fisheye" | "off") {
+                    if cfg.nav_view == "columns" {
+                        warnings.push(
+                            "nav-view = \"columns\" is designed but not yet implemented — treated as fisheye"
+                                .into(),
+                        );
+                    } else {
+                        warnings.push(format!(
+                            "nav-view = {:?} is not fisheye|off — treated as fisheye",
+                            cfg.nav_view
+                        ));
+                    }
+                    cfg.nav_view = "fisheye".into();
                 }
             }
             "history-window" => take_usize(
@@ -360,6 +384,7 @@ pub const SCALAR_KEYS: &[&str] = &[
     "min-width",
     "max-width",
     "max-lines",
+    "nav-view",
 ];
 
 /// Validated scalar write: unknown keys and values the parser would
@@ -494,6 +519,11 @@ pub fn render_effective(loaded: &Loaded, path_shown: &str) -> String {
         prov("tier2-rows")
     );
     s += &format!(
+        "  nav-view             {:<12} ({})\n",
+        c.nav_view,
+        prov("nav-view")
+    );
+    s += &format!(
         "  history-window       {:<12} ({})\n",
         c.history_window,
         prov("history-window")
@@ -546,6 +576,19 @@ mod tests {
 
     #[test]
     fn partial_file_sets_only_what_it_names() {
+        let l = load_str("nav-view = \"off\"\n");
+        assert_eq!(l.config.nav_view, "off");
+        assert!(l.warnings.is_empty());
+        let l = load_str("nav-view = \"columns\"\n");
+        assert_eq!(
+            l.config.nav_view, "fisheye",
+            "columns is refused until it renders"
+        );
+        assert!(l.warnings.iter().any(|w| w.contains("columns")));
+        let l = load_str("nav-view = \"sideways\"\n");
+        assert_eq!(l.config.nav_view, "fisheye");
+        assert!(l.warnings.iter().any(|w| w.contains("fisheye|off")));
+
         let l = load_str("theme = \"mono\"\ntier1-rows = 6\n");
         assert_eq!(l.config.theme, "mono");
         assert_eq!(l.config.tier1_rows, 6);

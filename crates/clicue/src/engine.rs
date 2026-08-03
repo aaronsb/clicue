@@ -49,6 +49,9 @@ pub struct Engine {
     /// across shells. Rebuilt empty on a hot-reload swap: the cache is
     /// warmth, not state, and a cold first render costs ~0.1 ms.
     nav_scanner: Mutex<NavScanner>,
+    /// nav-view != "off". Off means off: no resolution rows, no
+    /// suggestions, and the scanner is never invoked (no hidden I/O).
+    nav_enabled: bool,
 }
 
 /// What candidate resolution produced, beyond the cues themselves.
@@ -168,6 +171,7 @@ impl Engine {
             hist_seed,
             sessions,
             nav_scanner: Mutex::new(NavScanner::new()),
+            nav_enabled: cfgf.nav_view != "off",
         })
     }
 
@@ -395,6 +399,9 @@ impl Engine {
         pos: &state::Position,
         navctx: Option<&NavContext>,
     ) -> Option<Cue> {
+        if !self.nav_enabled {
+            return None;
+        }
         let ctx = navctx?;
         if pos.pfx.is_empty() || !self.navigational(sess, pos) {
             return None;
@@ -592,7 +599,7 @@ impl Engine {
             return Vec::new();
         }
         let mut rows = Vec::new();
-        if let Some(ctx) = navctx {
+        if let Some(ctx) = navctx.filter(|_| self.nav_enabled) {
             if !pos.pfx.is_empty() && self.navigational(sess, pos) {
                 let home = std::env::var("HOME").ok();
                 if let Some(r) = nav::resolve_target(
@@ -830,6 +837,7 @@ mod tests {
             hist_seed: vec!["git status".into(), "cargo build".into()],
             sessions: SharedSessions::default(),
             nav_scanner: Mutex::new(NavScanner::new()),
+            nav_enabled: true,
         }
     }
 
@@ -1072,6 +1080,27 @@ mod tests {
             other => panic!("expected insert or consume, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nav_view_off_means_no_rows_and_no_scan() {
+        use crate::protocol::NavContext;
+        let mut e = engine_with(test_corpus());
+        e.nav_enabled = false;
+        let mut r = req(Event::Redraw, "cd nowhere-at-all");
+        r.nav = Some(NavContext {
+            // A pwd that does not exist: if the scanner ran despite the
+            // gate it would still be harmless, but the rows must be gone.
+            pwd: "/nonexistent-clicue-navoff".into(),
+            oldpwd: None,
+            dirstack: vec![],
+        });
+        let rep = e.handle(r);
+        assert!(
+            !rep.card.contains("→") && !rep.card.contains("did you mean"),
+            "off means off: {}",
+            rep.card
+        );
     }
 
     #[test]
