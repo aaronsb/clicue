@@ -1,8 +1,9 @@
 //! The daemon: socket lifecycle and the per-connection serve loop.
 //!
 //! Contract: spec/protocol.md §§1–3 (transport), §8–10 (failure,
-//! versioning). The render path is a stub until the layout and source
-//! modules land; the transport and framing here are final.
+//! versioning). The engine behind the socket lives in engine.rs; the
+//! input-watching swap machinery that keeps it current lives in
+//! reload.rs (spec corpus.md S7).
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
@@ -10,8 +11,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -127,87 +127,11 @@ fn bind(path: &Path) -> Result<(UnixListener, File)> {
 pub fn run() -> Result<()> {
     let path = socket_path()?;
     let (listener, _lock) = bind(&path)?; // lock lives as long as serve()
-    let render = reloading_render(crate::config::config_path().ok(), Duration::from_secs(1))?;
+    let render = crate::reload::reloading_render(
+        crate::reload::WatchSet::daemon_inputs(),
+        Duration::from_secs(1),
+    )?;
     serve_with(listener, render)
-}
-
-fn cfg_stat(path: &Path) -> Option<(SystemTime, u64)> {
-    let m = fs::metadata(path).ok()?;
-    Some((m.modified().ok()?, m.len()))
-}
-
-/// Engine that follows the config file: when its mtime/size changes, the
-/// next request (rate-limited to one stat per `min_interval`) swaps in a
-/// freshly built engine. Sessions are shared across swaps, so open shells
-/// keep their hello universes, dismissals and live harvests; a rebuild
-/// that fails keeps the current engine. This is why `theme set` and
-/// `config set` never ask for a daemon restart — and why an invalid edit
-/// behaves exactly like a daemon restart would (per-key fallback with
-/// warnings), never worse.
-pub fn reloading_render(cfg: Option<PathBuf>, min_interval: Duration) -> Result<Render> {
-    let sessions = crate::engine::SharedSessions::default();
-    let mk = move || -> Result<Render> {
-        let engine = std::sync::Arc::new(crate::engine::Engine::new_shared(sessions.clone())?);
-        Ok(std::sync::Arc::new(move |req| engine.handle(req)) as Render)
-    };
-    reloading_with(cfg, min_interval, mk)
-}
-
-/// The swap mechanism, factory-injected so tests need no real engine.
-fn reloading_with(
-    cfg: Option<PathBuf>,
-    min_interval: Duration,
-    factory: impl Fn() -> Result<Render> + Send + Sync + 'static,
-) -> Result<Render> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let current = std::sync::Arc::new(RwLock::new(factory()?));
-    let factory = std::sync::Arc::new(factory);
-    let building = std::sync::Arc::new(AtomicBool::new(false));
-    // Stat AFTER the first build: a write landing during it must trigger
-    // a reload, not be mistaken for the state already built.
-    let state = std::sync::Arc::new(Mutex::new((
-        Instant::now(),
-        cfg.as_deref().and_then(cfg_stat),
-    )));
-    Ok(std::sync::Arc::new(move |req| {
-        if let Some(p) = &cfg {
-            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-            if st.0.elapsed() >= min_interval {
-                st.0 = Instant::now();
-                let now = cfg_stat(p);
-                if now != st.1 && !building.swap(true, Ordering::SeqCst) {
-                    st.1 = now;
-                    // Build OFF the request path: an engine build takes far
-                    // longer than the shim's 5ms deadline, and a blocked
-                    // request reads as a wedged daemon. Requests keep
-                    // flowing on the current engine until the swap. A
-                    // failed build clears the stamp so the next interval
-                    // retries (bounded: one build per interval) instead of
-                    // freezing on the old engine until another edit.
-                    let current = current.clone();
-                    let factory = factory.clone();
-                    let building = building.clone();
-                    let state = state.clone();
-                    std::thread::spawn(move || {
-                        match factory() {
-                            Ok(r) => {
-                                *current.write().unwrap_or_else(|e| e.into_inner()) = r;
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "clicue daemon: config reload failed, keeping current: {e:#}"
-                                );
-                                state.lock().unwrap_or_else(|e| e.into_inner()).1 = None;
-                            }
-                        }
-                        building.store(false, Ordering::SeqCst);
-                    });
-                }
-            }
-        }
-        let r = current.read().unwrap_or_else(|e| e.into_inner()).clone();
-        r(req)
-    }))
 }
 
 pub fn serve(listener: UnixListener) -> Result<()> {
@@ -425,49 +349,6 @@ mod tests {
         let mut rest = String::new();
         let n = BufReader::new(conn).read_line(&mut rest).unwrap();
         assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn reload_swaps_on_config_change_and_keeps_current_on_failure() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let dir = temp_dir("reload");
-        let cfg = dir.join("config.toml");
-        fs::write(&cfg, "theme = \"aura\"\n").unwrap();
-        let gen = std::sync::Arc::new(AtomicUsize::new(0));
-        let g = gen.clone();
-        let render = reloading_with(Some(cfg.clone()), Duration::ZERO, move || {
-            let n = g.fetch_add(1, Ordering::SeqCst) + 1;
-            if n == 3 {
-                anyhow::bail!("boom"); // third build fails: engine must survive
-            }
-            Ok(std::sync::Arc::new(move |_req| Reply {
-                card: format!("gen{n}"),
-                ..Reply::stand_down()
-            }) as Render)
-        })
-        .unwrap();
-        let req = || serde_json::from_str::<Request>(&request_line(VERSION)).unwrap();
-        // Swaps land asynchronously (built off the request path): poll.
-        let until = |want: &str| {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                let got = render(req()).card;
-                if got == want {
-                    return;
-                }
-                assert!(Instant::now() < deadline, "expected {want}, stuck at {got}");
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        };
-        assert_eq!(render(req()).card, "gen1");
-        assert_eq!(render(req()).card, "gen1", "unchanged file, no swap");
-        // mtime granularity can be coarse; changing LENGTH always registers
-        fs::write(&cfg, "theme = \"mono\"  \n").unwrap();
-        until("gen2");
-        // build 3 fails (async): the current engine survives, and the
-        // cleared stamp retries on a later interval WITHOUT another edit
-        fs::write(&cfg, "theme = \"plain\"\n").unwrap();
-        until("gen4");
     }
 
     #[test]

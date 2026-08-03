@@ -101,6 +101,26 @@ review ranked as its top finding. Tags per `spec/README.md`.
   reschedules instead of hiding behind a stamp newer than the data it
   describes. (corpus.rs `StampParts`/`staleness`/`build_with`; main.rs data
   status; doctor.rs corpus_state)
+- S7 [domain] Every artifact the daemon derives itself from — config file,
+  corpus cache, operator theme files — is watched by ONE reloader, so every
+  CLI verb that rewrites an input (`config set`, `theme set`, `data
+  rebuild`, `data forget`) applies live through the same engine swap, and
+  none of them may tell the operator to restart. Two deliberate exclusions:
+  the flag store (the daemon's own harvest ingests write it — watching it
+  would make the daemon reload itself on every first-Tab), and hot-reload
+  swaps never rebuild a merely-stale corpus (`CorpusPolicy::LoadOnly`).
+  Only the daemon's FIRST engine rebuilds-if-stale: a live histfile moves
+  with every command, so a swap that rebuilt-if-stale would run a
+  whatis-sized build on every config edit and — because the build's save
+  re-triggers the corpus watch — could chase a busy shell in a rebuild
+  loop. An absent or unreadable cache still falls back to one build per
+  swap, bounded at a single extra swap: the save re-triggers the watch
+  once and the second swap loads cleanly, writing nothing. The watched
+  paths are built from the same functions the loaders read
+  (`config::config_path`, `config::themes_dir`, `corpus::cache_path`) —
+  a watch on a path nothing loads from reports "applied live" to an
+  engine that never read it. (reload.rs `WatchSet`/`reloading_render`;
+  engine.rs `CorpusPolicy`)
 
 ## L — load and lifecycle
 
