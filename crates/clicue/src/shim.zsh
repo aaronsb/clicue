@@ -189,9 +189,14 @@ _clicue_disconnect() {
   _clicue_fd=
 }
 
-# One request line out, one reply line in, 5ms read deadline (spec §8). One
-# reconnect attempt per event, never more — reconnect costs 0.26ms measured,
-# but a wedged daemon must cost one deadline, not several.
+# One request line out, one reply line in, 25ms read deadline (spec §8,
+# amended: 5ms was measured against sub-KB replies; a nav card is ~27KB
+# with a harvest-laden request, and the round trip measured 9-10ms — the
+# old deadline failed HEALTHY traffic at the edge, and a fired deadline
+# delegates the completion key, which inserts [MEASURED 2026-08-03]). One
+# reconnect attempt per event, never more — a wedged daemon must cost one
+# deadline, not several; 25ms is the typing-latency gate, so the worst
+# wedge costs one gated keystroke.
 _clicue_rpc() {
   (( _clicue_dead )) && return 1
   local -i attempt
@@ -201,7 +206,7 @@ _clicue_rpc() {
     if syswrite -o $_clicue_fd "$1"$'\n' 2>/dev/null; then
       buf=''
       while [[ $buf != *$'\n' ]]; do
-        if ! sysread -i $_clicue_fd -t 0.005 chunk 2>/dev/null; then
+        if ! sysread -i $_clicue_fd -t 0.025 chunk 2>/dev/null; then
           buf=''
           break
         fi

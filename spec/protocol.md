@@ -99,12 +99,17 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
 
 ## Failure
 
-8. The shim applies a hard read deadline of 5 ms per event. On timeout,
+8. The shim applies a hard read deadline of 25 ms per event. On timeout,
    connection error, or absent socket: **no card, ever a degraded one** —
    POSTDISPLAY untouched, all keys delegate to their original owners. The
    prototype's design value 1 (no invisible fallback) promoted to a wire
-   rule. A healthy daemon replies in <0.1 ms [MEASURED], so a fired deadline
-   means the daemon is genuinely wedged, not slow.
+   rule. Amended from 5 ms: that number was measured against sub-KB
+   replies; a nav card measures ~27 KB against a harvest-laden request
+   and the healthy round trip 9–10 ms [MEASURED 2026-08-03], so the old
+   deadline failed healthy traffic — and a deadline fired on the
+   completion key DELEGATES it, which inserts text, the worst outcome
+   (H8). 25 ms is the typing-latency gate: a genuinely wedged daemon
+   costs one gated keystroke and then silence.
 8a. Closing the socket fd must be a BARE `exec {fd}>&-`: redirections on
    `exec` are permanent, so an error-suppressing `2>/dev/null` on that
    line rewires the shell's stderr to /dev/null for the session — every
