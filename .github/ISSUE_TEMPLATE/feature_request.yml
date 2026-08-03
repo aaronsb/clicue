@@ -1,0 +1,21 @@
+name: Feature request
+description: Something the card, tools, or themes should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What should happen
+      description: >
+        Describe the moment at the prompt where clicue could have helped
+        and didn't — the keystrokes, and what you wish had appeared.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Fit
+      description: >
+        clicue never runs commands, never degrades a card (absent beats
+        wrong), and delegates every key it doesn't need. If the idea bends
+        one of those, say which and why it's worth it.
