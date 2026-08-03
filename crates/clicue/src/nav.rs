@@ -352,11 +352,18 @@ pub fn resolve_target(
 
 /// The failure-only recommendation (design note): a suggestion exists
 /// ONLY when the typed target does not resolve from here AND exactly one
-/// known directory matches its final component — by full name, or
-/// failing that by unique prefix. Ambiguity degrades to silence: guessing
-/// wrong three ways is worse than the honest resolution-failure row.
+/// known directory carries exactly its final component as a name.
+/// Ambiguity degrades to silence: guessing wrong three ways is worse
+/// than the honest resolution-failure row.
 /// The pool in the zero-data slice is what relayed place and the scanner
 /// already know: children, siblings, ancestors, dirstack, oldpwd.
+///
+/// A match living in the SAME directory the typed path points at is
+/// excluded: that is an unfinished name being typed, and completing it
+/// is compsys's job — mid-word, every prefix is transiently "failing",
+/// and a card that recommends on every keystroke of a correct name has
+/// abandoned the failure-only rule from the inside. The suggestion is a
+/// correction of *place*, never of spelling-in-progress.
 pub fn did_you_mean(
     typed: &str,
     pwd: &str,
@@ -366,6 +373,9 @@ pub fn did_you_mean(
 ) -> Option<PathBuf> {
     let want = Path::new(typed).file_name()?.to_string_lossy().into_owned();
     let pwdp = Path::new(pwd);
+    let typed_parent = normalize(&pwdp.join(typed))
+        .parent()
+        .map(|p| p.to_path_buf());
     let mut pool: Vec<PathBuf> = Vec::new();
     pool.extend(rings.children.iter().map(|c| pwdp.join(&c.name)));
     if let Some(parent) = pwdp.parent() {
@@ -381,25 +391,22 @@ pub fn did_you_mean(
     pool.sort_unstable();
     pool.dedup();
     pool.retain(|p| p != pwdp);
+    pool.retain(|p| p.parent().map(|pp| pp.to_path_buf()) != typed_parent);
 
     let name_of = |p: &PathBuf| {
         p.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "/".into())
     };
+    // Exact final-component match ONLY. A prefix fallback was built and
+    // measured out: mid-typing, every keystroke is a transient prefix,
+    // and one uniquely matched a stranger directory in /tmp — junk with
+    // full confidence. Prefix affinity belongs to ranked destinations
+    // (deferred), where rank supplies the confidence a prefix lacks.
     let exact: Vec<&PathBuf> = pool.iter().filter(|p| name_of(p) == want).collect();
     match exact.len() {
-        1 => return Some(exact[0].clone()),
-        0 => {}
-        _ => return None, // ambiguous — silence
-    }
-    let pfx: Vec<&PathBuf> = pool
-        .iter()
-        .filter(|p| name_of(p).starts_with(&want))
-        .collect();
-    match pfx.len() {
-        1 => Some(pfx[0].clone()),
-        _ => None,
+        1 => Some(exact[0].clone()),
+        _ => None, // absent or ambiguous — silence either way
     }
 }
 
@@ -602,15 +609,22 @@ mod tests {
             did_you_mean("nope/alpha", &pwds, &rings, None, &[]),
             Some(pwd.join("alpha"))
         );
-        // Unique prefix match against a sibling.
+        // Full-name match against a sibling.
         assert_eq!(
             did_you_mean("sibling1", &pwds, &rings, None, &[]),
             Some(fx.0.join("sibling1"))
         );
-        // Ambiguous prefix (sibling1/sibling2) → silence.
+        // A prefix is NOT a match — mid-typing must stay silent, however
+        // uniquely it happens to match (measured: a transient "pr" once
+        // suggested a stranger's /tmp directory with full confidence).
         assert_eq!(did_you_mean("sib", &pwds, &rings, None, &[]), None);
+        assert_eq!(did_you_mean("sibling", &pwds, &rings, None, &[]), None);
         // Nothing matches → silence.
         assert_eq!(did_you_mean("zzz", &pwds, &rings, None, &[]), None);
+        // A prefix of a child IS a name being typed — completion is
+        // compsys's job, so the correction stays silent.
+        assert_eq!(did_you_mean("alp", &pwds, &rings, None, &[]), None);
+        assert_eq!(did_you_mean("alpha", &pwds, &rings, None, &[]), None);
         // The dirstack is part of the pool.
         let ds = vec!["/somewhere/target-dir".to_string()];
         assert_eq!(

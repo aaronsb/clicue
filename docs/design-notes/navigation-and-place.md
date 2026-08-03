@@ -174,15 +174,29 @@ lesson "commands act where you are" is not told, it is made ambient.
 > **Recommend only at the moment the typed line is about to fail. Otherwise,
 > explain.**
 
-"Did you mean" fires only when (the target does not resolve from here) AND (a
-unique suffix/component match exists among known directories — dirstack, ancestors,
-scanned children/siblings in this slice; the ranked pool later). It is a candidate
-row, Tab-reachable, never a buffer rewrite (H8: losing what you typed is the worst
-outcome). Ambiguity degrades to silence — guessing wrong three ways is worse than
-the honest resolution-failure row alone. The rule's payoff is structural: the
-recommendation surface cannot accumulate, and an operator who never mistypes never
-sees one. Recommending at success-point ("you could have used `z`") is nagging at a
-30-year habit and is rejected below.
+"Did you mean" fires only when (the target does not resolve from here) AND (exactly
+one known directory — dirstack, ancestors, scanned children/siblings in this slice;
+the ranked pool later — carries exactly the typed final component as its name). It
+is a candidate row, Tab-reachable, never a buffer rewrite (H8: losing what you typed
+is the worst outcome). Ambiguity degrades to silence — guessing wrong three ways is
+worse than the honest resolution-failure row alone. The rule's payoff is structural:
+the recommendation surface cannot accumulate, and an operator who never mistypes
+never sees one. Recommending at success-point ("you could have used `z`") is nagging
+at a 30-year habit and is rejected below.
+
+Two constraints arrived while building it, both from the e2e pty and both the
+failure-only rule defending itself **[MEASURED]**:
+
+- **A match in the directory the typed path already points at is excluded.**
+  Mid-word, every keystroke of a correct name is transiently "failing", and the
+  card recommended `projects-dir` on every letter of `projects-dir` being typed —
+  a completion wearing a correction's clothes, and completion is compsys's job.
+  The suggestion corrects *place*, never spelling-in-progress.
+- **No prefix fallback — exact name or silence.** The first cut matched unique
+  prefixes, and a transient `pr` confidently suggested a stranger's
+  `/tmp/pressure-vessel-libs-…`. A prefix carries no evidence of intent; rank
+  would supply that, and rank is the deferred half. Until then a prefix is not a
+  match.
 
 ### 5. `nav.view` — two views later, one now, and off means off
 
