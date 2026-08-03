@@ -30,7 +30,7 @@ Rebuild clicue as **one Rust binary** (`clicue`) containing a daemon and a CLI t
 **The tool surface** (subcommands of the same binary):
 
 - `clicue init zsh` — emit the shim (the zoxide pattern).
-- `clicue install` / `uninstall` — doctor first, then add/remove the one `eval "$(clicue init zsh)"` line, plugin-manager-aware, diff shown before writing. Uninstall restores captured original bindings.
+- `clicue install` / `uninstall` — doctor first, then add/remove the one shim line (`if command -v clicue >/dev/null; then eval "$(clicue init zsh)"; fi` — guarded so package removal leaves shells quiet), plugin-manager-aware, diff shown before writing. Uninstall restores captured original bindings.
 - `clicue doctor` — probe a captive `zsh -i` (never parse config text) and report: genuine fighters (zsh-autocomplete, fzf-tab, other Tab owners), coexistence checks (zsh-autosuggestions wrap targets), silent degradations (no EXTENDED_HISTORY → recency dead, small HISTSIZE, missing whatis), terminal quirks (konsole eating Shift+arrows). Re-runnable anytime.
 - `clicue config` — TOML in `$XDG_CONFIG_HOME/clicue/`, hot-reloaded by the daemon; kills the "zstyles must precede source" footgun.
 - `clicue theme` — list/set/preview; themes are TOML; validation with fallback to a base that renders anywhere; glyph widths measured with `unicode-width` instead of policed by hand.

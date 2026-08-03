@@ -4,10 +4,10 @@
 # test suite, not built.
 
 CARGO ?= cargo
-VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-ARCH = $(shell uname -m)
+VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+ARCH := $(shell uname -m)
 
-.PHONY: build release test check e2e demo fmt clippy proto-test install clean help package publish
+.PHONY: build release test check e2e demo fmt clippy proto-test install clean help package publish publish-guard
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -53,9 +53,18 @@ package: release ## Standalone tarball in dist/ (binary + license + readme, with
 	rm -rf dist/clicue-$(VERSION)-linux-$(ARCH)
 	@echo "dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz"
 
-publish: package ## Upload the artifact to the GitHub release, then push AUR
-	git diff --quiet || (echo "working tree dirty — commit first" && exit 1)
-	gh release upload v$(VERSION) dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz.sha256 --clobber
+# The gate runs BEFORE the release build (a dirty tree should fail in a
+# second, not after a minute of cargo), and ties the bytes to the tag:
+# `git status --porcelain` catches staged and untracked changes that
+# `git diff --quiet` misses, and `describe --exact-match` is what makes
+# "this artifact is what v$(VERSION) builds" actually true.
+publish-guard:
+	@test -z "$$(git status --porcelain)" || { echo "working tree dirty — commit first" >&2; exit 1; }
+	@test "$$(git describe --exact-match --tags HEAD 2>/dev/null)" = "v$(VERSION)" \
+	  || { echo "HEAD is not at v$(VERSION) — the artifact would not match the tag" >&2; exit 1; }
+
+publish: publish-guard package ## Upload the artifact to the GitHub release, then push AUR
+	gh release upload v$(VERSION) dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz.sha256 $(if $(FORCE),--clobber,)
 	zsh packaging/publish-aur.zsh
 
 clean:
