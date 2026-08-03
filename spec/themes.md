@@ -65,3 +65,25 @@ daemon; `clicue theme` lists, sets, and previews.
   scalar because zsh's pad flags do not expand subscripted parameters —
   only `${(pl:n::$var:)}` works. [MEASURED] The daemon renders; this dies.
   (theme.zsh:70–81)
+- T13 [domain] The list swatch is drawn in the theme's FULL ground: a panel
+  theme's swatch sits on its panel, a gradient theme's border glyphs sweep,
+  exactly as the card will. A black swatch for a solid-blue theme (the
+  2026-08-03 report) misinforms the one choice the swatch exists to serve.
+  The swatch applies the renderer's own grounding rule — panel bg under
+  every style without one, gaps included.
+- T14 [domain] Themes are FILES. Resolution order: `<themes>/<name>.toml`
+  first, compiled-in builtin second, base last — the file is what the
+  operator edits (live, via the S7 reloader), the builtin is the fallback
+  and the regeneration template, never a shadow over an edit. A MISSING
+  file whose name is a builtin is regenerated from the template on load
+  (`load_or_seed`), so the file is always the thing actually read and
+  deleting it is the reset-to-default gesture. A BROKEN file is never
+  rewritten — mid-edit is its normal cause and live reload its normal
+  observer — and falls back to the builtin of the same name (closer to
+  intent than base), messages naming the file. `clicue install` seeds
+  every builtin's file (idempotent: existing files untouched, re-running
+  after an upgrade tops up new themes); uninstall removes only files
+  still byte-identical to their template — an edited file is operator
+  data, not something install added. Serialization and parsing are pinned
+  as inverses by a per-builtin round-trip test: a file that reproduces a
+  different theme ships every operator a subtly different default.

@@ -174,6 +174,17 @@ pub fn install(opts: &InstallOpts) -> Result<i32> {
         bail!("doctor found fighters — resolve them, or rerun with --force");
     }
 
+    // Theme files before rc wiring (T14): the themes directory should be
+    // browsable and editable from the first moment, and this is idempotent
+    // — only files that don't exist are written, so a re-run after an
+    // upgrade tops up new themes without touching edits.
+    if let Some(dir) = crate::config::themes_dir() {
+        let n = crate::theme::seed_all(&dir);
+        if n > 0 {
+            println!("seeded {n} theme file(s) into {}", dir.display());
+        }
+    }
+
     if let Some(mgr) = manager_of(&probe) {
         println!("{}", manager_instructions(mgr));
         return Ok(0);
@@ -233,8 +244,38 @@ pub fn uninstall(yes: bool) -> Result<i32> {
         return Ok(1);
     }
     std::fs::write(&rc, after).with_context(|| format!("writing {}", rc.display()))?;
+    // "Removes exactly what install added": a seeded theme file the
+    // operator EDITED is no longer what install added — it stays.
+    if let Some(dir) = crate::config::themes_dir() {
+        let removed = remove_pristine_themes(&dir);
+        if removed > 0 {
+            println!(
+                "removed {removed} unedited theme file(s) from {}",
+                dir.display()
+            );
+        }
+    }
     println!("uninstalled. Running shells keep the shim until they exit (`clicue-off` disables it live).");
     Ok(0)
+}
+
+/// Delete seeded theme files whose content still matches the template
+/// byte-for-byte; edited files are operator data and stay. Returns how
+/// many were removed; the directory itself goes too once empty.
+pub fn remove_pristine_themes(dir: &std::path::Path) -> usize {
+    let mut removed = 0;
+    for name in crate::theme::builtin_names() {
+        let path = dir.join(format!("{name}.toml"));
+        if let (Ok(content), Some(t)) =
+            (std::fs::read_to_string(&path), crate::theme::builtin(name))
+        {
+            if content == crate::theme::to_toml(&t) && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir); // only succeeds when empty
+    removed
 }
 
 #[cfg(test)]

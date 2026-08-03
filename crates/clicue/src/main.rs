@@ -107,7 +107,7 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             if !names.contains(&name) {
                 anyhow::bail!("no theme named {name:?} — available: {}", names.join("  "));
             }
-            let (t, msgs) = theme::load(&name, dir.as_deref());
+            let (t, msgs) = theme::load_or_seed(&name, dir.as_deref());
             for m in &msgs {
                 eprintln!("warning: {m}");
             }
@@ -135,7 +135,7 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             }
         }
         ThemeCmd::Preview { name } => {
-            let (t, msgs) = theme::load(&name, dir.as_deref());
+            let (t, msgs) = theme::load_or_seed(&name, dir.as_deref());
             for m in &msgs {
                 eprintln!("warning: {m}");
             }

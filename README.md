@@ -95,18 +95,26 @@ clicue theme dracula    # set it — applies live, open shells included
 clicue theme preview chrome
 ```
 
-Ten built-ins: `aura` (default), `base` (pure ASCII, deliberately colourless — the
-renders-anywhere contract), `mono`, `plain`, `monokai`, `dracula`, `nord`,
-`gruvbox`, and two engine showcases — `agnoster` paints the card on its own solid
-background so it stands off the terminal, and `chrome` sweeps a gradient along the
-borders that reads as brushed metal.
+Seventeen ship with it. Classics: `aura` (default), `base` (pure ASCII,
+deliberately colourless — the renders-anywhere contract), `mono`, `plain`,
+`monokai`, `dracula`, `nord`, `gruvbox`, `solarized`, `solarized-light` (a light
+card that works on a dark terminal), `tokyo-night`, `catppuccin`. Showcases:
+`agnoster` paints the card on its own solid blue, `chrome` sweeps a gradient
+along the borders that reads as brushed metal, and `solid-metal` does both —
+gunmetal ground, brushed-steel edges (the name is an affectionate genre nod;
+every colour is generic issue). Seasonal, because why not: `valentine` and
+`halloween`.
 
-A theme owns colours and box glyphs and nothing else; every key is validated at load
-and a broken theme falls back to the built-in default rather than rendering a broken
-card. Custom themes are TOML files in `~/.config/clicue/themes/` — partial files are
-legal and merge over `base`; `panel = "bg=#…"` and `border-gradient = ["#…", …]`
-opt into the showcase machinery. Themes are treated as an accessibility surface, not
-a skin: see design value 3 in [SPEC.md](SPEC.md).
+**Every theme is a file.** `clicue install` seeds each one as its own TOML in
+`~/.config/clicue/themes/`; edit any of them and the change applies live in
+open shells. Delete a file and it regenerates from the built-in template —
+deleting **is** the reset-to-default gesture. A file that fails validation
+falls back to the built-in of the same name (never a half-applied card) with
+the problem named, and is never overwritten — you were probably mid-edit.
+Partial files are legal and merge over `base`; `panel = "bg=#…"` and
+`border-gradient = ["#…", …]` opt into the showcase machinery. New files
+beside the seeded ones become themes too. Themes are treated as an
+accessibility surface, not a skin: see design value 3 in [SPEC.md](SPEC.md).
 
 ## Ranking
 
