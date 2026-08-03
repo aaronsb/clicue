@@ -27,6 +27,13 @@ pub struct Palette {
     pub selected: String,
     /// Emphasis for the typed prefix within a matching name.
     pub matched: String,
+    /// Card-wide background (`bg=#rrggbb`). Empty = the terminal's own.
+    /// When set, the renderer lays it under every span so the card reads
+    /// as a solid panel that stands out from the page.
+    pub panel: String,
+    /// Hex stops interpolated along horizontal borders, per segment —
+    /// a lit-from-somewhere metallic sheen. Empty = flat `border`.
+    pub border_gradient: Vec<String>,
 }
 
 /// Box drawing, markers, and the source gutter. Dead vocabulary from the
@@ -118,6 +125,8 @@ pub fn base() -> Theme {
             ghost: "fg=default".into(),
             selected: "standout".into(),
             matched: "bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
         },
         glyphs: glyphs_ascii(),
     }
@@ -135,6 +144,8 @@ fn aura() -> Theme {
             ghost: "fg=#6d6a7f".into(),
             selected: "fg=#ffffff,bg=#3d375e".into(),
             matched: "fg=#61ffca,bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
         },
         glyphs: glyphs_unicode_rounded(),
     }
@@ -152,6 +163,8 @@ fn mono() -> Theme {
             ghost: "fg=#808080".into(),
             selected: "fg=white,bg=#444444".into(),
             matched: "bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
         },
         glyphs: glyphs_unicode_rounded(),
     }
@@ -169,6 +182,8 @@ fn plain() -> Theme {
             ghost: "fg=default".into(),
             selected: "fg=white,bg=blue".into(),
             matched: "fg=cyan,bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
         },
         glyphs: glyphs_ascii(),
     }
@@ -180,12 +195,144 @@ pub fn builtin(name: &str) -> Option<Theme> {
         "aura" => Some(aura()),
         "mono" => Some(mono()),
         "plain" => Some(plain()),
+        "monokai" => Some(monokai()),
+        "dracula" => Some(dracula()),
+        "nord" => Some(nord()),
+        "gruvbox" => Some(gruvbox()),
+        "agnoster" => Some(agnoster()),
+        "chrome" => Some(chrome()),
         _ => None,
     }
 }
 
 pub fn builtin_names() -> &'static [&'static str] {
-    &["aura", "base", "mono", "plain"]
+    &[
+        "aura", "base", "mono", "plain", "monokai", "dracula", "nord", "gruvbox", "agnoster",
+        "chrome",
+    ]
+}
+
+fn monokai() -> Theme {
+    Theme {
+        name: "monokai".into(),
+        palette: Palette {
+            border: "fg=#75715e".into(),
+            accent: "fg=#a6e22e".into(),
+            text: "fg=#f8f8f2".into(),
+            gloss: "fg=#75715e".into(),
+            hint: "fg=#75715e".into(),
+            ghost: "fg=#75715e".into(),
+            selected: "fg=#f8f8f2,bg=#49483e".into(),
+            matched: "fg=#f92672,bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
+        },
+        glyphs: glyphs_unicode_rounded(),
+    }
+}
+
+fn dracula() -> Theme {
+    Theme {
+        name: "dracula".into(),
+        palette: Palette {
+            border: "fg=#bd93f9".into(),
+            accent: "fg=#50fa7b".into(),
+            text: "fg=#f8f8f2".into(),
+            gloss: "fg=#6272a4".into(),
+            hint: "fg=#6272a4".into(),
+            ghost: "fg=#6272a4".into(),
+            selected: "fg=#f8f8f2,bg=#44475a".into(),
+            matched: "fg=#ff79c6,bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
+        },
+        glyphs: glyphs_unicode_rounded(),
+    }
+}
+
+fn nord() -> Theme {
+    Theme {
+        name: "nord".into(),
+        palette: Palette {
+            border: "fg=#81a1c1".into(),
+            accent: "fg=#88c0d0".into(),
+            text: "fg=#eceff4".into(),
+            gloss: "fg=#616e88".into(),
+            hint: "fg=#616e88".into(),
+            ghost: "fg=#616e88".into(),
+            selected: "fg=#eceff4,bg=#434c5e".into(),
+            matched: "fg=#a3be8c,bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
+        },
+        glyphs: glyphs_unicode_rounded(),
+    }
+}
+
+fn gruvbox() -> Theme {
+    Theme {
+        name: "gruvbox".into(),
+        palette: Palette {
+            border: "fg=#d79921".into(),
+            accent: "fg=#b8bb26".into(),
+            text: "fg=#ebdbb2".into(),
+            gloss: "fg=#928374".into(),
+            hint: "fg=#928374".into(),
+            ghost: "fg=#928374".into(),
+            selected: "fg=#ebdbb2,bg=#504945".into(),
+            matched: "fg=#fabd2f,bold".into(),
+            panel: String::new(),
+            border_gradient: Vec::new(),
+        },
+        glyphs: glyphs_unicode_rounded(),
+    }
+}
+
+/// The panel showcase: powerline-segment blues, card on its own ground.
+fn agnoster() -> Theme {
+    Theme {
+        name: "agnoster".into(),
+        palette: Palette {
+            border: "fg=#8ad0f0".into(),
+            accent: "fg=#ffd700".into(),
+            text: "fg=#ffffff".into(),
+            gloss: "fg=#a8d8ee".into(),
+            hint: "fg=#74b4d4".into(),
+            ghost: "fg=#74b4d4".into(),
+            selected: "fg=#ffffff,bg=#0a84c1".into(),
+            matched: "fg=#ffd700,bold".into(),
+            panel: "bg=#00506e".into(),
+            border_gradient: Vec::new(),
+        },
+        glyphs: glyphs_unicode_rounded(),
+    }
+}
+
+/// The gradient showcase: horizontal borders sweep dark→bright→dark,
+/// which the eye reads as brushed metal under a light.
+fn chrome() -> Theme {
+    Theme {
+        name: "chrome".into(),
+        palette: Palette {
+            border: "fg=#9ca3af".into(),
+            accent: "fg=#ffffff,bold".into(),
+            text: "fg=#e5e7eb".into(),
+            gloss: "fg=#9ca3af".into(),
+            hint: "fg=#6b7280".into(),
+            ghost: "fg=#6b7280".into(),
+            selected: "fg=#f9fafb,bg=#374151".into(),
+            matched: "fg=#ffffff,bold".into(),
+            panel: String::new(),
+            border_gradient: vec![
+                "#4b5563".into(),
+                "#d1d5db".into(),
+                "#f9fafb".into(),
+                "#9ca3af".into(),
+                "#374151".into(),
+            ],
+        },
+        glyphs: glyphs_unicode_rounded(),
+    }
 }
 
 // ── TOML theme files ─────────────────────────────────────────────────────
@@ -219,6 +366,9 @@ struct PaletteFile {
     selected: Option<String>,
     #[serde(rename = "match")]
     matched: Option<String>,
+    panel: Option<String>,
+    #[serde(rename = "border-gradient")]
+    border_gradient: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -299,6 +449,21 @@ pub fn validate(t: &Theme) -> Vec<String> {
             ));
         }
     }
+    if !t.palette.panel.is_empty() && !t.palette.panel.contains("bg=") {
+        errs.push("palette.panel must carry a bg= (it is the card's ground)".into());
+    }
+    if !t.palette.border_gradient.is_empty() {
+        if t.palette.border_gradient.len() < 2 {
+            errs.push("palette.border-gradient needs at least two stops".into());
+        }
+        for stop in &t.palette.border_gradient {
+            if parse_hex(stop).is_none() {
+                errs.push(format!(
+                    "palette.border-gradient stop {stop:?} is not #rrggbb"
+                ));
+            }
+        }
+    }
     errs
 }
 
@@ -326,6 +491,8 @@ fn merge(name: &str, file: ThemeFile) -> Result<Theme, Vec<String>> {
             ghost: p.ghost.unwrap_or(b.palette.ghost),
             selected: p.selected.unwrap_or(b.palette.selected),
             matched: p.matched.unwrap_or(b.palette.matched),
+            panel: p.panel.unwrap_or_default(),
+            border_gradient: p.border_gradient.unwrap_or_default(),
         },
         glyphs: Glyphs {
             tl: g.tl.unwrap_or(glyph_base.tl),
@@ -418,6 +585,59 @@ pub fn available(themes_dir: Option<&Path>) -> Vec<String> {
     }
     names.sort();
     names
+}
+
+// ── border gradients ─────────────────────────────────────────────────────
+
+fn parse_hex(s: &str) -> Option<(f32, f32, f32)> {
+    let h = s.strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    Some((
+        u8::from_str_radix(&h[0..2], 16).ok()? as f32,
+        u8::from_str_radix(&h[2..4], 16).ok()? as f32,
+        u8::from_str_radix(&h[4..6], 16).ok()? as f32,
+    ))
+}
+
+/// Piecewise-linear interpolation of the stops across `width` characters,
+/// coalesced into ~3-char segments — per-CHARACTER spans would triple the
+/// frame for no visible gain at card widths. Offsets are relative to the
+/// row start; the caller shifts them. Invalid stops yield no spans (the
+/// flat border style stays underneath).
+pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, String)> {
+    const SEG: usize = 3;
+    if width == 0 || stops.len() < 2 {
+        return Vec::new();
+    }
+    let rgb: Option<Vec<(f32, f32, f32)>> = stops.iter().map(|s| parse_hex(s)).collect();
+    let Some(rgb) = rgb else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < width {
+        let end = (start + SEG).min(width);
+        let mid = (start + end - 1) as f32 / 2.0;
+        // position in [0,1] along the row, then into the stop list
+        let t = if width == 1 {
+            0.0
+        } else {
+            mid / (width - 1) as f32
+        };
+        let x = t * (rgb.len() - 1) as f32;
+        let i = (x.floor() as usize).min(rgb.len() - 2);
+        let f = x - i as f32;
+        let (r0, g0, b0) = rgb[i];
+        let (r1, g1, b1) = rgb[i + 1];
+        let (r, g, b) = (
+            (r0 + (r1 - r0) * f).round() as u8,
+            (g0 + (g1 - g0) * f).round() as u8,
+            (b0 + (b1 - b0) * f).round() as u8,
+        );
+        out.push((start, end, format!("fg=#{r:02x}{g:02x}{b:02x}")));
+        start = end;
+    }
+    out
 }
 
 // ── preview: a sample card on stdout ─────────────────────────────────────
@@ -643,5 +863,46 @@ mod tests {
         // T3: an empty colour produces a highlight spec the host rejects.
         let err = from_toml("bad", "[palette]\ngloss = \"\"\n").unwrap_err();
         assert!(err.iter().any(|e| e.contains("gloss")), "{err:?}");
+    }
+    #[test]
+    fn gradient_segments_interpolate_and_cap() {
+        let stops: Vec<String> = vec!["#000000".into(), "#ffffff".into()];
+        let segs = gradient_segments(&stops, 30);
+        assert!(!segs.is_empty());
+        // contiguous, in order, covering the row exactly
+        assert_eq!(segs.first().unwrap().0, 0);
+        assert_eq!(segs.last().unwrap().1, 30);
+        for w in segs.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "segments must tile without gaps");
+        }
+        // dark at the left end, bright at the right
+        assert!(segs.first().unwrap().2 < segs.last().unwrap().2);
+        // span budget: ~width/3, never per-character
+        assert!(segs.len() <= 30 / 3 + 1, "{} segments", segs.len());
+        // degenerate inputs stay silent
+        assert!(gradient_segments(&[], 30).is_empty());
+        assert!(gradient_segments(&["#000000".into()], 30).is_empty());
+        assert!(gradient_segments(&["nope".into(), "#ffffff".into()], 30).is_empty());
+    }
+
+    #[test]
+    fn panel_and_gradient_validate() {
+        let mut t = builtin("agnoster").unwrap();
+        assert!(validate(&t).is_empty(), "{:?}", validate(&t));
+        t.palette.panel = "fg=#ffffff".into();
+        assert!(validate(&t).iter().any(|e| e.contains("panel")));
+        let mut c = builtin("chrome").unwrap();
+        assert!(validate(&c).is_empty(), "{:?}", validate(&c));
+        c.palette.border_gradient = vec!["#123".into(), "#ffffff".into()];
+        assert!(validate(&c).iter().any(|e| e.contains("border-gradient")));
+    }
+
+    #[test]
+    fn every_builtin_loads_clean_and_previews() {
+        for name in builtin_names() {
+            let t = builtin(name).expect(name);
+            assert!(validate(&t).is_empty(), "{name}: {:?}", validate(&t));
+            assert!(!preview(&t, 80).is_empty(), "{name} preview");
+        }
     }
 }
