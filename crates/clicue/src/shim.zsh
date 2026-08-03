@@ -348,8 +348,6 @@ _clicue_cs_scan() {
 }
 
 _clicue_cap_fn() {
-  compstate[insert]=''
-  compstate[list]=''
   _clicue_cs_words=(); _clicue_cs_descs=(); _clicue_cs_ipfx=''
   _clicue_cs_sfxw=(); _clicue_cs_sfxv=()
   compadd() {
@@ -394,6 +392,14 @@ _clicue_cap_fn() {
   {
     _main_complete
   } always {
+    # Suppression must come AFTER _main_complete: it recomputes
+    # compstate[insert]/[list] from the operator's styles, and under
+    # `menu select=1` a pre-set '' is overwritten — the capture then
+    # inserted the first candidate into the LIVE buffer and opened the
+    # full menu listing over the card ('ffmpeg -' + Tab) [MEASURED].
+    # compstate is honored at widget RETURN, so last write wins.
+    compstate[insert]=''
+    compstate[list]=''
     if (( _lg_had )); then
       zstyle ':completion:*' list-grouped "${_lg[@]}"
     else
@@ -471,8 +477,13 @@ _clicue_harvest() {
   _clicue_argpath || return 0
   local path=$REPLY
   local -a hj=()
-  zle _clicue_cap 2>/dev/null
-  _clicue_cs_json "$BUFFER" "$path" 1
+  # The live capture must not move the line either — compstate suppression
+  # is the mechanism, this restore is the guarantee (same discipline as the
+  # ancestor loop below).
+  local lbuf=$BUFFER
+  local -i lcur=$CURSOR
+  { zle _clicue_cap 2>/dev/null } always { BUFFER=$lbuf; CURSOR=$lcur }
+  _clicue_cs_json "$lbuf" "$path" 1
   hj+=( "$REPLY" )
   local -a parts=( ${(s.:.)path} )
   local acc='' seg spaced sbuf pos mip

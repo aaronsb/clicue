@@ -34,7 +34,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -275,7 +275,7 @@ pub struct FlagStore {
     pub emulates: HashMap<String, String>,
     /// Resolved path → table; `None` records "fetched, and there is
     /// nothing" — distinct from "not fetched yet" (spec H3).
-    mem: Mutex<HashMap<String, Option<PathFlags>>>,
+    mem: Mutex<HashMap<String, Option<Arc<PathFlags>>>>,
 }
 
 impl FlagStore {
@@ -328,13 +328,13 @@ impl FlagStore {
         let record = if table.entries.is_empty() {
             None // fetched-and-empty (spec H3)
         } else {
-            Some(table)
+            Some(Arc::new(table))
         };
         if let Some(t) = &record {
             fs::create_dir_all(&self.dir)?;
             let f = self.file_for(&resolved);
             let tmp = f.with_extension("json.tmp");
-            fs::write(&tmp, serde_json::to_vec(t)?)?;
+            fs::write(&tmp, serde_json::to_vec(t.as_ref())?)?;
             fs::rename(&tmp, &f)?;
         }
         self.mem
@@ -349,7 +349,7 @@ impl FlagStore {
     /// harvest), then unknown.
     ///
     /// `Some(None)` = fetched-and-empty; `None` = never fetched.
-    pub fn get(&self, resolved_path: &str) -> Option<Option<PathFlags>> {
+    pub fn get(&self, resolved_path: &str) -> Option<Option<Arc<PathFlags>>> {
         let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(hit) = mem.get(resolved_path) {
             return Some(hit.clone());
@@ -359,6 +359,7 @@ impl FlagStore {
         if table.stamp != self.stamp(resolved_path) {
             return None; // binary moved on — re-harvest
         }
+        let table = Arc::new(table);
         mem.insert(resolved_path.to_string(), Some(table.clone()));
         Some(Some(table))
     }
@@ -391,6 +392,55 @@ impl FlagStore {
             });
         }
         Some(out)
+    }
+
+    /// Stored subcommand tables under a path (`git` → `git:stash`, …) —
+    /// the inspect/forget surface; the engine itself always asks by
+    /// exact resolved path.
+    pub fn subcommand_tables(&self, resolved_path: &str) -> Vec<String> {
+        let prefix = format!("{resolved_path}:");
+        let mut out = Vec::new();
+        if let Ok(rd) = fs::read_dir(&self.dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(stem) = name.strip_suffix(".json") else {
+                    continue;
+                };
+                let stem = stem.replace('%', "/");
+                if stem.starts_with(&prefix) {
+                    out.push(stem);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Remove every stored table for a path and its subcommands.
+    /// `clicue data forget` — retroactive removal is the privacy contract,
+    /// and harvested flags are collected data like any other.
+    pub fn forget(&self, resolved_path: &str) -> usize {
+        let prefix = format!("{resolved_path}:");
+        self.mem
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|k, _| k != resolved_path && !k.starts_with(&prefix));
+        let mut removed = 0;
+        if let Ok(rd) = fs::read_dir(&self.dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(stem) = name.strip_suffix(".json") else {
+                    continue;
+                };
+                let stem = stem.replace('%', "/");
+                if (stem == resolved_path || stem.starts_with(&prefix))
+                    && fs::remove_file(e.path()).is_ok()
+                {
+                    removed += 1;
+                }
+            }
+        }
+        removed
     }
 
     /// One typed token explained: `(label, description)` — a documented
