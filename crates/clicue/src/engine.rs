@@ -62,6 +62,10 @@ struct CueSet {
     argnomatch: bool,
     /// Membership came from a live compsys harvest for this buffer.
     live_membership: bool,
+    /// Directory whose children populate the grid (navigational
+    /// commands): the pane suppresses its duplicate children rows and
+    /// the grid border names the place.
+    nav_grid_dir: Option<std::path::PathBuf>,
 }
 
 fn info_cue(cmd: &str, gloss: &str) -> Cue {
@@ -278,8 +282,21 @@ impl Engine {
         let set = self.cues_for(sess, &req.buffer, &pos, now, req.nav.as_ref());
         let cues = set.cues;
         let info = set.info;
-        let explain = self.explain_rows(sess, &pos, req.nav.as_ref());
-        let (pane, going) = self.nav_panes(sess, &pos, req.nav.as_ref());
+        // A dir cue present means the typed leaf prefixes a real child:
+        // an unfinished name, not a failed target — the failure row
+        // stays quiet while completions are on offer (same rule as
+        // did-you-mean's mid-typing silence).
+        let completing =
+            set.nav_grid_dir.is_some() && cues.iter().any(|c| c.suffix.as_deref() == Some("/"));
+        let explain = self.explain_rows(sess, &pos, req.nav.as_ref(), completing);
+        let (pane, going) =
+            self.nav_panes(sess, &pos, req.nav.as_ref(), set.nav_grid_dir.as_deref());
+        let grid_label = set.nav_grid_dir.as_ref().map(|d| {
+            format!(
+                "inside {}",
+                nav::tilde(d, std::env::var("HOME").ok().as_deref())
+            )
+        });
         if cues.is_empty() && explain.is_empty() && pane.is_none() {
             sess.grid = None;
             return reply(String::new(), Vec::new(), String::new(), String::new());
@@ -290,19 +307,23 @@ impl Engine {
         let selected_stem = cues
             .get(sel_idx)
             .and_then(|c| sources::cue_stem(&c.insert, &pos.pfx));
-        // No whole-line history ghost for navigational commands: the
-        // cue path already refuses remembered lines (F1), and a relative
-        // path remembered from a different cwd is the design note's
-        // 91%-unanchorable finding proposed as ghost text — `cd ..` once
-        // ghosted an old `cd ....` line into apparent nonsense.
-        let hist_stem = if self.navigational(sess, &pos) {
+        // Navigation's ghost comes from the engaged cue or nothing
+        // (design note): the history line is the 91%-unanchorable
+        // finding as ghost text (`cd ..` once ghosted an old `cd ....`),
+        // and the top-cue stem is an unasked-for destination (`cd ..`
+        // ghosted `/boot` — the alphabetically first child of /).
+        let is_nav = self.navigational(sess, &pos);
+        let hist_stem = if is_nav {
             None
         } else {
             sources::history_stem(&sess.window, &req.buffer)
         };
-        let top_stem = cues
-            .first()
-            .and_then(|c| sources::cue_stem(&c.insert, &pos.pfx));
+        let top_stem = if is_nav {
+            None
+        } else {
+            cues.first()
+                .and_then(|c| sources::cue_stem(&c.insert, &pos.pfx))
+        };
         let ghost = sources::ghost_stem(sess.state.engaged, selected_stem, hist_stem, top_stem)
             .unwrap_or_default();
 
@@ -328,6 +349,7 @@ impl Engine {
             ghost: &ghost,
             nav: pane.as_ref(),
             nav_going: going.as_ref(),
+            grid_label: grid_label.as_deref(),
             invnote: &self.invnote(&pos),
             dims: Dims {
                 cols: req.cols,
@@ -382,6 +404,24 @@ impl Engine {
             },
             Mode::Arg => {
                 let mut set = self.arg_cues(sess, buffer, pos);
+                let live_spoke = sess.live.as_ref().map(|h| h.pos == buffer).unwrap_or(false);
+                if !live_spoke {
+                    if let Some((dirs, base)) = self.nav_dir_cues(sess, pos, navctx) {
+                        if !dirs.is_empty() {
+                            if set.info {
+                                // An informational placeholder loses to
+                                // real candidates.
+                                set.cues.clear();
+                                set.info = false;
+                            }
+                            let seen: std::collections::HashSet<String> =
+                                set.cues.iter().map(|c| c.insert.clone()).collect();
+                            set.cues
+                                .extend(dirs.into_iter().filter(|c| !seen.contains(&c.insert)));
+                            set.nav_grid_dir = Some(base);
+                        }
+                    }
+                }
                 if let Some(cue) = self.nav_suggestion(sess, pos, navctx) {
                     set.cues.push(cue);
                     set.info = false;
@@ -420,12 +460,28 @@ impl Engine {
         sess: &Sess,
         pos: &state::Position,
         navctx: Option<&NavContext>,
+        grid_covers: Option<&std::path::Path>,
     ) -> (Option<nav::NavPane>, Option<nav::NavPane>) {
-        let here = self.nav_here(sess, pos, navctx);
-        let going = here
+        let mut here = self.nav_here(sess, pos, navctx);
+        let mut going = here
             .is_some()
             .then(|| self.nav_going(sess, pos, navctx))
             .flatten();
+        // Children already navigable in the grid are not repeated as
+        // pane rows — the map keeps orientation (breadcrumb, stack,
+        // siblings, hidden), the grid owns the names.
+        if let (Some(covered), Some(ctx)) = (grid_covers, navctx) {
+            if let Some(h) = here.as_mut() {
+                if std::path::Path::new(&ctx.pwd) == covered {
+                    h.children.clear();
+                }
+            }
+            if let Some(g) = going.as_mut() {
+                if g.dir == covered {
+                    g.children.clear();
+                }
+            }
+        }
         (here, going)
     }
 
@@ -476,6 +532,7 @@ impl Engine {
             .map(|c| c.name.clone())
             .find(|n| dest.join(n) == pwd_path);
         Some(nav::NavPane {
+            dir: dest.clone(),
             breadcrumb: nav::breadcrumb(&dest.to_string_lossy(), home.as_deref()),
             children: rings
                 .children
@@ -515,6 +572,7 @@ impl Engine {
 
         let home = std::env::var("HOME").ok();
         let mut pane = nav::NavPane {
+            dir: std::path::PathBuf::from(&ctx.pwd),
             breadcrumb: nav::breadcrumb(&ctx.pwd, home.as_deref()),
             ..Default::default()
         };
@@ -558,6 +616,87 @@ impl Engine {
             }
         }
         Some(pane)
+    }
+
+    /// Destination children as candidates (design note "locations are
+    /// navigable"): children of the typed base — pwd when none — appended
+    /// AFTER habit cues, so they fill the grid and tier-1 overflow. This
+    /// is fork-free provisional membership, the flag cache's role: on the
+    /// completion key compsys harvests and its membership supersedes
+    /// (H6), so the universal cd<completion-key> contract is untouched.
+    /// Inserted entries carry a `/` suffix — Enter descends and the card
+    /// follows. Hidden names are not held (the scanner folds dotdirs to
+    /// a count), so a dot-leaf offers nothing until compsys speaks.
+    fn nav_dir_cues(
+        &self,
+        sess: &Sess,
+        pos: &state::Position,
+        navctx: Option<&NavContext>,
+    ) -> Option<(Vec<Cue>, std::path::PathBuf)> {
+        if !self.nav_enabled {
+            return None;
+        }
+        let ctx = navctx?;
+        if !self.navigational(sess, pos) {
+            return None;
+        }
+        let pfx = pos.pfx.as_str();
+        let dotted = format!("{pfx}/");
+        let (base, leaf) = match pfx.rfind('/') {
+            Some(i) => (&pfx[..=i], &pfx[i + 1..]),
+            None => ("", pfx),
+        };
+        // An all-dots leaf IS a base: `cd ..` offers the parent's
+        // children as `../name` — up, then back down, one gesture.
+        let (base, leaf) = if !leaf.is_empty() && leaf.chars().all(|c| c == '.') {
+            (dotted.as_str(), "")
+        } else {
+            (base, leaf)
+        };
+        if leaf.starts_with('.') {
+            return None; // dotdir names are not held; compsys owns them
+        }
+        let home = std::env::var("HOME").ok();
+        let base_path = if base.is_empty() {
+            std::path::PathBuf::from(&ctx.pwd)
+        } else {
+            let b = base.trim_end_matches('/');
+            let b = if b.is_empty() { "/" } else { b };
+            let r = nav::resolve_target(
+                b,
+                &ctx.pwd,
+                ctx.oldpwd.as_deref(),
+                &ctx.dirstack,
+                home.as_deref(),
+            )?;
+            if !r.exists {
+                return None;
+            }
+            r.path
+        };
+        let rings = {
+            let mut sc = self.nav_scanner.lock().unwrap_or_else(|e| e.into_inner());
+            sc.rings(&base_path)
+        };
+        let leaf_is_dots = !leaf.is_empty() && leaf.chars().all(|c| c == '.');
+        let cues = rings
+            .children
+            .iter()
+            .filter(|c| leaf.is_empty() || leaf_is_dots || c.name.starts_with(leaf))
+            .map(|c| Cue {
+                insert: format!("{base}{}", c.name),
+                label: format!("{}/", c.name),
+                gloss: match c.count {
+                    nav::Count::Exact(n) => format!("{n} inside"),
+                    nav::Count::AtLeast(_) => "99+ inside".into(),
+                    nav::Count::Denied => "no access".into(),
+                    nav::Count::Pending => String::new(),
+                },
+                kind: Kind::Arg,
+                suffix: Some("/".into()),
+            })
+            .collect();
+        Some((cues, base_path))
     }
 
     /// The failure-only recommendation (design note): a Tab-reachable
@@ -765,6 +904,7 @@ impl Engine {
         sess: &Sess,
         pos: &state::Position,
         navctx: Option<&NavContext>,
+        completing: bool,
     ) -> Vec<crate::model::ExplainRow> {
         if pos.mode != Mode::Arg || pos.words.len() < 2 {
             return Vec::new();
@@ -781,15 +921,17 @@ impl Engine {
                     home.as_deref(),
                 ) {
                     let dest = nav::tilde(&r.path, home.as_deref());
-                    let desc = if r.exists {
-                        format!("→ {dest}")
-                    } else {
-                        format!("→ {dest} — no such directory")
-                    };
-                    rows.push(crate::model::ExplainRow {
-                        label: pos.pfx.clone(),
-                        desc,
-                    });
+                    if r.exists {
+                        rows.push(crate::model::ExplainRow {
+                            label: pos.pfx.clone(),
+                            desc: format!("→ {dest}"),
+                        });
+                    } else if !completing {
+                        rows.push(crate::model::ExplainRow {
+                            label: pos.pfx.clone(),
+                            desc: format!("→ {dest} — no such directory"),
+                        });
+                    }
                 }
             }
         }
@@ -1305,6 +1447,75 @@ mod tests {
             "cd ../.. must keep pane and resolution: {}",
             rep.card
         );
+    }
+
+    #[test]
+    fn destination_children_are_navigable_cues() {
+        use crate::protocol::NavContext;
+        let root = std::env::temp_dir().join(format!("clicue-engine-dirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("pwd/alpha/inner")).unwrap();
+        std::fs::create_dir_all(root.join("pwd/beta")).unwrap();
+        std::fs::create_dir_all(root.join("uncle")).unwrap();
+        let pwd = root.join("pwd").to_string_lossy().into_owned();
+        let e = engine_with(test_corpus());
+        let with_nav = |buf: &str| {
+            let mut r = req(Event::Redraw, buf);
+            r.cols = 200;
+            r.lines = 50;
+            r.nav = Some(NavContext {
+                pwd: pwd.clone(),
+                oldpwd: None,
+                dirstack: vec![],
+            });
+            r
+        };
+
+        // Empty prefix: children are candidates, labeled with a slash and
+        // glossed with their count; the here pane stops repeating them.
+        let rep = e.handle(with_nav("cd "));
+        assert!(rep.card.contains("alpha/"), "{}", rep.card);
+        assert!(rep.card.contains("1 inside"), "{}", rep.card);
+
+        // A leaf prefix narrows, and the failure row stays quiet while a
+        // completion is on offer — an unfinished name is not a failure.
+        let rep = e.handle(with_nav("cd al"));
+        assert!(rep.card.contains("alpha/"), "{}", rep.card);
+        assert!(!rep.card.contains("no such"), "{}", rep.card);
+
+        // Descent: a trailing slash makes the typed base the source.
+        let rep = e.handle(with_nav("cd alpha/"));
+        assert!(rep.card.contains("inner/"), "{}", rep.card);
+
+        // An all-dots leaf is a base: the parent's children, insertable
+        // as ../name — up and back down in one gesture.
+        let rep = e.handle(with_nav("cd .."));
+        assert!(rep.card.contains("uncle"), "{}", rep.card);
+        // Tab then Enter inserts the ../ spelling.
+        e.handle(with_nav("cd .."));
+        let r = e.handle({
+            let mut r = with_nav("cd ..");
+            r.event = Event::Key {
+                name: "accept".into(),
+            };
+            r
+        });
+        if r.action == Action::Consume {
+            let r = e.handle({
+                let mut r = with_nav("cd ..");
+                r.event = Event::Key {
+                    name: "enter".into(),
+                };
+                r
+            });
+            match r.action {
+                Action::Insert { ref text, .. } => {
+                    assert!(text.starts_with("../"), "descend spelling: {text}")
+                }
+                other => panic!("expected insert, got {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

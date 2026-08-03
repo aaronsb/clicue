@@ -175,6 +175,36 @@ posture has an emphasis channel, and no glyph vocabulary is spent, T7). One
 renderer serves both panes; the headers and the sibling row's pronoun ("beside
 you" / "beside it") are the whole difference.
 
+### 2b. Locations are navigable — through the machinery that already navigates
+
+Stated by the operator as two constraints that sound opposed and are not: never
+break the universal `cd<completion-key>` contract, and let arrows walk the
+destination map with many items (80) and insert. The resolution: destination
+children become **cues** — the grid already does arrows, paging, maximize
+(`[keys] maximize`, default Alt+M — the operator's ^B is a config edit), and
+Enter-insertion, so the map's names graduate into it rather than growing their
+own navigation. The panes keep orientation (breadcrumb, stack, siblings, hidden)
+and stop repeating children the grid covers; the grid border names the place
+(`24 inside ~/Projects/app`).
+
+The completion contract survives by role, not by exception: our children are
+**fork-free provisional membership** — the flag cache's role — and on the
+completion key compsys harvests and its membership supersedes (H6). Nothing here
+touches what that key does, and the key itself was never hardcoded: the shim
+binds the accept *action* to `[keys] accept` and delegates to whichever
+completion widget it captured.
+
+Mechanics: inserted entries carry a `/` suffix, so Enter descends and the card
+follows — the build-up loop. A trailing-slash base sources its own children
+(`crates/` → inside crates); an all-dots leaf is a base (`cd ..` offers the
+parent's children as `../name` — up and back down in one gesture). Two more
+mid-typing silences joined the earlier ones: the failure row stays quiet while a
+completion is on offer (an unfinished name is not a failed target), and
+navigation's ghost is the engaged cue or nothing — the top-cue stem ghosted
+`/boot` after `cd ..` before that rule closed over it. Dotdir names are not held
+(the scanner folds them to a count); a dot-leaf offers nothing until compsys
+speaks.
+
 ### 3. Resolution and existence
 
 Every navigation target the operator has typed resolves against relayed place and

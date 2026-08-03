@@ -227,6 +227,10 @@ pub struct NavPane {
     pub stack: Vec<(String, String)>,
     /// Index into `stack` of the entry a bare invocation lands on.
     pub landing: Option<usize>,
+    /// The directory this pane describes (empty for a pane built in
+    /// tests without a place). Lets the engine notice when the grid
+    /// already navigates the same children.
+    pub dir: PathBuf,
     /// Child name equal to the operator's CURRENT directory — set on the
     /// "you are going" pane when here is one level under the destination
     /// (`cd ..`), so the operator sees themself on the map. Marked by

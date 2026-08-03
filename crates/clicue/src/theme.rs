@@ -861,6 +861,7 @@ pub fn preview(theme: &Theme, cols: u16) -> String {
         ghost: "t status",
         nav: None,
         nav_going: None,
+        grid_label: None,
         invnote: "",
         dims: Dims { cols, lines: 24 },
         cfg: &cfg,

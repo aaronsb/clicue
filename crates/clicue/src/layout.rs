@@ -184,6 +184,9 @@ pub struct CardInput<'a> {
     /// The symmetric "you are going" pane: the same rings drawn around
     /// the RESOLVED destination. Never present without `nav`.
     pub nav_going: Option<&'a crate::nav::NavPane>,
+    /// Names the place whose children fill the grid ("inside ~/x") for
+    /// navigational commands; the generic counters otherwise.
+    pub grid_label: Option<&'a str>,
     /// E5 footer: `run N× · top P% · age`, empty for none.
     pub invnote: &'a str,
     pub dims: Dims,
@@ -863,6 +866,8 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         };
         let label = if focus == 2 {
             format!(" browsing {}/{}{pg} ", view.sel - lo + 1, n)
+        } else if let Some(gl) = input.grid_label {
+            format!(" {n} {gl}{pg} ")
         } else if input.mode == Mode::Arg {
             format!(" {n} more{pg} ")
         } else {
@@ -1255,6 +1260,7 @@ mod tests {
             ghost: "",
             nav: None,
             nav_going: None,
+            grid_label: None,
             invnote: "",
             dims,
             cfg,
@@ -1287,6 +1293,7 @@ mod tests {
             siblings: vec!["patchbay".into(), "yay-friend".into()],
             stack: vec![("-".into(), "~/Knowledge".into())],
             landing: None,
+            dir: std::path::PathBuf::new(),
             here_child: None,
         }
     }
