@@ -159,24 +159,49 @@ fn reloading_with(
     min_interval: Duration,
     factory: impl Fn() -> Result<Render> + Send + Sync + 'static,
 ) -> Result<Render> {
-    let current = RwLock::new(factory()?);
-    let state = Mutex::new((Instant::now(), cfg.as_deref().and_then(cfg_stat)));
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let current = std::sync::Arc::new(RwLock::new(factory()?));
+    let factory = std::sync::Arc::new(factory);
+    let building = std::sync::Arc::new(AtomicBool::new(false));
+    // Stat AFTER the first build: a write landing during it must trigger
+    // a reload, not be mistaken for the state already built.
+    let state = std::sync::Arc::new(Mutex::new((
+        Instant::now(),
+        cfg.as_deref().and_then(cfg_stat),
+    )));
     Ok(std::sync::Arc::new(move |req| {
         if let Some(p) = &cfg {
             let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
             if st.0.elapsed() >= min_interval {
                 st.0 = Instant::now();
                 let now = cfg_stat(p);
-                if now != st.1 {
+                if now != st.1 && !building.swap(true, Ordering::SeqCst) {
                     st.1 = now;
-                    match factory() {
-                        Ok(r) => {
-                            *current.write().unwrap_or_else(|e| e.into_inner()) = r;
+                    // Build OFF the request path: an engine build takes far
+                    // longer than the shim's 5ms deadline, and a blocked
+                    // request reads as a wedged daemon. Requests keep
+                    // flowing on the current engine until the swap. A
+                    // failed build clears the stamp so the next interval
+                    // retries (bounded: one build per interval) instead of
+                    // freezing on the old engine until another edit.
+                    let current = current.clone();
+                    let factory = factory.clone();
+                    let building = building.clone();
+                    let state = state.clone();
+                    std::thread::spawn(move || {
+                        match factory() {
+                            Ok(r) => {
+                                *current.write().unwrap_or_else(|e| e.into_inner()) = r;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "clicue daemon: config reload failed, keeping current: {e:#}"
+                                );
+                                state.lock().unwrap_or_else(|e| e.into_inner()).1 = None;
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("clicue daemon: config reload failed, keeping current: {e:#}")
-                        }
-                    }
+                        building.store(false, Ordering::SeqCst);
+                    });
                 }
             }
         }
@@ -422,15 +447,27 @@ mod tests {
         })
         .unwrap();
         let req = || serde_json::from_str::<Request>(&request_line(VERSION)).unwrap();
+        // Swaps land asynchronously (built off the request path): poll.
+        let until = |want: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let got = render(req()).card;
+                if got == want {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "expected {want}, stuck at {got}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
         assert_eq!(render(req()).card, "gen1");
         assert_eq!(render(req()).card, "gen1", "unchanged file, no swap");
         // mtime granularity can be coarse; changing LENGTH always registers
         fs::write(&cfg, "theme = \"mono\"  \n").unwrap();
-        assert_eq!(render(req()).card, "gen2", "changed file swaps");
+        until("gen2");
+        // build 3 fails (async): the current engine survives, and the
+        // cleared stamp retries on a later interval WITHOUT another edit
         fs::write(&cfg, "theme = \"plain\"\n").unwrap();
-        assert_eq!(render(req()).card, "gen2", "failed rebuild keeps current");
-        fs::write(&cfg, "theme = \"base\"    \n").unwrap();
-        assert_eq!(render(req()).card, "gen4", "recovers on the next change");
+        until("gen4");
     }
 
     #[test]

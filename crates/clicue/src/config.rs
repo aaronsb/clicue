@@ -323,8 +323,17 @@ pub fn set_scalar(path: &Path, key: &str, value: &str) -> Result<()> {
     };
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let candidate = set_key_in(&existing, key, &rendered);
-    let loaded = load_str(&candidate);
-    if let Some(w) = loaded.warnings.iter().find(|w| w.contains(key)) {
+    // Refuse on warnings NEW relative to the current file — key-agnostic,
+    // so a pre-existing unrelated warning (or one that happens to contain
+    // the key as a substring) neither blocks a valid write nor lets an
+    // invalid one through.
+    let before: std::collections::HashSet<String> =
+        load_str(&existing).warnings.into_iter().collect();
+    if let Some(w) = load_str(&candidate)
+        .warnings
+        .iter()
+        .find(|w| !before.contains(*w))
+    {
         anyhow::bail!("refusing to write: {w}");
     }
     if let Some(parent) = path.parent() {
@@ -540,6 +549,13 @@ mod tests {
         // unknown keys are named, tables are pointed at the file
         let err = set_scalar(&p, "keys", "x").unwrap_err().to_string();
         assert!(err.contains("settable"), "{err}");
+        // a PRE-EXISTING warning must not block a valid write — the
+        // reviewer's case: a stray key containing the target as substring
+        std::fs::write(&p, "tier1-rows-legacy = 5\ntheme = \"aura\"\n").unwrap();
+        set_scalar(&p, "tier1-rows", "6").expect("old warnings are not new warnings");
+        assert!(std::fs::read_to_string(&p)
+            .unwrap()
+            .contains("tier1-rows = 6"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
