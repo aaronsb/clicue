@@ -164,10 +164,13 @@ _clicue_hist_json() {
 _clicue_connect() {
   [[ -n $_clicue_fd ]] && return 0
   if ! zsocket $_clicue_sock 2>/dev/null; then
-    if (( ! _clicue_spawned )); then
-      # Auto-spawn at most once per shell (spec §9); detached, silent. The
-      # card is simply absent this event; the next keystroke connects.
+    # Auto-spawn at most once per 30s window (spec §9): a crash-looping
+    # daemon costs one fork per window, never a hot loop — but a daemon
+    # the operator killed (or that died once) revives on the next
+    # keystroke instead of stranding this shell until a new terminal.
+    if (( ! _clicue_spawned )) || (( EPOCHSECONDS - _clicue_spawn_at >= 30 )); then
       _clicue_spawned=1
+      _clicue_spawn_at=$EPOCHSECONDS
       ( command clicue daemon >/dev/null 2>&1 & ) 2>/dev/null
     fi
     return 1
@@ -177,7 +180,12 @@ _clicue_connect() {
 }
 
 _clicue_disconnect() {
-  [[ -n $_clicue_fd ]] && exec {_clicue_fd}>&- 2>/dev/null
+  # NO error suppression on this exec: redirections on `exec` are
+  # PERMANENT, so a trailing 2>/dev/null here silently rewires the
+  # SHELL'S stderr to /dev/null for the rest of the session [MEASURED —
+  # every command's errors vanished after the first RPC timeout]. The
+  # guarded close of a shim-owned fd cannot error. (spec §8a)
+  [[ -n $_clicue_fd ]] && exec {_clicue_fd}>&-
   _clicue_fd=
 }
 
@@ -753,6 +761,7 @@ fi
 typeset -g  _clicue_start=${${EPOCHREALTIME:-0}%%.*}
 typeset -g  _clicue_fd=
 typeset -gi _clicue_spawned=0
+typeset -gi _clicue_spawn_at=0
 typeset -gi _clicue_dead=0
 typeset -g  _clicue_err=''
 typeset -g  _clicue_card=''

@@ -94,10 +94,21 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    prototype's design value 1 (no invisible fallback) promoted to a wire
    rule. A healthy daemon replies in <0.1 ms [MEASURED], so a fired deadline
    means the daemon is genuinely wedged, not slow.
-9. The shim auto-spawns `clicue daemon` at most once per shell when the
-   socket is absent, detached, output discarded — the corpus-refresh
-   precedent (prototype corpus.zsh:138–149). It never restarts a daemon
-   that dies twice; the second death surfaces via `clicue doctor`.
+8a. Closing the socket fd must be a BARE `exec {fd}>&-`: redirections on
+   `exec` are permanent, so an error-suppressing `2>/dev/null` on that
+   line rewires the shell's stderr to /dev/null for the session — every
+   later command's errors silently vanish, in clicue's name [MEASURED
+   2026-08-03: surfaced by the first RPC timeout after a config
+   hot-reload; latent since the shim's first version]. [zsh-hazard]
+9. The shim auto-spawns `clicue daemon` when it cannot connect, detached,
+   output discarded — the corpus-refresh precedent (prototype
+   corpus.zsh:138–149) — at most once per 30-second window. Amended from
+   once-per-shell: the shell that had spawned the daemon could never
+   revive it after a manual kill, stranding that terminal cardless for
+   its lifetime [MEASURED 2026-08-03, `theme set` era]. The window keeps
+   the original rule's intent — a crash-looping daemon costs one fork
+   per window, never a hot loop — and repeat deaths still surface via
+   `clicue doctor`.
 
 ## Versioning
 
