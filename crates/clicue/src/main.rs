@@ -275,6 +275,23 @@ fn main() -> Result<()> {
                 anyhow::bail!("only zsh is supported (got {shell})");
             }
             print!("{}", clicue::shim::emit_zsh());
+            // clicue supports itself through the same universal path as
+            // every other command: a compsys completer the Tab-harvest
+            // reads. clap generates it from the real CLI definition, so
+            // the card can never drift from the binary. compdef exists
+            // only after compinit; without it, skip silently — the doctor
+            // already reports the missing compsys as a degradation.
+            let mut comp = Vec::new();
+            clap_complete::generate(
+                clap_complete::shells::Zsh,
+                &mut <Cli as clap::CommandFactory>::command(),
+                "clicue",
+                &mut comp,
+            );
+            println!(
+                "if (( ${{+functions[compdef]}} )); then\n{}\nfi",
+                String::from_utf8_lossy(&comp)
+            );
             Ok(())
         }
         Command::Install { yes, force } => {
