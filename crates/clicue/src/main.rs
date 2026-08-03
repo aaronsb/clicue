@@ -124,6 +124,17 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
     }
 }
 
+/// The CLI's view of the harvested-flag store: same construction as the
+/// engine's, minus live aliases (only a shell session knows those).
+fn flag_store() -> Result<clicue::flags::FlagStore> {
+    use clicue::flags::FlagStore;
+    Ok(FlagStore::new(
+        FlagStore::default_dir()?,
+        clicue::corpus::path_dirs(),
+        clicue::config::load().config.emulates.into_iter().collect(),
+    ))
+}
+
 fn data(cmd: Option<DataCmd>) -> Result<()> {
     use clicue::corpus;
     let cache = corpus::cache_path()?;
@@ -195,6 +206,23 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                     println!("    … {} total", invocations.len());
                 }
             }
+            // Harvested flags live in their own store, not the corpus —
+            // inspect covers ALL collected data or it misleads.
+            let store = flag_store()?;
+            let resolved = clicue::flags::resolve_path(&cmd, &Default::default(), &store.emulates);
+            if let Some(mut rows) = store.rows(&resolved) {
+                rows.sort_by(|a, b| a.insert.cmp(&b.insert));
+                println!("  flags     {} harvested", rows.len());
+                for r in rows.iter().take(8) {
+                    println!("    {:<24} {}", r.label, r.gloss);
+                }
+                if rows.len() > 8 {
+                    println!("    … `clicue data inspect` shows 8; the card shows all");
+                }
+            }
+            for sub in store.subcommand_tables(&resolved) {
+                println!("  flags     {sub} (subcommand table)");
+            }
             Ok(())
         }
         DataCmd::Forget { cmd } => {
@@ -214,11 +242,15 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             removed += before - c.invoke_alias.len();
             // The gloss stays: it is whatis-derived public data, not a habit.
             corpus::save(&c, &cache)?;
+            let store = flag_store()?;
+            let resolved = clicue::flags::resolve_path(&cmd, &Default::default(), &store.emulates);
+            let flags_removed = store.forget(&resolved);
             println!(
-                "forgot {removed} entr{} for {cmd}. Note: the next rebuild re-learns from \
-                 history — prefix the command with a space (HIST_IGNORE_SPACE) to keep it \
-                 out for good.",
-                if removed == 1 { "y" } else { "ies" }
+                "forgot {removed} entr{} and {flags_removed} flag table{} for {cmd}. \
+                 Note: the next rebuild re-learns from history — prefix the command \
+                 with a space (HIST_IGNORE_SPACE) to keep it out for good.",
+                if removed == 1 { "y" } else { "ies" },
+                if flags_removed == 1 { "" } else { "s" }
             );
             Ok(())
         }
