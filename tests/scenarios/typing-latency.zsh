@@ -26,8 +26,9 @@ while (( EPOCHREALTIME < quiet )); do
 done
 
 local -F per_key=$(( (last - t0) * 1000 / ${#text} ))
-printf 'typed %d keys: %.1f ms/key\n' ${#text} $per_key
-(( per_key < 25 )) || t_fail "typing lag: ${per_key}ms/key (gate 25ms)"
+local -F gate=${CLICUE_E2E_GATE_MS:-25}
+printf 'typed %d keys: %.1f ms/key (gate %.0f)\n' ${#text} $per_key $gate
+(( per_key < gate )) || t_fail "typing lag: ${per_key}ms/key (gate ${gate}ms)"
 [[ $PTY_OUT == *'╭'* ]] || t_fail "no card ever painted during typing"
 
 t_done

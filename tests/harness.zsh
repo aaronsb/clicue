@@ -21,7 +21,7 @@
 #   t_done
 
 emulate -L zsh
-zmodload zsh/zpty zsh/datetime zsh/system
+zmodload zsh/zpty zsh/datetime zsh/system zsh/zselect
 
 # $0 is the harness path ONLY while sourcing (FUNCTION_ARGZERO); inside a
 # function it is the function name. Resolve the tree once, now.
@@ -32,6 +32,10 @@ typeset -g T_SANDBOX=''          # this scenario's sandbox dir
 typeset -g T_STATUS=0
 typeset -gi T_DAEMON_PID=0
 typeset -g CLICUE_BIN=${CLICUE_BIN:-$T_ROOT/../target/debug/clicue}
+
+# Cleanup runs on EVERY exit path — a failed pty_start or an aborted
+# scenario must not leak its daemon or sandbox.
+TRAPEXIT() { pty_stop }
 
 t_fail() { print -u2 "FAIL: $1"; T_STATUS=1 }
 t_skip() { print "SKIP: $1"; pty_stop 2>/dev/null; exit 0 }
@@ -55,6 +59,7 @@ pty_start() {
   local -F deadline=$(( EPOCHREALTIME + 15 ))
   until [[ -S $T_SANDBOX/run/clicue.sock ]]; do
     (( EPOCHREALTIME > deadline )) && { print -u2 "daemon never bound"; exit 2 }
+    zselect -t 1 2>/dev/null   # 10ms; TRAPEXIT reaps on the failure path
   done
   # zpty inherits the exported sandbox; PATH keeps the build's binary first
   # so `clicue init zsh` in .zshrc emits the shim under test.
@@ -94,9 +99,18 @@ pty_exec() { zpty -w clicue_pty " $1"; pty_drain 0.4 }
 
 pty_stop() {
   zpty -d clicue_pty 2>/dev/null
-  (( T_DAEMON_PID )) && kill $T_DAEMON_PID 2>/dev/null
-  T_DAEMON_PID=0
-  [[ -n $T_SANDBOX && $T_SANDBOX == */clicue-e2e-* ]] && rm -rf -- $T_SANDBOX
+  # Reap BEFORE the rm: a dying daemon (or the pty shell's exit) racing
+  # the delete is how skeleton dirs leak. Profiles set SAVEHIST=0 so the
+  # shell writes no history at exit either.
+  if (( T_DAEMON_PID )); then
+    kill $T_DAEMON_PID 2>/dev/null
+    wait $T_DAEMON_PID 2>/dev/null
+    T_DAEMON_PID=0
+  fi
+  if [[ -n $T_SANDBOX && $T_SANDBOX == */clicue-e2e-* ]]; then
+    rm -rf -- $T_SANDBOX
+    T_SANDBOX=''
+  fi
 }
 
 # Strip ANSI control sequences for content assertions.

@@ -252,6 +252,11 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                 if removed == 1 { "y" } else { "ies" },
                 if flags_removed == 1 { "" } else { "s" }
             );
+            // A running daemon memoises tables it has already served.
+            println!(
+                "restart the daemon to forget everywhere: pkill -x clicue \
+                 (it respawns on the next keystroke)"
+            );
             Ok(())
         }
     }

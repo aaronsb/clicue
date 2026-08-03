@@ -13,5 +13,5 @@ for s in "${0:a:h}"/scenarios/*.zsh; do
   fi
 done
 print -- "──"
-print "$ran scenario(s) passed, $failed failed"
+print "$ran scenario(s) ok (passes and skips), $failed failed"
 exit $(( failed > 0 ))
