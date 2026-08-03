@@ -258,7 +258,7 @@ impl Row {
     }
 }
 
-fn border_row(inner: usize, label: &str, l: &str, r: &str, h: &str, style: &str) -> Row {
+fn border_row(inner: usize, label: &str, l: &str, r: &str, h: &str, t: &Theme) -> Row {
     let label = fit_label(label, inner);
     let rule = inner.saturating_sub(wcols(&label)).max(1);
     let mut row = Row::new();
@@ -266,8 +266,19 @@ fn border_row(inner: usize, label: &str, l: &str, r: &str, h: &str, style: &str)
     row.push(&label, None);
     row.push(&h.repeat(rule), None);
     row.push(r, None);
-    row.overlay(style);
+    border_overlay(&mut row, t);
     row
+}
+
+/// Flat border style, or the theme's gradient swept across the row —
+/// segment spans land AFTER the flat overlay, so region_highlight's
+/// last-wins stacking shows the gradient with the flat colour as the
+/// fallback for anything the segments miss.
+fn border_overlay(row: &mut Row, t: &Theme) {
+    row.overlay(&t.palette.border);
+    for (s, e, style) in crate::theme::gradient_segments(&t.palette.border_gradient, row.chars) {
+        row.spans.push((s, e, style));
+    }
 }
 
 // ── the legend ───────────────────────────────────────────────────────────
@@ -539,7 +550,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         } else {
             format!(" {}/{} ", view.sel, total)
         };
-        rows.push(border_row(inner, &label, &g.tl, &g.tr, &g.h, &p.border));
+        rows.push(border_row(inner, &label, &g.tl, &g.tr, &g.h, theme));
         let bot = t1n.min(view.top1 + r1 - 1);
         for (i, c) in cues.iter().enumerate().take(bot).skip(view.top1 - 1) {
             let idx = i + 1;
@@ -627,7 +638,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         } else {
             format!(" all {n} on system{pg} ")
         };
-        rows.push(border_row(inner, &label, &g.tl, &g.tr, &g.h, &p.border));
+        rows.push(border_row(inner, &label, &g.tl, &g.tr, &g.h, theme));
 
         for r in 0..grows {
             let mut row = Row::new();
@@ -680,7 +691,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         } else {
             (&g.jl, &g.jr)
         };
-        rows.push(border_row(inner, label, jl, jr, &g.h, &p.border));
+        rows.push(border_row(inner, label, jl, jr, &g.h, theme));
 
         if collapsed {
             let note = if input.invnote.is_empty() {
@@ -734,7 +745,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         row.push(&hint, None);
         row.push(&g.h.repeat(rule), None);
         row.push(&g.br, None);
-        row.overlay(&p.border);
+        border_overlay(&mut row, theme);
         let start = g.bl.chars().count();
         row.spans
             .push((start, start + hint.chars().count(), p.hint.clone()));
@@ -758,7 +769,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         close.push(&g.bl, None);
         close.push(&g.h.repeat(inner), None);
         close.push(&g.br, None);
-        close.overlay(&p.border);
+        border_overlay(&mut close, theme);
         rows.push(close);
     }
 
@@ -777,6 +788,43 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             });
         }
         offset += row.chars + 1;
+    }
+
+    // Panel ground: one base span under everything, and the panel's bg
+    // merged into every span that has none — region_highlight's last-
+    // wins stacking replaces the WHOLE attribute set per char, so an
+    // fg-only span above the base would punch a terminal-default hole
+    // through the card.
+    if !theme.palette.panel.is_empty() {
+        let bg = theme
+            .palette
+            .panel
+            .split(',')
+            .find(|part| part.trim_start().starts_with("bg="))
+            .unwrap_or(&theme.palette.panel)
+            .trim()
+            .to_string();
+        for sp in &mut spans {
+            if !sp.style.contains("bg=") {
+                sp.style = format!("{},{bg}", sp.style);
+            }
+        }
+        // One base span PER ROW, newlines excluded: a bg attribute active
+        // across a newline smears to the terminal's right edge on BCE
+        // terminals (review #14).
+        let mut base = Vec::new();
+        let mut at = 1usize;
+        for row in &rows {
+            if row.chars > 0 {
+                base.push(Span {
+                    start: at,
+                    end: at + row.chars,
+                    style: theme.palette.panel.clone(),
+                });
+            }
+            at += row.chars + 1;
+        }
+        spans.splice(0..0, base);
     }
 
     Some(Card {
@@ -1156,5 +1204,76 @@ mod tests {
         let card = render(&inp, &mut view, &theme::base()).unwrap();
         assert!(card.text.contains("Tab insert"));
         assert!(!card.text.contains("Tab cycle"));
+    }
+    #[test]
+    fn panel_theme_grounds_every_span() {
+        let t = theme::builtin("agnoster").unwrap();
+        let cues = vec![cue("git", "the stupid content tracker")];
+        let cfg = LayoutCfg::default();
+        let keys = KeyLabels::default();
+        let inp = input(
+            &cues,
+            &[],
+            Dims {
+                cols: 90,
+                lines: 30,
+            },
+            &cfg,
+            &keys,
+        );
+        let mut view = View::default();
+        let card = render(&inp, &mut view, &t).unwrap();
+        // per-row base spans first (a bg crossing a newline smears to the
+        // terminal edge on BCE terminals), tiling every visible row
+        let bases: Vec<_> = card
+            .spans
+            .iter()
+            .take_while(|s| s.style == t.palette.panel)
+            .collect();
+        let rows = card.text.lines().skip(1).count();
+        assert_eq!(bases.len(), rows, "one base span per row");
+        assert_eq!(bases[0].start, 1, "leading newline excluded");
+        let chars: Vec<char> = card.text.chars().collect();
+        for b in &bases {
+            assert!(
+                b.end == chars.len() || chars[b.end] == '\n',
+                "base span must stop before the newline"
+            );
+        }
+        // nothing above the bases can punch a terminal-default hole
+        for s in &card.spans[bases.len()..] {
+            assert!(s.style.contains("bg="), "hole in the panel: {:?}", s.style);
+        }
+    }
+
+    #[test]
+    fn gradient_theme_sweeps_horizontal_borders() {
+        let t = theme::builtin("chrome").unwrap();
+        let cues = vec![cue("git", "the stupid content tracker")];
+        let cfg = LayoutCfg::default();
+        let keys = KeyLabels::default();
+        let inp = input(
+            &cues,
+            &[],
+            Dims {
+                cols: 90,
+                lines: 30,
+            },
+            &cfg,
+            &keys,
+        );
+        let mut view = View::default();
+        let card = render(&inp, &mut view, &t).unwrap();
+        let grads: Vec<_> = card
+            .spans
+            .iter()
+            .filter(|s| s.style.starts_with("fg=#") && !s.style.contains(','))
+            .filter(|s| s.end - s.start <= 3)
+            .collect();
+        assert!(
+            grads.len() >= 10,
+            "expected gradient segments, got {}",
+            grads.len()
+        );
     }
 }

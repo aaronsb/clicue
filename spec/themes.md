@@ -11,6 +11,14 @@ daemon; `clicue theme` lists, sets, and previews.
   palette (colours in the forms the highlight mechanism accepts — hex or
   terminal-named) and a glyph set (box drawing, selection marker, source
   gutter). (theme.zsh:1–24)
+- T1a [domain] Two palette keys are card-scoped rather than element-scoped,
+  both optional: `panel` (a bg= style laid as per-row base spans under the
+  whole card, its bg merged into any span that lacks one — region_highlight
+  replaces the WHOLE attribute set per char, and a bg crossing a newline
+  smears to the terminal edge on BCE terminals) and `border-gradient` (≥2
+  #rrggbb stops interpolated along horizontal borders in width-scaled
+  segments, ~24 per row, equal neighbours coalesced — the shim pays per
+  span). Added 2026-08-03; validated like every other key.
 - T2 [domain] Themes merge over a base; a partial theme is legal — changing
   only the accent colour is a three-line theme. (theme.zsh:18–21, 95–103)
 - T3 [domain] Every key the renderer reads is validated at load. A theme
