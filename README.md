@@ -174,11 +174,3 @@ by preference: zsh-autosuggestions and fzf are MIT, zsh-syntax-highlighting and
 zsh-completions are BSD-3-Clause, and zsh itself uses a custom MIT-like licence.
 Nothing in this ecosystem uses Apache 2.0, and for a plugin people copy into their
 dotfiles the shortest permissive licence imposes least.
-
-## Prior art
-
-The interaction pattern is inspired by
-[IRIS](https://github.com/versenilvis/IRIS), which demonstrated the live-narrowing
-card and the visual language. clicue takes the UX and rejects the architecture: IRIS
-wraps the terminal in a pty and carries a hand-authored spec corpus, where clicue
-runs inside zsh and derives everything from what the system already documents.
