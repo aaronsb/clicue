@@ -250,6 +250,58 @@ print -rn -- "{\"harvests\":[$REPLY]}"
         );
     }
 
+    /// spec §7a: `${j#*needle}` probes every prefix — one reply parse cost
+    /// 617ms and was felt as per-keystroke lag. Fixed cost is ~7ms; the
+    /// threshold sits 20× above that and 4× below the quadratic cliff, so
+    /// it survives slow CI yet fails if the forbidden idiom returns.
+    #[test]
+    fn apply_parses_a_worst_case_reply_in_linear_time() {
+        use crate::protocol::{Action, Reply, Span};
+        // Mirror the worst measured real reply (buffer "g"): ~12KB,
+        // 165 spans, multibyte box-drawing throughout the card.
+        let mut card = String::from("\n");
+        for i in 0..48 {
+            card.push_str(&format!(
+                "│ ▸ ▪ command{i:03} — a gloss with ünïcode ─ box drawing ╭╮╰╯ and enough text to fill\n"
+            ));
+        }
+        let spans = (0..165)
+            .map(|i| Span {
+                start: i * 20,
+                end: i * 20 + 12,
+                style: "fg=#a277ff,bold".into(),
+            })
+            .collect();
+        let reply = Reply {
+            v: crate::protocol::VERSION,
+            card,
+            ghost: "gh auth login".into(),
+            ghost_style: "fg=#6d6a7f".into(),
+            spans,
+            ack: 999,
+            action: Action::Delegate,
+        };
+        let frame = serde_json::to_string(&reply).unwrap();
+        assert!(frame.len() > 8_000, "fixture must be reply-sized");
+        let out = zsh_stdout(
+            r#"
+zmodload zsh/datetime
+typeset -F t0=$EPOCHREALTIME
+_clicue_apply "$1"
+typeset -F t1=$EPOCHREALTIME
+print -rn -- "${#_clicue_rh} $(( (t1 - t0) * 1000 ))""#,
+            &[&frame],
+        );
+        let s = String::from_utf8(out).unwrap();
+        let (nspans, ms) = s.split_once(' ').expect("two fields");
+        assert_eq!(nspans, "495", "165 span triplets must survive the parse");
+        let ms: f64 = ms.parse().unwrap();
+        assert!(
+            ms < 150.0,
+            "apply took {ms:.0}ms — the quadratic strip is back"
+        );
+    }
+
     #[test]
     fn argpath_mirrors_the_daemon_derivation() {
         let out = zsh_stdout(

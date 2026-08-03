@@ -63,15 +63,27 @@ _clicue_json_unesc() {
   REPLY=${(pj.$b.)dec}
 }
 
+# ── cut: strip through the FIRST occurrence of a literal needle ─────────────
+# `${j#*"$k"}` reads as one scan but probes every prefix length — quadratic,
+# and 433ms [MEASURED] against a 12KB reply with the needle near the end
+# (vs 0.24ms for this idiom). Every per-keystroke parse below goes through
+# here; `#*` on anything reply-sized is the shim's one forbidden move.
+_clicue_cut() {
+  local pre=${1%%"$2"*}
+  [[ $pre == "$1" ]] && return 1
+  REPLY=${1[${#pre}+${#2}+1,-1]}
+  return 0
+}
+
 # ── JSON: extract the RAW (still-escaped) value of a string field ────────────
 # Scans for the closing quote by counting trailing backslashes — a quote
 # preceded by an even number of them ends the string. Length arithmetic for
 # every strip: `#`/`%` strip PATTERNS under GLOB_SUBST (spec/keys.md I1's
 # hazard, and the prototype's most-repeated scar).
 _clicue_jget_str() {
-  local j=$1 k='"'$2'":"'
-  [[ $j == *"$k"* ]] || return 1
-  j=${j#*"$k"}
+  local k='"'$2'":"'
+  _clicue_cut "$1" "$k" || return 1
+  local j=$REPLY
   local out='' seg t
   while true; do
     seg=${j%%'"'*}
@@ -85,10 +97,10 @@ _clicue_jget_str() {
 }
 
 _clicue_jget_num() {
-  local j=$1 k='"'$2'":'
-  [[ $j == *"$k"[0-9]* ]] || return 1
-  j=${j#*"$k"}
-  REPLY=${j%%[^0-9]*}
+  local k='"'$2'":'
+  [[ $1 == *"$k"[0-9]* ]] || return 1
+  _clicue_cut "$1" "$k" || return 1
+  REPLY=${REPLY%%[^0-9]*}
   return 0
 }
 
@@ -99,16 +111,18 @@ _clicue_jget_num() {
 typeset -ga _clicue_rh=()
 _clicue_spans() {
   _clicue_rh=()
-  local j=$1
-  [[ $j == *'"spans":['* ]] || return 0
-  j=${j#*'"spans":['}
-  j=${j%%'],"ack"'*}
+  _clicue_cut "$1" '"spans":[' || return 0
+  local j=${REPLY%%'],"ack"'*}
   [[ -n $j ]] || return 0
-  local obj rest=$j st en sty
-  while [[ $rest == *'{'* ]]; do
-    obj=${rest#*'{'}
-    obj=${obj%%'}'*}
-    rest=${rest#*'}'}
+  # One split into objects, then field strips on ~40-char strings — `#*`
+  # is quadratic only in what it scans, and each object is tiny. The old
+  # loop re-stripped the whole remainder per object: 74ms for 165 spans.
+  # a literal `}` in the flag delimiter would close the ${…}; the p flag
+  # takes the separator from a variable instead (the unescaper's idiom)
+  local sep='},{'
+  local -a objs=( "${(@ps.$sep.)j}" )
+  local obj st en sty
+  for obj in "${(@)objs}"; do
     st=${${obj#*'"start":'}%%[^0-9]*}
     en=${${obj#*'"end":'}%%[^0-9]*}
     sty=${obj#*'"style":"'}
