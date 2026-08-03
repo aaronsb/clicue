@@ -77,6 +77,14 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    component specified to have none. The daemon converts (trivial in Rust),
    the same division as `cursor` in §4a. Frames themselves stay
    byte-limited per §2/§2a.
+7a. The shim must never strip from the head of a reply-sized string with
+   `${j#*needle}`: zsh finds the shortest match by probing every prefix
+   length, so the strip is quadratic in the needle's position — 433 ms
+   against a 12 KB reply with the needle near the end, 617 ms for one full
+   reply parse, felt as per-keystroke lag [MEASURED]. The linear idiom is
+   `pre=${j%%needle*}` plus length arithmetic (0.24 ms on the same reply;
+   the shim's `_clicue_cut`). Substring TESTS (`[[ $j == *needle* ]]`) and
+   `%%` strips are linear and fine. [zsh-hazard]
 
 ## Failure
 
