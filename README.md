@@ -69,6 +69,15 @@ The second box is **clamped to a third of the window** (at least 10 rows) so a
 you are — `all 447 on system · page 3/11`. `Alt+M` trades that back for the whole
 window when a list is worth the room.
 
+The card's **width fits its content**: two short candidates do not get a
+120-column box, and a long remembered `git clone git@…` line gets the room it
+needs instead of clipping against a fixed column. `min-width` and `max-width`
+bound it, each either absolute columns or a percentage of the terminal
+(`clicue config set min-width 40%`; defaults 30% and 120). Width holds still
+while you scroll and navigate — it is sized to the candidate set, not to
+whatever happens to be on screen — and a literal floor keeps the legend
+legible however small the minimum.
+
 Unmodified `↑`/`↓` always reach command history. That is enforced in code, not merely
 intended. No bare printable character is ever bound — binding `q` as an alternate
 dismiss would break every command containing a q. clicue binds **last** and captures
