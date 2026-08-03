@@ -60,6 +60,22 @@ pub struct EnvPayload {
     pub builtins: Vec<String>,
 }
 
+/// The shell's place, relayed with each request so the daemon can render
+/// "you are here" (spec §4c). RELAY, NEVER RECORD: this is request context
+/// like the compsys harvest — used for the reply it arrived with, never
+/// persisted. A recorder of place would defeat `HIST_IGNORE_SPACE` (a
+/// space-prefixed ` cd <secret>` hides the line but not the transition),
+/// which is the design note's one promise-backed rejection
+/// (docs/design-notes/navigation-and-place.md).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavContext {
+    pub pwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldpwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirstack: Vec<String>,
+}
+
 /// One new `$history` entry: zsh event number and the line (spec §5a).
 /// Serialized as a two-element array. Numbered so the daemon can ack and
 /// the shim can resend only what was never acknowledged.
@@ -91,6 +107,11 @@ pub struct Request {
     /// `$history`, never `$BUFFER` (spec §5a).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hist: Vec<HistEntry>,
+    /// Relayed place (spec §4c). Optional and additive: absence means an
+    /// older shim, and the nav pane simply does not render — no version
+    /// bump, per §10's additive-field policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nav: Option<NavContext>,
 }
 
 /// Style span over the reply's `card` text, in CHARACTER offsets —
@@ -189,13 +210,36 @@ mod tests {
             pending: None,
             env: None,
             hist: vec![HistEntry(101, "git status".into())],
+            nav: Some(NavContext {
+                pwd: "/home/op/proj".into(),
+                oldpwd: Some("/home/op".into()),
+                dirstack: vec!["/home/op".into(), "/tmp".into()],
+            }),
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains('\n'), "one frame must be one line");
         assert!(line.contains(r#"[101,"git status"]"#), "hist is [n, line]");
+        // The wire shape the shim's _clicue_nav_json emits, exactly.
+        assert!(line.contains(r#""nav":{"pwd":"/home/op/proj","oldpwd":"/home/op","dirstack":["/home/op","/tmp"]}"#));
         let back: Request = serde_json::from_str(&line).unwrap();
         assert_eq!(back.buffer, "git sta");
         assert_eq!(back.hist[0].0, 101);
+        assert_eq!(back.nav.unwrap().dirstack.len(), 2);
+    }
+
+    #[test]
+    fn nav_is_additive_and_optional() {
+        // An older shim omits nav entirely; a fresh shell omits oldpwd and
+        // dirstack. Both must parse — §10's additive-field policy.
+        let minimal = r#"{"v":1,"session":{"pid":1,"start":0},"event":{"kind":"redraw"},"buffer":"","cursor":0,"cols":80,"lines":24,"keymap":"main"}"#;
+        let back: Request = serde_json::from_str(minimal).unwrap();
+        assert!(back.nav.is_none());
+        let fresh = r#"{"v":1,"session":{"pid":1,"start":0},"event":{"kind":"redraw"},"buffer":"","cursor":0,"cols":80,"lines":24,"keymap":"main","nav":{"pwd":"/home/op"}}"#;
+        let back: Request = serde_json::from_str(fresh).unwrap();
+        let nav = back.nav.unwrap();
+        assert_eq!(nav.pwd, "/home/op");
+        assert!(nav.oldpwd.is_none());
+        assert!(nav.dirstack.is_empty());
     }
 
     #[test]
@@ -212,10 +256,12 @@ mod tests {
             pending: None,
             env: None,
             hist: vec![],
+            nav: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("pending"));
         assert!(!line.contains("hist"));
+        assert!(!line.contains("nav"));
         // The shim may omit them entirely.
         let minimal = r#"{"v":1,"session":{"pid":1,"start":0},"event":{"kind":"redraw"},"buffer":"","cursor":0,"cols":80,"lines":24,"keymap":"main"}"#;
         let back: Request = serde_json::from_str(minimal).unwrap();

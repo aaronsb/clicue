@@ -303,6 +303,28 @@ _clicue_apply() {
   return 0
 }
 
+# ── nav context: relayed place, never recorded (spec §4c) ────────────────────
+# $PWD, $OLDPWD and $dirstack ride every request so the daemon can render
+# "you are here" — used for that reply, never persisted (the relay/record
+# line of §4c). $dirstack needs zsh/parameter, like $history; unloaded, the
+# expansion is empty and the field degrades to pwd alone. No conditionals
+# beyond set-ness: sending is not a decision (§4).
+_clicue_nav_json() {
+  local out d ds=''
+  _clicue_json_esc "$PWD"
+  out='"pwd":"'$REPLY'"'
+  if [[ -n $OLDPWD ]]; then
+    _clicue_json_esc "$OLDPWD"
+    out+=',"oldpwd":"'$REPLY'"'
+  fi
+  for d in "${(@)dirstack}"; do
+    _clicue_json_esc "$d"
+    ds+="${ds:+,}\"$REPLY\""
+  done
+  [[ -n $ds ]] && out+=',"dirstack":['$ds']'
+  REPLY=',"nav":{'$out'}'
+}
+
 # ── requests ─────────────────────────────────────────────────────────────────
 # $1 = event JSON fragment. Builds the full request into REPLY. A pending
 # harvest fragment (set by _clicue_harvest) rides exactly one request.
@@ -310,9 +332,11 @@ _clicue_request() {
   local ev=$1
   _clicue_hist_json
   local hist=$REPLY
+  _clicue_nav_json
+  local nav=$REPLY
   _clicue_json_esc "$BUFFER"
   local buf=$REPLY
-  REPLY='{"v":'$_clicue_v',"session":{"pid":'$$',"start":'$_clicue_start'},"event":'$ev',"buffer":"'$buf'","cursor":'${CURSOR:-0}',"cols":'${COLUMNS:-80}',"lines":'${LINES:-24}',"keymap":"'${KEYMAP:-main}'"'$hist$_clicue_pending'}'
+  REPLY='{"v":'$_clicue_v',"session":{"pid":'$$',"start":'$_clicue_start'},"event":'$ev',"buffer":"'$buf'","cursor":'${CURSOR:-0}',"cols":'${COLUMNS:-80}',"lines":'${LINES:-24}',"keymap":"'${KEYMAP:-main}'"'$nav$hist$_clicue_pending'}'
   _clicue_pending=''
 }
 

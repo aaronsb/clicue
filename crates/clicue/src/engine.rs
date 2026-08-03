@@ -14,7 +14,8 @@ use crate::corpus::{self, Corpus};
 use crate::flags::{self, FlagStore, Harvest};
 use crate::layout::{self, CardInput, Dims, KeyLabels, LayoutCfg, View};
 use crate::model::{Cue, Kind, Mode};
-use crate::protocol::{Action, Event, Reply, Request, Session, Span};
+use crate::nav::{self, NavScanner};
+use crate::protocol::{Action, Event, NavContext, Reply, Request, Session, Span};
 use crate::rank::RankMode;
 use crate::sources::{self, ArgContext, HistoryWindow, SessionEnv, DEFAULT_WINDOW};
 use crate::state::{self, SessionState};
@@ -44,6 +45,10 @@ pub struct Engine {
     /// Seed for each new session's history window (newest N of HISTFILE).
     hist_seed: Vec<String>,
     sessions: SharedSessions,
+    /// Ring cache for the "you are here" pane — daemon-lifetime, shared
+    /// across shells. Rebuilt empty on a hot-reload swap: the cache is
+    /// warmth, not state, and a cold first render costs ~0.1 ms.
+    nav_scanner: Mutex<NavScanner>,
 }
 
 /// What candidate resolution produced, beyond the cues themselves.
@@ -162,6 +167,7 @@ impl Engine {
             path_commands: corpus::scan_path(&corpus::path_dirs()),
             hist_seed,
             sessions,
+            nav_scanner: Mutex::new(NavScanner::new()),
         })
     }
 
@@ -257,10 +263,10 @@ impl Engine {
         };
 
         let now = now_epoch();
-        let set = self.cues_for(sess, &req.buffer, &pos, now);
+        let set = self.cues_for(sess, &req.buffer, &pos, now, req.nav.as_ref());
         let cues = set.cues;
         let info = set.info;
-        let explain = self.explain_rows(sess, &pos);
+        let explain = self.explain_rows(sess, &pos, req.nav.as_ref());
         if cues.is_empty() && explain.is_empty() {
             sess.grid = None;
             return reply(String::new(), Vec::new(), String::new(), String::new());
@@ -331,7 +337,14 @@ impl Engine {
     }
 
     /// Candidate resolution for a position.
-    fn cues_for(&self, sess: &Sess, buffer: &str, pos: &state::Position, now: u64) -> CueSet {
+    fn cues_for(
+        &self,
+        sess: &Sess,
+        buffer: &str,
+        pos: &state::Position,
+        now: u64,
+        navctx: Option<&NavContext>,
+    ) -> CueSet {
         match pos.mode {
             Mode::Cmd => CueSet {
                 cues: sources::command_candidates(
@@ -343,8 +356,93 @@ impl Engine {
                 ),
                 ..CueSet::default()
             },
-            Mode::Arg => self.arg_cues(sess, buffer, pos),
+            Mode::Arg => {
+                let mut set = self.arg_cues(sess, buffer, pos);
+                if let Some(cue) = self.nav_suggestion(sess, pos, navctx) {
+                    set.cues.push(cue);
+                    set.info = false;
+                }
+                set
+            }
         }
+    }
+
+    /// The effective command, resolved one alias deep, tested against the
+    /// navigational class (design note). Unknown fails safe to false.
+    fn navigational(&self, sess: &Sess, pos: &state::Position) -> bool {
+        let words: Vec<&str> = pos.words.iter().map(|s| s.as_str()).collect();
+        let Some(eff) = sources::effective_command(&words) else {
+            return false;
+        };
+        if nav::is_navigational(eff) {
+            return true;
+        }
+        sess.env
+            .aliases
+            .get(eff)
+            .and_then(|e| e.split_whitespace().next())
+            .map(nav::is_navigational)
+            .unwrap_or(false)
+    }
+
+    /// The failure-only recommendation (design note): a Tab-reachable
+    /// candidate, never a buffer rewrite, offered ONLY when the typed
+    /// target will not resolve from here and exactly one known directory
+    /// matches. Success needs no recommendation; ambiguity gets silence.
+    fn nav_suggestion(
+        &self,
+        sess: &Sess,
+        pos: &state::Position,
+        navctx: Option<&NavContext>,
+    ) -> Option<Cue> {
+        let ctx = navctx?;
+        if pos.pfx.is_empty() || !self.navigational(sess, pos) {
+            return None;
+        }
+        let home = std::env::var("HOME").ok();
+        let resolved = nav::resolve_target(
+            &pos.pfx,
+            &ctx.pwd,
+            ctx.oldpwd.as_deref(),
+            &ctx.dirstack,
+            home.as_deref(),
+        );
+        // Only a target that fails from here earns a suggestion; a target
+        // that resolves (or needs state we lack) gets explanation only.
+        match &resolved {
+            Some(r) if !r.exists => {}
+            _ => return None,
+        }
+        let rings = {
+            let mut sc = self.nav_scanner.lock().unwrap_or_else(|e| e.into_inner());
+            sc.rings(std::path::Path::new(&ctx.pwd))
+        };
+        let hit = nav::did_you_mean(
+            &pos.pfx,
+            &ctx.pwd,
+            &rings,
+            ctx.oldpwd.as_deref(),
+            &ctx.dirstack,
+        )?;
+        let display = nav::tilde(&hit, home.as_deref());
+        // The inserted spelling must survive the shell: a quiet path
+        // rides as-is (`~` expands unquoted); anything else is quoted in
+        // absolute form.
+        let insert = if display
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~' | '+'))
+        {
+            display.clone()
+        } else {
+            format!("'{}'", hit.to_string_lossy().replace('\'', r"'\''"))
+        };
+        Some(Cue {
+            insert,
+            label: display,
+            gloss: format!("did you mean? — ⟨{}⟩ doesn't resolve from here", pos.pfx),
+            kind: Kind::Arg,
+            suffix: None,
+        })
     }
 
     /// Argument position: the operator's habits lead (tier 1), the
@@ -480,12 +578,43 @@ impl Engine {
 
     /// E-rules: what the operator ALREADY typed, explained. Walks the
     /// tokens left to right maintaining the command path — subcommands
-    /// descend, flags do not, values say nothing.
-    fn explain_rows(&self, sess: &Sess, pos: &state::Position) -> Vec<crate::model::ExplainRow> {
+    /// descend, flags do not, values say nothing. For a navigational
+    /// command, the typed target additionally resolves against relayed
+    /// place — where it lands, and whether that exists (design note
+    /// "Resolution and existence").
+    fn explain_rows(
+        &self,
+        sess: &Sess,
+        pos: &state::Position,
+        navctx: Option<&NavContext>,
+    ) -> Vec<crate::model::ExplainRow> {
         if pos.mode != Mode::Arg || pos.words.len() < 2 {
             return Vec::new();
         }
         let mut rows = Vec::new();
+        if let Some(ctx) = navctx {
+            if !pos.pfx.is_empty() && self.navigational(sess, pos) {
+                let home = std::env::var("HOME").ok();
+                if let Some(r) = nav::resolve_target(
+                    &pos.pfx,
+                    &ctx.pwd,
+                    ctx.oldpwd.as_deref(),
+                    &ctx.dirstack,
+                    home.as_deref(),
+                ) {
+                    let dest = nav::tilde(&r.path, home.as_deref());
+                    let desc = if r.exists {
+                        format!("→ {dest}")
+                    } else {
+                        format!("→ {dest} — no such directory")
+                    };
+                    rows.push(crate::model::ExplainRow {
+                        label: pos.pfx.clone(),
+                        desc,
+                    });
+                }
+            }
+        }
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut epath = pos.words[0].clone();
         for tok in &pos.words[1..] {
@@ -545,7 +674,7 @@ impl Engine {
         let now = now_epoch();
         let set = match &pos {
             Some(p) if req.keymap != "menuselect" && !sess.state.dismissed(buffer) => {
-                self.cues_for(sess, buffer, p, now)
+                self.cues_for(sess, buffer, p, now, req.nav.as_ref())
             }
             _ => CueSet::default(),
         };
@@ -700,6 +829,7 @@ mod tests {
                 .collect(),
             hist_seed: vec!["git status".into(), "cargo build".into()],
             sessions: SharedSessions::default(),
+            nav_scanner: Mutex::new(NavScanner::new()),
         }
     }
 
@@ -727,6 +857,7 @@ mod tests {
             pending: None,
             env: None,
             hist: vec![],
+            nav: None,
         }
     }
 
@@ -807,6 +938,140 @@ mod tests {
         // the new line immediately informs the ghost
         let r = e.handle(req(Event::Redraw, "cargo t"));
         assert_eq!(r.ghost, "est");
+    }
+
+    #[test]
+    fn nav_resolution_row_and_failure_only_suggestion() {
+        use crate::protocol::NavContext;
+        let root = std::env::temp_dir().join(format!("clicue-engine-nav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("pwd/crates")).unwrap();
+        // Siblings of pwd: the right-name-wrong-place pool. The class of
+        // error served is a correct name typed from the wrong directory —
+        // typos are deliberately NOT matched (design note: no fuzzy).
+        std::fs::create_dir_all(root.join("target-dir")).unwrap();
+        std::fs::create_dir_all(root.join("appalpha")).unwrap();
+        std::fs::create_dir_all(root.join("appbeta")).unwrap();
+        let pwd = root.join("pwd").to_string_lossy().into_owned();
+        let navctx = || {
+            Some(NavContext {
+                pwd: pwd.clone(),
+                oldpwd: Some("/tmp".into()),
+                dirstack: vec![],
+            })
+        };
+        let e = engine_with(test_corpus());
+
+        // A target that resolves: explanation row with the destination,
+        // and NO recommendation — success needs none.
+        let mut r1 = req(Event::Redraw, "cd crates");
+        r1.cols = 220;
+        r1.nav = navctx();
+        let r = e.handle(r1);
+        assert!(r.card.contains("→"), "resolution row expected: {}", r.card);
+        assert!(r.card.contains("crates"));
+        assert!(!r.card.contains("did you mean"));
+
+        // The right name typed from the wrong place — target-dir is a
+        // sibling, not a child: the honest failure row AND a
+        // Tab-reachable suggestion naming where it actually is.
+        let mut r2 = req(Event::Redraw, "cd target-dir");
+        r2.cols = 220;
+        r2.nav = navctx();
+        let r = e.handle(r2);
+        assert!(r.card.contains("no such"), "{}", r.card);
+        assert!(r.card.contains("did you mean"), "{}", r.card);
+
+        // Ambiguity degrades to silence: "app" prefixes two siblings.
+        let mut r3 = req(Event::Redraw, "cd app");
+        r3.cols = 220;
+        r3.nav = navctx();
+        let r = e.handle(r3);
+        assert!(r.card.contains("no such"), "{}", r.card);
+        assert!(!r.card.contains("did you mean"), "{}", r.card);
+
+        // A typo matches nothing — fuzzy matching is rejected by design.
+        let mut r3b = req(Event::Redraw, "cd crakes");
+        r3b.cols = 220;
+        r3b.nav = navctx();
+        let r = e.handle(r3b);
+        assert!(r.card.contains("no such"), "{}", r.card);
+        assert!(!r.card.contains("did you mean"), "{}", r.card);
+
+        // `cd -` resolves through relayed OLDPWD.
+        let mut r4 = req(Event::Redraw, "cd -");
+        r4.cols = 220;
+        r4.nav = navctx();
+        let r = e.handle(r4);
+        assert!(r.card.contains("/tmp"), "OLDPWD resolution: {}", r.card);
+
+        // Without nav context (older shim), navigation adds nothing.
+        let r = e.handle(req(Event::Redraw, "cd crakes"));
+        assert!(
+            !r.card.contains("did you mean") && !r.card.contains("no such"),
+            "no nav context must mean no nav rows: {}",
+            r.card
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nav_suggestion_is_insertable_via_tab_and_enter() {
+        use crate::protocol::NavContext;
+        let root = std::env::temp_dir().join(format!("clicue-engine-navins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // unique-target is a SIBLING of pwd: typing its correct name from
+        // inside pwd fails, and the suggestion carries its real location.
+        std::fs::create_dir_all(root.join("pwd")).unwrap();
+        std::fs::create_dir_all(root.join("unique-target")).unwrap();
+        let pwd = root.join("pwd").to_string_lossy().into_owned();
+        let e = engine_with(test_corpus());
+        let with_nav = |ev: Event, buf: &str| {
+            let mut r = req(ev, buf);
+            r.cols = 220;
+            r.nav = Some(NavContext {
+                pwd: pwd.clone(),
+                oldpwd: None,
+                dirstack: vec![],
+            });
+            r
+        };
+        e.handle(with_nav(Event::Redraw, "cd unique-target"));
+        let r = e.handle(with_nav(
+            Event::Key {
+                name: "accept".into(),
+            },
+            "cd unique-target",
+        ));
+        // One candidate (the suggestion), prefix not equal to it: first
+        // Tab inserts it, replacing the typed word by length.
+        match r.action {
+            Action::Insert { strip, ref text } => {
+                assert_eq!(strip, "unique-target".chars().count());
+                assert!(
+                    text.contains("unique-target") && text.contains('/'),
+                    "suggestion inserted with its real location: {text}"
+                );
+            }
+            Action::Consume => {
+                // Or the card engaged first (tab_inserts=false path):
+                // Enter must then insert it.
+                let r = e.handle(with_nav(
+                    Event::Key {
+                        name: "enter".into(),
+                    },
+                    "cd unique-target",
+                ));
+                match r.action {
+                    Action::Insert { ref text, .. } => {
+                        assert!(text.contains("unique-target"), "{text}")
+                    }
+                    other => panic!("expected insert after enter, got {other:?}"),
+                }
+            }
+            other => panic!("expected insert or consume, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

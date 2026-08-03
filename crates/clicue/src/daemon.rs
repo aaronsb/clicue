@@ -285,6 +285,7 @@ mod tests {
             pending: None,
             env: None,
             hist: vec![],
+            nav: None,
         };
         serde_json::to_string(&req).unwrap()
     }

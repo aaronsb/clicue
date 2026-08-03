@@ -44,6 +44,17 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    `$PATH` itself. The prototype read these per keystroke from shell
    globals; once per session is enough because new aliases mid-session
    are rare and a fresh `hello` after `clicue-off`/on re-syncs.
+4c. Every request MAY carry `nav`: `{pwd, oldpwd?, dirstack?}` — the
+   shell's place, read from `$PWD`/`$OLDPWD`/`$dirstack` at request time.
+   **Relay, never record**: nav context is request context like the
+   compsys harvest — the daemon uses it for the reply it arrived with and
+   must never persist it to disk. A recorded trail of place would defeat
+   `HIST_IGNORE_SPACE` (a space-prefixed ` cd <secret>` hides the line but
+   a place-recorder would keep the transition), the same defect class §5a
+   guards against from the other side. Sending is unconditional (§4: the
+   shim makes no decisions); `$dirstack` requires zsh/parameter exactly as
+   `$history` does, and an unloaded module degrades the field to `pwd`
+   alone. (docs/design-notes/navigation-and-place.md)
 4a. `cursor` travels in CHARACTERS — ZLE's `$CURSOR`, forwarded untouched;
    the daemon converts to bytes. Converting in zsh would put logic back in
    the shim, and an unstated unit here is the exact defect class §2
@@ -119,6 +130,12 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
     shim goes silent (rule 8) and stashes the error for `clicue doctor`.
     The generated-shim model (`clicue init zsh`) makes mismatch a
     transient of mid-upgrade shells only.
+10a. `v` names an INCOMPATIBLE shape change. An additive optional field —
+    one whose absence both sides tolerate (serde default on the daemon,
+    unknown-field tolerance on parse) — does not bump `v`: an old shim
+    omitting it degrades the feature, not the protocol. `nav` (§4c) is the
+    precedent. A field whose absence would be *misread* rather than
+    tolerated is a shape change and bumps.
 11. Error frames never echo request content — a request is usually the
     operator's command line, and these frames are stashed (rule 10) and
     later shown by `clicue doctor`. Positions and limits only.
