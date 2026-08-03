@@ -15,6 +15,16 @@ harvest's OUTPUT crosses the protocol as the `pending` payload
   round-trip compadd's body as text — zsh-autocomplete did, it failed to
   re-parse on `#` comments, and every completion broke. (compsys.zsh:1–17;
   clicue.zsh:114–130)
+- B1a [zsh-hazard, stays] The compstate suppression must be applied AFTER
+  `_main_complete` returns (an always block), not only before the call:
+  `_main_complete` recomputes `compstate[insert]`/`[list]` from the
+  operator's styles, and under `zstyle ':completion:*' menu select=1` a
+  pre-set `''` is overwritten — the capture then inserted the first
+  candidate into the LIVE buffer and opened the full interactive listing
+  over the card (`ffmpeg -` + Tab). compstate is honored at widget
+  RETURN, so last write wins. A sandbox without the operator's zstyles
+  cannot see this class of failure — capture scenarios must also run
+  under a menu-select profile (tests/profiles/). [MEASURED]
 - B2 [domain] The shadow APPENDS `-O`/`-D` and hands everything else to the
   builtin. A call that already carries `-O`/`-A` is the completer probing
   ITSELF ("does anything match, how wide is the longest") — pass it through
