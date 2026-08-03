@@ -66,9 +66,17 @@ print -r -- "up_owner=${${(z)$(bindkey '^[[A')}[2]:-none}"
 print -r -- "down_owner=${${(z)$(bindkey '^[[B')}[2]:-none}"
 print -r -- "right_owner=${${(z)$(bindkey '^[[C')}[2]:-none}"
 print -r -- "left_owner=${${(z)$(bindkey '^[[D')}[2]:-none}"
+print -r -- "up_o_owner=${${(z)$(bindkey '^[OA')}[2]:-none}"
+print -r -- "down_o_owner=${${(z)$(bindkey '^[OB')}[2]:-none}"
+print -r -- "right_o_owner=${${(z)$(bindkey '^[OC')}[2]:-none}"
+print -r -- "left_o_owner=${${(z)$(bindkey '^[OD')}[2]:-none}"
 print -r -- "enter_owner=${${(z)$(bindkey '^M')}[2]:-none}"
 print -r -- "home_owner=${${(z)$(bindkey '^[[H')}[2]:-none}"
 print -r -- "end_owner=${${(z)$(bindkey '^[[F')}[2]:-none}"
+print -r -- "home_o_owner=${${(z)$(bindkey '^[OH')}[2]:-none}"
+print -r -- "end_o_owner=${${(z)$(bindkey '^[OF')}[2]:-none}"
+print -r -- "home_t_owner=${${(z)$(bindkey '^[[1~')}[2]:-none}"
+print -r -- "end_t_owner=${${(z)$(bindkey '^[[4~')}[2]:-none}"
 print -r -- "pgup_owner=${${(z)$(bindkey '^[[5~')}[2]:-none}"
 print -r -- "pgdn_owner=${${(z)$(bindkey '^[[6~')}[2]:-none}"
 print -r -- "ext_history=${options[extendedhistory]}"
@@ -280,15 +288,31 @@ pub fn evaluate(
         // doctor reports no fighters. Binding order is the whole fallback
         // design: clicue binds LAST, captures the previous owner, and
         // delegates to it whenever the card is not engaged.
+        // Every sequence the shim binds, INCLUDING the application-mode
+        // (smkx) ^[O… variants — zle enables smkx while editing, so many
+        // terminals send those during live keystrokes; a plugin rebinding
+        // only that spelling steals keys a CSI-only probe calls clean.
+        // Skips: "" is a probe key an older probe never emitted; "none"
+        // is defensive (an unbound key actually reports `undefined-key`,
+        // which stays FLAGGED — the shim bound all of these, so unbound
+        // means someone ran bindkey -r after it). (doctor F3)
         let stolen: Vec<String> = [
             ("Tab", "^I", "tab_owner"),
             ("Up", "^[[A", "up_owner"),
             ("Down", "^[[B", "down_owner"),
             ("Right", "^[[C", "right_owner"),
             ("Left", "^[[D", "left_owner"),
+            ("Up", "^[OA", "up_o_owner"),
+            ("Down", "^[OB", "down_o_owner"),
+            ("Right", "^[OC", "right_o_owner"),
+            ("Left", "^[OD", "left_o_owner"),
             ("Enter", "^M", "enter_owner"),
             ("Home", "^[[H", "home_owner"),
             ("End", "^[[F", "end_owner"),
+            ("Home", "^[OH", "home_o_owner"),
+            ("End", "^[OF", "end_o_owner"),
+            ("Home", "^[[1~", "home_t_owner"),
+            ("End", "^[[4~", "end_t_owner"),
             ("PgUp", "^[[5~", "pgup_owner"),
             ("PgDn", "^[[6~", "pgdn_owner"),
         ]
@@ -315,15 +339,17 @@ pub fn evaluate(
         }
     }
     let tab_owner = get("tab_owner");
-    if !matches!(
-        tab_owner,
-        "" | "none"
-            | "expand-or-complete"
-            | "complete-word"
-            | "expand-or-complete-prefix"
-            | "menu-complete"
-            | "_clicue_w_accept"
-    ) && !truthy(probe, "fzf_tab")
+    if !truthy(probe, "shim_loaded")
+        && !matches!(
+            tab_owner,
+            "" | "none"
+                | "expand-or-complete"
+                | "complete-word"
+                | "expand-or-complete-prefix"
+                | "menu-complete"
+                | "_clicue_w_accept"
+        )
+        && !truthy(probe, "fzf_tab")
         && !truthy(probe, "autocomplete")
     {
         f.push(finding(
@@ -486,7 +512,8 @@ pub fn print_findings(findings: &[Finding], out: &mut impl Write) -> i32 {
     if fighters > 0 {
         let _ = writeln!(
             out,
-            "{fighters} fighter(s) found — resolve before `clicue install`."
+            "{fighters} fighter(s) found — resolve them (before `clicue install`, \
+             or in the rc if clicue is already loaded)."
         );
         1
     } else {

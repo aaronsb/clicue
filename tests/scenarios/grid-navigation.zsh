@@ -12,6 +12,8 @@ pty_start plain
 pty_type 'ffmpeg -'
 pty_key $'\t'          # harvest + engage
 pty_drain 0.8
+t_plain "$PTY_OUT"
+[[ $REPLY == *'╭'* ]] || t_fail "card never engaged on Tab"
 PTY_OUT=''
 local -i i
 for (( i = 1; i <= 16; i++ )); do
