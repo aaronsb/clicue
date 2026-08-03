@@ -20,17 +20,25 @@ about your own habits that no manual page knows.
 
 ## Quick start
 
+**Install on Arch** — one line builds and installs a real pacman package from
+the latest release's own checksummed `PKGBUILD`:
+
 ```zsh
-paru -S clicue                       # Arch (AUR) — or yay, or makepkg by hand
+mkdir clicue-pkg && cd clicue-pkg && curl -sLO https://github.com/aaronsb/clicue/releases/latest/download/PKGBUILD -sLO https://github.com/aaronsb/clicue/releases/latest/download/clicue.install && makepkg -si
+```
+
+Everywhere else:
+
+```zsh
 cargo install --path crates/clicue   # from a checkout (or: make install)
 clicue install                       # doctor-gated; appends ONE line to your zshrc
 ```
 
-Standalone tarballs (binary + license) hang off each [GitHub
-release](https://github.com/aaronsb/clicue/releases). However it arrives, the
-binary is **inert** until `clicue install` wires it in — package managers add
-and remove the program; clicue manages its own activation, and the rc line is
-guarded so removing the package never leaves shells complaining.
+Each [GitHub release](https://github.com/aaronsb/clicue/releases) also carries
+a standalone tarball (binary + license). However it arrives, the binary is
+**inert** until `clicue install` wires it in — package managers add and remove
+the program; clicue manages its own activation, and the rc line is guarded so
+removing the package never leaves shells complaining.
 
 `clicue install` probes your live shell first and refuses on genuine conflicts
 (zsh-autocomplete, a second card UI) with the reason named. On a stock zshrc it
