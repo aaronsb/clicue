@@ -20,13 +20,63 @@ pub struct Dims {
     pub lines: u16,
 }
 
+/// W5: below this many columns the card stops being a UI — the legend
+/// loses its primary gesture and the column arithmetic scrambles. A
+/// literal, not a percentage: 10% of an 80-column terminal is not a card.
+/// Both width bounds floor here; only the terminal itself may go lower.
+pub const MIN_CARD_COLS: usize = 34;
+
+/// A width bound the operator can state either way: absolute columns, or
+/// a percentage of the terminal (W2/W5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidthBound {
+    Cols(usize),
+    Pct(u8),
+}
+
+impl WidthBound {
+    pub fn resolve(&self, cols: usize) -> usize {
+        match self {
+            WidthBound::Cols(n) => *n,
+            WidthBound::Pct(p) => cols * (*p as usize) / 100,
+        }
+    }
+    /// `"60%"` or `"96"`; percentages must land in 1–100, columns ≥ 1
+    /// (same rule as the integer TOML spelling — `"0"` must not slip in
+    /// as a string and then display as though honoured).
+    pub fn parse(s: &str) -> Option<WidthBound> {
+        if let Some(pct) = s.trim().strip_suffix('%') {
+            let v: u8 = pct.trim().parse().ok()?;
+            (1..=100).contains(&v).then_some(WidthBound::Pct(v))
+        } else {
+            s.trim()
+                .parse()
+                .ok()
+                .filter(|n| *n >= 1)
+                .map(WidthBound::Cols)
+        }
+    }
+}
+
+impl std::fmt::Display for WidthBound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WidthBound::Cols(n) => f.pad(&n.to_string()),
+            WidthBound::Pct(p) => f.pad(&format!("{p}%")),
+        }
+    }
+}
+
 /// Operator preferences (the zstyles of the prototype).
 #[derive(Debug, Clone)]
 pub struct LayoutCfg {
     /// H4: fixed cue count for tier 1.
     pub tier1_rows: usize,
+    /// W5: the card never shrinks below this, so short content still
+    /// presents as a stable card rather than a sliver.
+    pub min_width: WidthBound,
     /// W2: a cap, not a target.
-    pub max_width: usize,
+    pub max_width: WidthBound,
     /// H2: None = auto (`LINES − 6`).
     pub max_lines: Option<usize>,
     /// H5: None = auto (clamped to a third of the window).
@@ -37,7 +87,8 @@ impl Default for LayoutCfg {
     fn default() -> Self {
         LayoutCfg {
             tier1_rows: 10,
-            max_width: 120,
+            min_width: WidthBound::Pct(30),
+            max_width: WidthBound::Cols(120),
             max_lines: None,
             tier2_rows: None,
         }
@@ -102,8 +153,10 @@ impl View {
 }
 
 /// Everything the renderer reads. The daemon's state machine fills this;
-/// layout decides nothing about WHAT to show, only HOW.
-#[derive(Debug)]
+/// layout decides nothing about WHAT to show, only HOW. Copy (all fields
+/// are references or scalars) so the width pass can pose what-if variants
+/// (W6's worst-case legend) without a builder.
+#[derive(Debug, Clone, Copy)]
 pub struct CardInput<'a> {
     pub cues: &'a [Cue],
     pub explain: &'a [ExplainRow],
@@ -441,16 +494,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     let g = &theme.glyphs;
     let p = &theme.palette;
 
-    // W1–W3: outer width. The only floor is the arithmetic limit; the
-    // terminal always wins over preferences.
     let cols = input.dims.cols as usize;
-    let mut lw = cols.saturating_sub(1);
-    lw = lw.min(input.cfg.max_width.max(12));
-    // Floor 12 (the arithmetic limit) — but W3's own principle caps every
-    // floor at the terminal: a floor allowed to win over the window is a
-    // card drawn into the wrapping column.
-    lw = lw.max(12).min(cols.saturating_sub(1).max(3));
-    let inner = lw.saturating_sub(2).max(1);
 
     // H2: height budget; window cap applied AFTER the floor.
     let lines = input.dims.lines as usize;
@@ -507,31 +551,127 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         gr = gr.saturating_sub(1); // the explanation's own border
     }
 
-    // C1/C2: name column over display labels of both visible windows plus
-    // the explain labels.
-    let mut vis: Vec<&str> = Vec::new();
-    if t1n > 0 {
-        let hi = t1n.min(view.top1 + r1 - 1);
-        for c in cues.iter().take(hi).skip(view.top1.saturating_sub(1)) {
-            vis.push(&c.label);
-        }
+    // C1: column basis over everything tier 1 CAN show — the first t1n
+    // cues (the window slides within them) plus the explain rows. Not the
+    // visible window: a content-driven width sized on the window would
+    // jump as the operator scrolls. Tier-2 items render as grid cells and
+    // the gloss bar clips a grid selection to this basis for the same
+    // stability reason.
+    let mut labmax = 0usize;
+    let mut glomax = 0usize;
+    for c in cues.iter().take(t1n) {
+        labmax = labmax.max(wcols(&c.label));
+        glomax = glomax.max(wcols(&c.gloss));
     }
-    if total > t1n {
-        let t2 = view.top2.max(t1n + 1);
-        let hi = total.min(t2 + r2.max(1) - 1);
-        for c in cues.iter().take(hi).skip(t2 - 1) {
-            vis.push(&c.label);
-        }
-    }
+    let mut descmax = 0usize;
     for e in explain {
-        vis.push(&e.label);
+        labmax = labmax.max(wcols(&e.label));
+        descmax = descmax.max(wcols(&e.desc));
     }
-    let mut namew = vis.iter().map(|s| wcols(s)).max().unwrap_or(0).min(28);
-    // Capped against what is actually LEFT; floors bend to the terminal.
-    // (The prototype's fixed floor-10 gloss could overflow a tiny window;
-    // here the row arithmetic is exact so W1 holds at every width.)
+
+    // W1–W3/W5: outer width. Bounds resolve against the terminal (columns or
+    // percentage), floor at MIN_CARD_COLS — but W3's own principle caps
+    // every floor at the terminal: a floor allowed to win over the window
+    // is a card drawn into the wrapping column.
+    let cap = cols.saturating_sub(1).max(3);
+    let maxw = input
+        .cfg
+        .max_width
+        .resolve(cols)
+        .max(MIN_CARD_COLS)
+        .min(cap);
+    let minw = input
+        .cfg
+        .min_width
+        .resolve(cols)
+        .max(MIN_CARD_COLS)
+        .min(maxw);
+
+    // W6: the card takes the width its content needs, clamped to [min,
+    // max]. "Content" is everything that would otherwise clip: tier-1
+    // rows (C3 chrome 7, and the floor-10 gloss column namemax reserves
+    // whether or not the glosses need it), explain rows (chrome 5), the
+    // invnote footer and the collapsed line, a grid page holding every
+    // item (gutter 3), and the widest legend this candidate set can reach
+    // — engaged, ghost present, grid focused, both maximize wordings — so
+    // gestures are not dropped by a card that hugged narrow rows, and the
+    // width holds still across scrolling, engagement, focus, and Alt+M.
+    // Box labels are the one deliberate exception: C5 clips them, and a
+    // `nothing matches <prefix>` label must not widen the whole card.
+    let mut need = (labmax + glomax.max(10) + 7).max(labmax + descmax + 5);
+    if !explain.is_empty() {
+        if !input.invnote.is_empty() {
+            need = need.max(wcols(input.invnote) + 4);
+        }
+        if input.familiar {
+            // E3's collapsed line names its way out; the named key is the
+            // last thing that may be cut. Measured regardless of the
+            // current `expanded` so Alt+E does not move the width.
+            let note = if input.invnote.is_empty() {
+                format!("{} properties", explain.len())
+            } else {
+                input.invnote.to_string()
+            };
+            need = need.max(wcols(&format!("{note}  ·  {} to expand", input.keys.expand)) + 4);
+        }
+    }
+    if total > t1n && gr > 0 {
+        let cellw = cues[t1n..]
+            .iter()
+            .map(|c| wcols(&c.insert))
+            .max()
+            .unwrap_or(1)
+            .clamp(1, 28)
+            + 2;
+        let ncols_full = (total - t1n).div_ceil(gr);
+        need = need.max(3 + ncols_full * cellw);
+    }
+    {
+        // `tab_inserts` is left live here, which is load-bearing: the
+        // predicate (state.rs) reads only cue count, exact-prefix and
+        // info — nothing that changes while the buffer stands. If it ever
+        // gained an engagement term, the ~22-column gap between the two
+        // legend branches would make the card jump on Tab.
+        let mut worst = *input;
+        worst.engaged = true;
+        worst.ghost = "g";
+        let lneed = |focus: u8, grid: Option<Grid>, maxed: bool| {
+            wcols(&format!(
+                " {} ",
+                legend(&worst, maxed, focus, grid, canmax).join(" · ")
+            ))
+        };
+        need = need.max(lneed(1, None, false)).max(lneed(1, None, true));
+        // Same reachability expression as `focus`: a squeezed-to-zero grid
+        // still browses (sel past tier 1), so its legend still needs room.
+        if total > t1n {
+            // page: 1 over-advertises PgUp/PgDn on single-page grids —
+            // the safe direction (never under-reserves).
+            let gd = Grid {
+                page: 1,
+                lo: t1n + 1,
+                hi: total,
+                rows: 1,
+                cols: 1,
+            };
+            need = need
+                .max(lneed(2, Some(gd), false))
+                .max(lneed(2, Some(gd), true));
+        }
+    }
+    let lw = (need + 2).clamp(minw, maxw);
+    let inner = lw.saturating_sub(2).max(1);
+
+    // C2: names take what the room allows. When the card fit its content,
+    // this is exactly labmax; squeezed against max-width, glosses keep
+    // their measured need down to the old baseline 28 before names give
+    // more, and the floor-10 gloss column has the last word (namemax).
+    // Floors bend to the terminal: the row arithmetic is exact so W1
+    // holds at every width.
     let namemax = inner.saturating_sub(17).max(1);
-    namew = namew.min(namemax);
+    let mut namew = labmax
+        .min(28.max(inner.saturating_sub(7 + glomax)))
+        .min(namemax);
     if namew < 10 {
         namew = 10.min(namemax);
     }
@@ -755,11 +895,22 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     // ── gloss bar + close (H7: rendered unconditionally) ─────────────────
     if total > 0 {
         let c = &cues[view.sel - 1];
-        let gw = inner.saturating_sub(namew + 5).max(1);
+        // A grid selection was never in the column basis (C1) — it must
+        // not drive the width, but this free-standing row has the room,
+        // so the name takes it here rather than clipping to tier 1's
+        // alignment, which does no work on this row when focus is 2.
+        let nw = if focus == 2 {
+            namew
+                .max(wcols(&c.label))
+                .min(inner.saturating_sub(15).max(namew))
+        } else {
+            namew
+        };
+        let gw = inner.saturating_sub(nw + 5).max(1);
         let mut row = Row::new();
         row.push(&g.v, Some(&p.border));
         row.push("   ", None);
-        row.push(&pad_to(fit_hard(&c.label, namew), namew), Some(&p.text));
+        row.push(&pad_to(fit_hard(&c.label, nw), nw), Some(&p.text));
         row.push("  ", None);
         row.push(&pad_to(fit_ellipsis(&c.gloss, gw), gw), Some(&p.gloss));
         row.push(&g.v, Some(&p.border));
@@ -917,6 +1068,176 @@ mod tests {
                 assert!(*w < (cols as usize), "cols={cols}: line {i} is {w} wide");
             }
         }
+    }
+
+    #[test]
+    fn the_card_hugs_its_content() {
+        // W6: two short cues on a wide terminal do not get a 120-column box.
+        let cues = vec![
+            cue("ls", "list directory contents"),
+            cue("lsd", "modern ls with icons"),
+        ];
+        let cfg = LayoutCfg {
+            min_width: WidthBound::Pct(1),
+            ..LayoutCfg::default()
+        };
+        let keys = KeyLabels::default();
+        let inp = input(
+            &cues,
+            &[],
+            Dims {
+                cols: 200,
+                lines: 40,
+            },
+            &cfg,
+            &keys,
+        );
+        let mut view = View::default();
+        let card = render(&inp, &mut view, &theme::base()).unwrap();
+        let w = line_widths(&card)[0];
+        assert!(
+            (MIN_CARD_COLS..80).contains(&w),
+            "content this small must not paint {w} columns"
+        );
+    }
+
+    #[test]
+    fn long_history_lines_get_the_width_they_need() {
+        // W6/C2: the regression this replaces — a remembered line clipped at
+        // a 28-column name cap while the gloss column sat empty.
+        // The gloss is deliberately NARROWER than the floor-10 gloss column
+        // namemax reserves — the case review #18 caught: sizing that
+        // ignored the floor clipped the name by (10 − glossw) columns.
+        let long = "git clone git@github.com:somewhere/a-repository-name.git";
+        let cues = vec![cue(long, "3×"), cue("git status", "97× · top 1%")];
+        let cfg = LayoutCfg::default();
+        let keys = KeyLabels::default();
+        let mut inp = input(
+            &cues,
+            &[],
+            Dims {
+                cols: 200,
+                lines: 40,
+            },
+            &cfg,
+            &keys,
+        );
+        inp.mode = Mode::Arg;
+        let mut view = View::default();
+        let card = render(&inp, &mut view, &theme::base()).unwrap();
+        assert!(
+            card.text.contains(long),
+            "the whole remembered line must render when the room exists"
+        );
+    }
+
+    #[test]
+    fn width_bounds_resolve_and_floor() {
+        let keys = KeyLabels::default();
+        let dims = Dims {
+            cols: 100,
+            lines: 40,
+        };
+        // Min as a percentage holds up a card whose content is smaller.
+        let cues = vec![cue("a", "b")];
+        let cfg = LayoutCfg {
+            min_width: WidthBound::Pct(60),
+            ..LayoutCfg::default()
+        };
+        let mut inp = input(&cues, &[], dims, &cfg, &keys);
+        inp.info = true; // legend collapses to `Esc dismiss`
+        let mut view = View::default();
+        let card = render(&inp, &mut view, &theme::base()).unwrap();
+        assert_eq!(line_widths(&card)[0], 60, "60% of 100 columns");
+        // W5: a percentage that resolves below the literal floor loses to it.
+        let cfg = LayoutCfg {
+            min_width: WidthBound::Pct(1),
+            ..LayoutCfg::default()
+        };
+        let mut inp = input(&cues, &[], dims, &cfg, &keys);
+        inp.info = true;
+        let card = render(&inp, &mut view, &theme::base()).unwrap();
+        assert_eq!(line_widths(&card)[0], MIN_CARD_COLS, "the literal floor");
+    }
+
+    #[test]
+    fn width_holds_still_across_navigation_and_engagement() {
+        // W6/C1: label lengths vary wildly; scrolling the tier-1 window and
+        // engaging the card must not change the card's width.
+        let cues: Vec<Cue> = (0..30)
+            .map(|i| cue(&format!("cmd-{}", "x".repeat(i)), "a gloss"))
+            .collect();
+        let cfg = LayoutCfg::default();
+        let keys = KeyLabels::default();
+        let dims = Dims {
+            cols: 160,
+            lines: 14, // squeezes r1 below tier1-rows, so the window slides
+        };
+        let mut widths = std::collections::HashSet::new();
+        let mut view = View::default();
+        // The full candidate count, so the selection crosses from tier 1
+        // into the grid (focus 2) — the legend swap must not move width.
+        for sel in 1..=30 {
+            for engaged in [false, true] {
+                let mut inp = input(&cues, &[], dims, &cfg, &keys);
+                inp.engaged = engaged;
+                view.sel = sel;
+                let card = render(&inp, &mut view, &theme::base()).unwrap();
+                widths.insert(line_widths(&card)[0]);
+            }
+        }
+        assert_eq!(
+            widths.len(),
+            1,
+            "width jumped during navigation: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn collapsed_line_and_invnote_are_measured() {
+        // Review #18: E3's collapsed line names its way out (Alt+E), and
+        // that named key must not be the thing content-fit truncates.
+        let explain = vec![ExplainRow {
+            label: "-l".into(),
+            desc: "ls".into(),
+        }];
+        let cfg = LayoutCfg {
+            min_width: WidthBound::Pct(1),
+            ..LayoutCfg::default()
+        };
+        let keys = KeyLabels::default();
+        let mut inp = input(
+            &[],
+            &explain,
+            Dims {
+                cols: 200,
+                lines: 40,
+            },
+            &cfg,
+            &keys,
+        );
+        inp.mode = Mode::Arg;
+        inp.familiar = true;
+        inp.invnote = "run 97× · top 1% · last seen today";
+        let mut view = View::default();
+        let card = render(&inp, &mut view, &theme::base()).unwrap();
+        assert!(
+            card.text.contains("Alt+E to expand"),
+            "the way out was truncated: {}",
+            card.text
+        );
+        inp.expanded = true;
+        let expanded = render(&inp, &mut view, &theme::base()).unwrap();
+        assert!(
+            expanded.text.contains(inp.invnote),
+            "invnote footer truncated: {}",
+            expanded.text
+        );
+        assert_eq!(
+            line_widths(&card)[0],
+            line_widths(&expanded)[0],
+            "Alt+E must not move the width"
+        );
     }
 
     #[test]

@@ -129,6 +129,7 @@ impl Engine {
             theme,
             cfg: LayoutCfg {
                 tier1_rows: cfgf.tier1_rows,
+                min_width: cfgf.min_width,
                 max_width: cfgf.max_width,
                 max_lines: cfgf.max_lines,
                 tier2_rows: cfgf.tier2_rows,

@@ -19,17 +19,37 @@ policed by hand at the theme layer. The daemon must measure **columns**
   redisplay wraps rather than writes in the last column; a card exactly
   `COLUMNS` wide pushes every row's closing border onto its own line. Verified
   in a 104-column pty; the bug hid because the max-width cap happened to leave
-  one column of slack at the author's 121-column terminal. (render.zsh:297-310;
+  one column of slack at the author's 121-column terminal. The property is
+  asserted from 12 columns up: below that arithmetic minimum the gloss
+  column's floor-1 exceeds the window (pre-existing, unchanged by W5/W6 —
+  a sub-12-column terminal is not running a usable shell). (render.zsh:297-310;
   property-tested across widths, test.zsh:994-1016)
-- W2 [domain] Width is capped at 120 by default (a cap, not a target — long
-  rows scan poorly), configurable (`max-width`). (313-315; test.zsh:1029-1040)
+- W2 [domain] Width is capped at 120 columns by default (a cap, not a target —
+  long rows scan poorly), configurable (`max-width`). Both bounds accept
+  absolute columns or a percentage of the terminal (`"60%"`) — a preference
+  that should follow the window is stated as a share of it, one that protects
+  readability is stated in columns. (313-315; test.zsh:1029-1040)
 - W3 [domain] There is no minimum width above the terminal: a "preferred
   minimum" that exceeds the window draws off-screen, which is worse than
-  cramped. The only floor is 12, the arithmetic limit below which the inner
-  width goes non-positive. A 20-column terminal gets a 19-column card.
-  (316-319; test.zsh:1020-1025)
+  cramped. Every floor — W5's literal included — bends to the terminal. A
+  20-column terminal gets a 19-column card. (316-319; test.zsh:1020-1025)
 - W4 [domain] Width and height are re-read from the terminal on every render;
   a resize takes effect on the next keystroke with no hook. (287-291)
+- W5 [domain] Below a literal floor (`MIN_CARD_COLS = 34`) the card stops
+  being a UI: the legend loses its primary gesture and the column arithmetic
+  scrambles. Both configured bounds floor there — a literal, not a
+  percentage, because 10% of an 80-column terminal is not a card. Only the
+  terminal itself may go lower (W3).
+- W6 [domain] Between the bounds the card takes the width its content needs
+  — it does not paint a fixed-width box around two short candidates, and a
+  remembered `git clone git@…` line is content, not a key to be clipped at a
+  name-column cap (the fixed-width regression this rule replaces). "Content"
+  is everything that would otherwise clip: tier-1 rows, explain rows, a grid
+  page holding every item, and the widest legend the candidate set can reach
+  (engaged, ghost present, grid focused). Sizing on reachable-worst-case
+  rather than current state is what keeps the width still across scrolling,
+  engagement, and focus changes — a card that resizes mid-navigation reads
+  as a different card.
 
 ## H — height budget
 
@@ -116,14 +136,23 @@ policed by hand at the theme layer. The daemon must measure **columns**
 
 ## C — column arithmetic
 
-- C1 [domain] The name column is sized over the **display labels** of both
-  visible windows plus the explain labels — sizing on raw tokens truncated
+- C1 [domain] The name column is sized over the **display labels** of the
+  tier-1-eligible cues (the first `tier1-rows` — the window slides within
+  them) plus the explain labels — sizing on raw tokens truncated
   `-f, --force` to its short form's width; sizing without explain labels
-  clipped every explanation on candidate-less cards. (573-588)
-- C2 [domain] Name width: cap 28, and capped against what is actually left
-  (`inner − 7 − 10`, floor 6); floor 10 only when the remainder allows.
-  Names truncate rather than overflow: a clipped name is legible, a wrapped
-  card is not. (589-597)
+  clipped every explanation on candidate-less cards. Not the visible window
+  and not tier-2 items: under W6 the width follows this measurement, and a
+  basis that changes as the operator scrolls or pages is a card that
+  resizes mid-navigation. The gloss bar shows a grid selection at the room
+  its own row already has (never driving the width): tier-1 alignment does
+  no work on that row when the grid holds focus, and the row's job is to
+  say what is selected. (573-588)
+- C2 [domain] Names take what the room allows: when the card fit its content
+  (W6) the name column is exactly the longest label; squeezed against
+  `max-width`, glosses keep their measured need down to the old baseline of
+  28 name columns, and the floor-10 gloss column has the last word
+  (`namemax = inner − 17`). Names truncate rather than overflow: a clipped
+  name is legible, a wrapped card is not. (589-597)
 - C3 [domain] Row overhead, written out because an off-by-one pushed the right
   border a column past the top one: `border(1) + marker(2) + space + gutter(1)
   + space + name(namew) + 2 spaces` = `namew + 8`, closing border one more;

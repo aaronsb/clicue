@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::layout::WidthBound;
+
 /// Key sequences the shim binds (the prototype's `:clicue:keys` zstyles).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeysCfg {
@@ -40,7 +42,10 @@ pub struct Config {
     /// so an unknown value warns at load and falls back there.
     pub ranking: String,
     pub tier1_rows: usize,
-    pub max_width: usize,
+    /// Width bounds: absolute columns or a percentage of the terminal
+    /// (layout W2/W4); the literal floor MIN_CARD_COLS lives in layout.
+    pub min_width: WidthBound,
+    pub max_width: WidthBound,
     /// None = auto (`LINES − 6`).
     pub max_lines: Option<usize>,
     /// None = auto (a third of the window).
@@ -60,7 +65,8 @@ impl Default for Config {
             theme: "aura".into(),
             ranking: "frecency".into(),
             tier1_rows: 10,
-            max_width: 120,
+            min_width: WidthBound::Pct(30),
+            max_width: WidthBound::Cols(120),
             max_lines: None,
             tier2_rows: None,
             history_window: 2000,
@@ -153,7 +159,8 @@ pub fn load_str(src: &str) -> Loaded {
                 }
             }
             "tier1-rows" => take_usize(&key, &value, &mut cfg.tier1_rows, &mut warnings, &mut took),
-            "max-width" => take_usize(&key, &value, &mut cfg.max_width, &mut warnings, &mut took),
+            "min-width" => take_width(&key, &value, &mut cfg.min_width, &mut warnings, &mut took),
+            "max-width" => take_width(&key, &value, &mut cfg.max_width, &mut warnings, &mut took),
             "max-lines" => {
                 let mut v = 0usize;
                 take_usize(&key, &value, &mut v, &mut warnings, &mut took);
@@ -242,6 +249,20 @@ pub fn load_str(src: &str) -> Loaded {
         }
     }
 
+    // Statically comparable bounds only — Cols vs Pct depends on the
+    // terminal and is resolved (max wins) at render.
+    let inverted = match (cfg.min_width, cfg.max_width) {
+        (WidthBound::Cols(a), WidthBound::Cols(b)) => a > b,
+        (WidthBound::Pct(a), WidthBound::Pct(b)) => a > b,
+        _ => false,
+    };
+    if inverted {
+        warnings.push(format!(
+            "min-width = {} exceeds max-width = {} — max-width wins at render",
+            cfg.min_width, cfg.max_width
+        ));
+    }
+
     Loaded {
         config: cfg,
         from_file,
@@ -283,6 +304,31 @@ fn take_usize(
     }
 }
 
+/// A width bound: TOML integer = columns, TOML string = `"60%"` of the
+/// terminal (or columns spelled as a string).
+fn take_width(
+    key: &str,
+    v: &toml::Value,
+    dest: &mut WidthBound,
+    warns: &mut Vec<String>,
+    took: &mut bool,
+) {
+    let parsed = match v {
+        toml::Value::Integer(n) if *n >= 1 => Some(WidthBound::Cols(*n as usize)),
+        toml::Value::String(s) => WidthBound::parse(s),
+        _ => None,
+    };
+    match parsed {
+        Some(w) => *dest = w,
+        None => {
+            warns.push(format!(
+                "{key} must be columns (a positive integer) or a percentage like \"60%\" — keeping default"
+            ));
+            *took = false;
+        }
+    }
+}
+
 fn string_array(v: &toml::Value) -> Option<Vec<String>> {
     v.as_array().map(|a| {
         a.iter()
@@ -300,6 +346,7 @@ pub const SCALAR_KEYS: &[&str] = &[
     "ranking",
     "tier1-rows",
     "tier2-rows",
+    "min-width",
     "max-width",
     "max-lines",
 ];
@@ -416,6 +463,11 @@ pub fn render_effective(loaded: &Loaded, path_shown: &str) -> String {
         prov("tier1-rows")
     );
     s += &format!(
+        "  min-width            {:<12} ({})\n",
+        c.min_width,
+        prov("min-width")
+    );
+    s += &format!(
         "  max-width            {:<12} ({})\n",
         c.max_width,
         prov("max-width")
@@ -486,7 +538,11 @@ mod tests {
         let l = load_str("theme = \"mono\"\ntier1-rows = 6\n");
         assert_eq!(l.config.theme, "mono");
         assert_eq!(l.config.tier1_rows, 6);
-        assert_eq!(l.config.max_width, 120, "untouched default");
+        assert_eq!(
+            l.config.max_width,
+            WidthBound::Cols(120),
+            "untouched default"
+        );
         assert!(l.from_file.contains("theme"));
         assert!(!l.from_file.contains("max-width"));
         assert!(l.warnings.is_empty());
@@ -557,6 +613,18 @@ mod tests {
             .unwrap()
             .contains("tier1-rows = 6"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn width_bounds_parse_both_spellings() {
+        let l = load_str("min-width = \"45%\"\nmax-width = 96\n");
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        assert_eq!(l.config.min_width, WidthBound::Pct(45));
+        assert_eq!(l.config.max_width, WidthBound::Cols(96));
+        // Out-of-range percentage warns and keeps the default.
+        let l = load_str("min-width = \"150%\"\n");
+        assert!(l.warnings.iter().any(|w| w.contains("min-width")));
+        assert_eq!(l.config.min_width, WidthBound::Pct(30));
     }
 
     #[test]
