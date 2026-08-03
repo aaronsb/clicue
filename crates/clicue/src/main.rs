@@ -87,16 +87,9 @@ enum DataCmd {
     Forget { cmd: String },
 }
 
-/// User TOML themes live beside the config file.
-fn themes_dir() -> Option<std::path::PathBuf> {
-    clicue::config::config_path()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("themes")))
-}
-
 fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
     use clicue::theme;
-    let dir = themes_dir();
+    let dir = clicue::config::themes_dir();
     match cmd.unwrap_or(ThemeCmd::List) {
         ThemeCmd::List => {
             let loaded = clicue::config::load();
@@ -282,10 +275,13 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             c.invoke_alias.retain(|k, v| !hit(k) && !hit(v));
             removed += before - c.invoke_alias.len();
             // The gloss stays: it is whatis-derived public data, not a habit.
-            corpus::save(&c, &cache)?;
+            // Flag tables go FIRST: the corpus save is what the daemon's
+            // reloader watches, so by the time the swap fires the tables
+            // are already gone.
             let store = flag_store()?;
             let resolved = clicue::flags::resolve_path(&cmd, &Default::default(), &store.emulates);
             let flags_removed = store.forget(&resolved);
+            corpus::save(&c, &cache)?;
             println!(
                 "forgot {removed} entr{} and {flags_removed} flag table{} for {cmd}. \
                  Note: the next rebuild re-learns from history — prefix the command \

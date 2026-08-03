@@ -130,7 +130,11 @@ impl Engine {
             eprintln!("clicue daemon: config: {w}");
         }
         let cfgf = loaded.config;
-        let (theme, msgs) = theme::load(&cfgf.theme, None);
+        // The SAME directory the CLI validates against and the reloader
+        // watches (config::themes_dir, one owner) — `None` here meant the
+        // daemon silently resolved every operator TOML theme to `base`
+        // while the tool surface reported it set (review #19).
+        let (theme, msgs) = theme::load(&cfgf.theme, crate::config::themes_dir().as_deref());
         for m in &msgs {
             eprintln!("clicue daemon: theme: {m}");
         }

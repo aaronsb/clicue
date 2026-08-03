@@ -113,7 +113,14 @@ review ranked as its top finding. Tags per `spec/README.md`.
   with every command, so a swap that rebuilt-if-stale would run a
   whatis-sized build on every config edit and — because the build's save
   re-triggers the corpus watch — could chase a busy shell in a rebuild
-  loop. (daemon.rs `WatchSet`/`reloading_render`; engine.rs `CorpusPolicy`)
+  loop. An absent or unreadable cache still falls back to one build per
+  swap, bounded at a single extra swap: the save re-triggers the watch
+  once and the second swap loads cleanly, writing nothing. The watched
+  paths are built from the same functions the loaders read
+  (`config::config_path`, `config::themes_dir`, `corpus::cache_path`) —
+  a watch on a path nothing loads from reports "applied live" to an
+  engine that never read it. (reload.rs `WatchSet`/`reloading_render`;
+  engine.rs `CorpusPolicy`)
 
 ## L — load and lifecycle
 

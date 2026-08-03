@@ -96,6 +96,17 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(base.join("clicue").join("config.toml"))
 }
 
+/// Operator TOML themes live beside the config file. ONE owner of this
+/// path (review #19): the CLI validates against it, the engine loads
+/// from it, and the daemon's reloader watches it — three independent
+/// derivations is how the engine ended up reading `None` while the
+/// README promised the directory.
+pub fn themes_dir() -> Option<PathBuf> {
+    config_path()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("themes")))
+}
+
 /// Load from the default path. Absent file = defaults, no warnings.
 pub fn load() -> Loaded {
     match config_path() {

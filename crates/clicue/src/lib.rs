@@ -23,6 +23,7 @@ pub mod layout;
 pub mod model;
 pub mod protocol;
 pub mod rank;
+pub mod reload;
 pub mod shim;
 pub mod sources;
 pub mod state;
