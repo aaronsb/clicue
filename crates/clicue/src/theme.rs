@@ -859,6 +859,7 @@ pub fn preview(theme: &Theme, cols: u16) -> String {
         expanded: false,
         tab_inserts: false,
         ghost: "t status",
+        nav: None,
         invnote: "",
         dims: Dims { cols, lines: 24 },
         cfg: &cfg,

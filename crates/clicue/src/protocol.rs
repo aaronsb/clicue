@@ -220,7 +220,9 @@ mod tests {
         assert!(!line.contains('\n'), "one frame must be one line");
         assert!(line.contains(r#"[101,"git status"]"#), "hist is [n, line]");
         // The wire shape the shim's _clicue_nav_json emits, exactly.
-        assert!(line.contains(r#""nav":{"pwd":"/home/op/proj","oldpwd":"/home/op","dirstack":["/home/op","/tmp"]}"#));
+        assert!(line.contains(
+            r#""nav":{"pwd":"/home/op/proj","oldpwd":"/home/op","dirstack":["/home/op","/tmp"]}"#
+        ));
         let back: Request = serde_json::from_str(&line).unwrap();
         assert_eq!(back.buffer, "git sta");
         assert_eq!(back.hist[0].0, 101);

@@ -178,6 +178,9 @@ pub struct CardInput<'a> {
     /// Ghost stem decided by the daemon (GH1 precedence lives there);
     /// layout only advertises `→ accept` when one exists (L7).
     pub ghost: &'a str,
+    /// The "you are here" pane for a navigational command (design note
+    /// navigation-and-place.md); None for every other card.
+    pub nav: Option<&'a crate::nav::NavPane>,
     /// E5 footer: `run N× · top P% · age`, empty for none.
     pub invnote: &'a str,
     pub dims: Dims,
@@ -253,6 +256,30 @@ fn fit_ellipsis(s: &str, w: usize) -> String {
     let mut out = fit_hard(s, w - 1);
     out.push('…');
     out
+}
+
+/// Front-ellipsis: keep the TAIL. For breadcrumbs and paths the deep end
+/// is the informative one — `… › app › clicue` orients, `~ › Projects …`
+/// does not.
+fn fit_tail(s: &str, w: usize) -> String {
+    if wcols(s) <= w {
+        return s.to_string();
+    }
+    if w == 0 {
+        return String::new();
+    }
+    let budget = w - 1;
+    let mut used = 0;
+    let mut start = s.len();
+    for (i, ch) in s.char_indices().rev() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cw > budget {
+            break;
+        }
+        used += cw;
+        start = i;
+    }
+    format!("…{}", &s[start..])
 }
 
 fn pad_to(mut s: String, w: usize) -> String {
@@ -486,8 +513,8 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     let explain = input.explain;
     let total = cues.len();
 
-    // S6: an explanation alone justifies the card.
-    if total == 0 && explain.is_empty() {
+    // S6: an explanation alone justifies the card; so does place.
+    if total == 0 && explain.is_empty() && input.nav.is_none() {
         return None;
     }
 
@@ -550,6 +577,22 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     if er > 0 {
         gr = gr.saturating_sub(1); // the explanation's own border
     }
+    // The nav pane's rows: structure-driven only (H7 — a count filling in
+    // must never add a row), clamped, taken from the grid's share like
+    // the explanation. Children pack into cells later; two rows of them
+    // is the fisheye's whole budget, with "+n more" carrying the rest.
+    let nav_child_rows = input.nav.map_or(0, |n| match n.children.len() {
+        0 => 0,
+        _ => 2,
+    });
+    let nav_rows = input.nav.map_or(0, |n| {
+        1 + usize::from(!n.breadcrumb.is_empty())
+            + n.stack.len().min(4)
+            + usize::from(n.stack.len() > 4)
+            + nav_child_rows
+            + usize::from(!n.siblings.is_empty() || n.hidden > 0)
+    });
+    gr = gr.saturating_sub(nav_rows);
 
     // C1: column basis over everything tier 1 CAN show — the first t1n
     // cues (the window slides within them) plus the explain rows. Not the
@@ -625,6 +668,52 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             + 2;
         let ncols_full = (total - t1n).div_ceil(gr);
         need = need.max(3 + ncols_full * cellw);
+    }
+    if let Some(np) = input.nav {
+        // One packed child cell must fit (name capped like grid cells,
+        // count label ≤3); breadcrumb and siblings ellipsize instead of
+        // driving width. Stack rows reserve label + a readable path stub.
+        if let Some(w) = np
+            .children
+            .iter()
+            .map(|(n, c)| wcols(n).min(24) + wcols(c) + 3)
+            .max()
+        {
+            // Like the grid's ncols_full: the width that packs every
+            // child into the pane's two rows, so "+n more" is a height
+            // decision, not a width accident. Clamped by [min,max] below.
+            let ncols_full = np.children.len().div_ceil(2);
+            need = need.max(3 + ncols_full * w + 2);
+        }
+        if !np.stack.is_empty() {
+            need = need.max(3 + 4 + 20);
+        }
+        // The one-line rows contribute their measured need like glosses
+        // do (W6: content is everything that would otherwise clip); the
+        // max-width cap has the last word, and past it they ellipsize.
+        if !np.breadcrumb.is_empty() {
+            need = need.max(wcols(&np.breadcrumb.join(" › ")) + 6);
+        }
+        for (label, path) in np.stack.iter().take(4) {
+            need = need.max(wcols(label).max(3) + wcols(path) + 21);
+        }
+        if !np.siblings.is_empty() || np.hidden > 0 {
+            let named: Vec<&str> = np.siblings.iter().take(3).map(|s| s.as_str()).collect();
+            let mut t = String::new();
+            if !named.is_empty() {
+                t = format!("beside you: {}", named.join(" · "));
+                if np.siblings.len() > named.len() {
+                    t.push_str(&format!(" · +{} more", np.siblings.len() - named.len()));
+                }
+            }
+            if np.hidden > 0 {
+                if !t.is_empty() {
+                    t.push_str("  ·  ");
+                }
+                t.push_str(&format!("+{} hidden", np.hidden));
+            }
+            need = need.max(wcols(&t) + 6);
+        }
     }
     {
         // `tab_inserts` is left live here, which is load-bearing: the
@@ -875,6 +964,104 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         }
     }
 
+    // ── the "you are here" pane ──────────────────────────────────────────
+    // Falloff is structural (names → counts → "+n more") and, for now,
+    // spoken through existing palette roles: text for the focus ring,
+    // accent for children, gloss for the distant ring. The semantic
+    // falloff-0/1/2 theme vocabulary lands with the theming work, spec
+    // first (design note "Falloff is semantic; themes own its look").
+    if let Some(np) = input.nav {
+        let (jl, jr) = if rows.is_empty() {
+            (&g.tl, &g.tr)
+        } else {
+            (&g.jl, &g.jr)
+        };
+        rows.push(border_row(inner, " you are here ", jl, jr, &g.h, theme));
+
+        // Chrome is border + 3-space indent + border: body = inner − 3,
+        // exactly like the explanation's collapsed line.
+        let body = inner.saturating_sub(3).max(1);
+        let mut line = |text: String, style: &str| {
+            let mut row = Row::new();
+            row.push(&g.v, Some(&p.border));
+            row.push("   ", None);
+            row.push(&pad_to(fit_tail(&text, body), body), Some(style));
+            row.push(&g.v, Some(&p.border));
+            rows.push(row);
+        };
+
+        if !np.breadcrumb.is_empty() {
+            line(np.breadcrumb.join(" › "), &p.text);
+        }
+
+        // Labeled place rows: `-` / `+N`, landing entry marked. Clamped to
+        // four with the remainder counted, never silently (design value 1).
+        let shown = np.stack.len().min(4);
+        for (i, (label, path)) in np.stack.iter().take(shown).enumerate() {
+            let mark = if np.landing == Some(i) {
+                "  ← lands here"
+            } else {
+                ""
+            };
+            line(format!("{label:<3} {path}{mark}"), &p.text);
+        }
+        if np.stack.len() > shown {
+            line(format!("    +{} deeper", np.stack.len() - shown), &p.gloss);
+        }
+
+        // Children pack into two rows of `name/ N` cells; what the rows
+        // cannot hold is counted into the last cell. Cell width is
+        // structure-stable: the count field is reserved (H7 cells).
+        if !np.children.is_empty() {
+            let cellw = np
+                .children
+                .iter()
+                .map(|(n, c)| wcols(n).min(24) + wcols(c) + 3)
+                .max()
+                .unwrap_or(4)
+                .min(body.saturating_sub(1).max(3));
+            let ncols = (body / cellw).max(1);
+            let cap = ncols * 2;
+            let shown = if np.children.len() > cap {
+                cap.saturating_sub(1)
+            } else {
+                np.children.len()
+            };
+            let mut cells: Vec<String> = np.children[..shown]
+                .iter()
+                .map(|(n, c)| format!("{}/ {c}", fit_hard(n, 24)))
+                .collect();
+            if np.children.len() > shown {
+                cells.push(format!("+{} more", np.children.len() - shown));
+            }
+            for chunk in cells.chunks(ncols) {
+                let text = chunk
+                    .iter()
+                    .map(|c| pad_to(c.clone(), cellw))
+                    .collect::<String>();
+                line(text.trim_end().to_string(), &p.accent);
+            }
+        }
+
+        if !np.siblings.is_empty() || np.hidden > 0 {
+            let mut parts: Vec<String> = Vec::new();
+            if !np.siblings.is_empty() {
+                let named: Vec<&str> = np.siblings.iter().take(3).map(|s| s.as_str()).collect();
+                let mut t = format!("beside you: {}", named.join(" · "));
+                if np.siblings.len() > named.len() {
+                    t.push_str(&format!(" · +{} more", np.siblings.len() - named.len()));
+                }
+                parts.push(t);
+            }
+            if np.hidden > 0 {
+                parts.push(format!("+{} hidden", np.hidden));
+            }
+            // End-ellipsis here: unlike a path, this row's head carries
+            // the meaning.
+            line(fit_ellipsis(&parts.join("  ·  "), body), &p.gloss);
+        }
+    }
+
     // ── legend ───────────────────────────────────────────────────────────
     let segs = legend(input, view.maxed, focus, grid_out, canmax);
     let hint = fit_legend(&segs, inner);
@@ -1028,6 +1215,7 @@ mod tests {
             expanded: false,
             tab_inserts: false,
             ghost: "",
+            nav: None,
             invnote: "",
             dims,
             cfg,
@@ -1038,6 +1226,140 @@ mod tests {
     fn line_widths(card: &Card) -> Vec<usize> {
         // text starts with '\n', so skip the empty first element.
         card.text.lines().skip(1).map(wcols).collect()
+    }
+
+    fn pane(pending: bool) -> crate::nav::NavPane {
+        crate::nav::NavPane {
+            breadcrumb: vec!["~".into(), "Projects".into(), "app".into(), "clicue".into()],
+            children: vec![
+                (
+                    "crates".into(),
+                    if pending { "…".into() } else { "1".into() },
+                ),
+                ("docs".into(), if pending { "…".into() } else { "4".into() }),
+                ("spec".into(), if pending { "…".into() } else { "9".into() }),
+                (
+                    "tests".into(),
+                    if pending { "…".into() } else { "3".into() },
+                ),
+                ("dist".into(), if pending { "…".into() } else { "2".into() }),
+            ],
+            hidden: 2,
+            siblings: vec!["patchbay".into(), "yay-friend".into()],
+            stack: vec![("-".into(), "~/Knowledge".into())],
+            landing: None,
+        }
+    }
+
+    #[test]
+    fn nav_pane_renders_and_alone_justifies_the_card() {
+        let cues: Vec<Cue> = Vec::new();
+        let explain: Vec<ExplainRow> = Vec::new();
+        let cfg = LayoutCfg::default();
+        let keys = KeyLabels::default();
+        let np = pane(false);
+        let mut inp = input(
+            &cues,
+            &explain,
+            Dims {
+                cols: 90,
+                lines: 40,
+            },
+            &cfg,
+            &keys,
+        );
+        inp.mode = Mode::Arg;
+        inp.nav = Some(&np);
+        let mut view = View::default();
+        let card = render(&inp, &mut view, &crate::theme::base()).expect("pane alone renders");
+        let widths = line_widths(&card);
+        assert!(
+            widths.iter().all(|w| *w == widths[0]),
+            "every row spans the full card: {widths:?}\n{}",
+            card.text
+        );
+        assert!(card.text.contains("you are here"));
+        assert!(card.text.contains("~ › Projects › app › clicue"));
+        assert!(card.text.contains("crates/ 1"));
+        assert!(card.text.contains("beside you: patchbay"), "{}", card.text);
+        assert!(card.text.contains("+2 hidden"));
+        assert!(card.text.contains("-   ~/Knowledge"));
+    }
+
+    #[test]
+    fn nav_pane_count_fill_never_moves_the_card() {
+        // H7 as cells, not rows: pending "…" counts filling in on a later
+        // render must keep line count AND width identical.
+        let cues: Vec<Cue> = Vec::new();
+        let explain: Vec<ExplainRow> = Vec::new();
+        let cfg = LayoutCfg::default();
+        let keys = KeyLabels::default();
+        let before = pane(true);
+        let after = pane(false);
+        let render_with = |np: &crate::nav::NavPane| {
+            let mut inp = input(
+                &cues,
+                &explain,
+                Dims {
+                    cols: 90,
+                    lines: 40,
+                },
+                &cfg,
+                &keys,
+            );
+            inp.mode = Mode::Arg;
+            inp.nav = Some(np);
+            let mut view = View::default();
+            render(&inp, &mut view, &crate::theme::base()).unwrap()
+        };
+        let a = render_with(&before);
+        let b = render_with(&after);
+        assert_eq!(
+            a.text.lines().count(),
+            b.text.lines().count(),
+            "row count must not change when counts arrive"
+        );
+        assert_eq!(
+            line_widths(&a),
+            line_widths(&b),
+            "width must not change when counts arrive"
+        );
+    }
+
+    #[test]
+    fn nav_pane_survives_every_width_with_deep_stacks() {
+        let cues: Vec<Cue> = Vec::new();
+        let explain: Vec<ExplainRow> = Vec::new();
+        let cfg = LayoutCfg::default();
+        let keys = KeyLabels::default();
+        let mut np = pane(false);
+        np.stack = (1..=9)
+            .map(|i| {
+                (
+                    format!("+{i}"),
+                    format!("/very/deep/dirstack/entry/number/{i}"),
+                )
+            })
+            .collect();
+        np.landing = Some(0);
+        for cols in 12..160u16 {
+            let mut inp = input(&cues, &explain, Dims { cols, lines: 30 }, &cfg, &keys);
+            inp.mode = Mode::Arg;
+            inp.nav = Some(&np);
+            let mut view = View::default();
+            if let Some(card) = render(&inp, &mut view, &crate::theme::base()) {
+                for (i, w) in line_widths(&card).iter().enumerate() {
+                    assert!(
+                        *w <= (cols as usize).saturating_sub(1),
+                        "line {i} is {w} wide at {cols} cols"
+                    );
+                }
+                if cols > 40 {
+                    assert!(card.text.contains("lands here"), "landing marked at {cols}");
+                    assert!(card.text.contains("+5 deeper"), "clamp counted at {cols}");
+                }
+            }
+        }
     }
 
     #[test]

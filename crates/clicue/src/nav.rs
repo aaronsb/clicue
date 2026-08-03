@@ -159,7 +159,8 @@ impl NavScanner {
             }
             Err(_) => Count::Denied,
         };
-        self.counts.insert(path.to_path_buf(), CachedCount { mtime, count });
+        self.counts
+            .insert(path.to_path_buf(), CachedCount { mtime, count });
         count
     }
 
@@ -201,6 +202,41 @@ impl NavScanner {
             rings.children.push(ChildEntry { name, count });
         }
         rings
+    }
+}
+
+// ── the "you are here" pane content ─────────────────────────────────────
+
+/// What the pane shows, assembled by the engine from relayed place and
+/// the ring scanner, rendered by layout. Everything is pre-shaped text
+/// EXCEPT width decisions, which stay with the renderer. Row COUNT for a
+/// given pwd depends only on structure (children, stack depth), never on
+/// count readiness — a pending count fills its reserved cell on a later
+/// render without moving the card (layout H7: cells, not rows).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NavPane {
+    /// `["~", "Projects", "app"]` — joined by the renderer.
+    pub breadcrumb: Vec<String>,
+    /// (name, count label): "3", "99+", "–" denied, "…" pending.
+    pub children: Vec<(String, String)>,
+    /// Dotdirs folded to a count; 0 renders nothing.
+    pub hidden: usize,
+    pub siblings: Vec<String>,
+    /// Labeled place rows: `("-", "~/old")` for cd, `("+1", path)…` for
+    /// the dirstack verbs.
+    pub stack: Vec<(String, String)>,
+    /// Index into `stack` of the entry a bare invocation lands on.
+    pub landing: Option<usize>,
+}
+
+/// The reserved-cell rendering of a grandchild count (H7: a later fill
+/// must not change the cell's width class, so all labels are ≤3 columns).
+pub fn count_label(c: Count) -> String {
+    match c {
+        Count::Exact(n) if n < COUNT_CAP => n.to_string(),
+        Count::Exact(_) | Count::AtLeast(_) => "99+".into(),
+        Count::Denied => "–".into(),
+        Count::Pending => "…".into(),
     }
 }
 
@@ -281,7 +317,7 @@ pub fn resolve_target(
     let path: PathBuf = match typed {
         "" | "~" => PathBuf::from(home?),
         "-" => PathBuf::from(oldpwd?),
-        t if t == "+0" => PathBuf::from(pwd),
+        "+0" => PathBuf::from(pwd),
         t if (t.starts_with('+') || t.starts_with('-'))
             && t.len() > 1
             && t[1..].chars().all(|c| c.is_ascii_digit()) =>
@@ -357,7 +393,10 @@ pub fn did_you_mean(
         0 => {}
         _ => return None, // ambiguous — silence
     }
-    let pfx: Vec<&PathBuf> = pool.iter().filter(|p| name_of(p).starts_with(&want)).collect();
+    let pfx: Vec<&PathBuf> = pool
+        .iter()
+        .filter(|p| name_of(p).starts_with(&want))
+        .collect();
     match pfx.len() {
         1 => Some(pfx[0].clone()),
         _ => None,
@@ -370,7 +409,11 @@ pub fn did_you_mean(
 pub fn breadcrumb(pwd: &str, home: Option<&str>) -> Vec<String> {
     let rest = match home {
         Some(h) if !h.is_empty() && pwd == h => return vec!["~".into()],
-        Some(h) if !h.is_empty() && pwd.starts_with(h) && pwd.as_bytes().get(h.len()) == Some(&b'/') => {
+        Some(h)
+            if !h.is_empty()
+                && pwd.starts_with(h)
+                && pwd.as_bytes().get(h.len()) == Some(&b'/') =>
+        {
             let mut v = vec!["~".to_string()];
             v.extend(pwd[h.len() + 1..].split('/').map(String::from));
             return v;
@@ -416,7 +459,11 @@ mod tests {
         let r = sc.rings(&pwd);
         assert!(r.complete);
         let names: Vec<_> = r.children.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["alpha", "beta"], "sorted, dotdirs folded, files excluded");
+        assert_eq!(
+            names,
+            ["alpha", "beta"],
+            "sorted, dotdirs folded, files excluded"
+        );
         assert_eq!(r.children[0].count, Count::Exact(3));
         assert_eq!(r.children[1].count, Count::Exact(0));
         assert_eq!(r.hidden, 1);
@@ -442,7 +489,12 @@ mod tests {
         // A loop: pwd/loop → pwd. Never followed, never listed.
         std::os::unix::fs::symlink(&pwd, pwd.join("loop")).unwrap();
         let mut sc = NavScanner::new();
-        let names: Vec<_> = sc.rings(&pwd).children.iter().map(|c| c.name.clone()).collect();
+        let names: Vec<_> = sc
+            .rings(&pwd)
+            .children
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
         assert_eq!(names, ["alpha", "beta"]);
     }
 
@@ -499,15 +551,38 @@ mod tests {
         let ds = vec!["/tmp".to_string(), "/var".to_string()];
         let r = |t: &str| resolve_target(t, &pwds, Some("/old"), &ds, Some("/home/op"));
 
-        assert_eq!(r("alpha").unwrap(), ResolvedTarget { path: pwd.join("alpha"), exists: true });
+        assert_eq!(
+            r("alpha").unwrap(),
+            ResolvedTarget {
+                path: pwd.join("alpha"),
+                exists: true
+            }
+        );
         assert!(!r("missing").unwrap().exists);
         assert_eq!(r("-").unwrap().path, Path::new("/old"));
         assert_eq!(r("~").unwrap().path, Path::new("/home/op"));
         assert_eq!(r("~/x").unwrap().path, Path::new("/home/op/x"));
-        assert_eq!(r("..").unwrap(), ResolvedTarget { path: fx.0.clone(), exists: true });
-        assert_eq!(r("../sibling1/../sibling2").unwrap().path, fx.0.join("sibling2"));
-        assert_eq!(r("+1").unwrap().path, Path::new("/tmp"), "dirstack is 1-based from the top");
-        assert_eq!(r("-1").unwrap().path, Path::new("/tmp"), "-N counts from the bottom");
+        assert_eq!(
+            r("..").unwrap(),
+            ResolvedTarget {
+                path: fx.0.clone(),
+                exists: true
+            }
+        );
+        assert_eq!(
+            r("../sibling1/../sibling2").unwrap().path,
+            fx.0.join("sibling2")
+        );
+        assert_eq!(
+            r("+1").unwrap().path,
+            Path::new("/tmp"),
+            "dirstack is 1-based from the top"
+        );
+        assert_eq!(
+            r("-1").unwrap().path,
+            Path::new("/tmp"),
+            "-N counts from the bottom"
+        );
         assert_eq!(r("+0").unwrap().path, pwd);
         assert!(r("+3").is_none(), "off the stack: no row, never a guess");
         assert!(resolve_target("-", &pwds, None, &ds, None).is_none());
@@ -554,9 +629,15 @@ mod tests {
 
     #[test]
     fn breadcrumb_is_pure_string_arithmetic() {
-        assert_eq!(breadcrumb("/home/op/a/b", Some("/home/op")), ["~", "a", "b"]);
+        assert_eq!(
+            breadcrumb("/home/op/a/b", Some("/home/op")),
+            ["~", "a", "b"]
+        );
         assert_eq!(breadcrumb("/home/op", Some("/home/op")), ["~"]);
-        assert_eq!(breadcrumb("/home/opx/a", Some("/home/op")), ["/", "home", "opx", "a"]);
+        assert_eq!(
+            breadcrumb("/home/opx/a", Some("/home/op")),
+            ["/", "home", "opx", "a"]
+        );
         assert_eq!(breadcrumb("/usr/bin", None), ["/", "usr", "bin"]);
         assert_eq!(breadcrumb("/", None), ["/"]);
     }

@@ -271,7 +271,8 @@ impl Engine {
         let cues = set.cues;
         let info = set.info;
         let explain = self.explain_rows(sess, &pos, req.nav.as_ref());
-        if cues.is_empty() && explain.is_empty() {
+        let pane = self.nav_pane(sess, &pos, req.nav.as_ref());
+        if cues.is_empty() && explain.is_empty() && pane.is_none() {
             sess.grid = None;
             return reply(String::new(), Vec::new(), String::new(), String::new());
         }
@@ -308,6 +309,7 @@ impl Engine {
             expanded: sess.state.expanded,
             tab_inserts,
             ghost: &ghost,
+            nav: pane.as_ref(),
             invnote: &self.invnote(&pos),
             dims: Dims {
                 cols: req.cols,
@@ -387,6 +389,82 @@ impl Engine {
             .and_then(|e| e.split_whitespace().next())
             .map(nav::is_navigational)
             .unwrap_or(false)
+    }
+
+    /// The "you are here" pane for a navigational command (design note):
+    /// breadcrumb from relayed pwd (zero I/O), children with capped
+    /// grandchild counts, siblings, and the labeled place rows — `-` for
+    /// cd, the dirstack for the stack verbs, with the landing entry
+    /// marked. The map rings render for the verbs that go *somewhere
+    /// new*; popd and dirs can only go to the stack, so they get only it.
+    fn nav_pane(
+        &self,
+        sess: &Sess,
+        pos: &state::Position,
+        navctx: Option<&NavContext>,
+    ) -> Option<nav::NavPane> {
+        if !self.nav_enabled || pos.mode != Mode::Arg {
+            return None;
+        }
+        let ctx = navctx?;
+        if !self.navigational(sess, pos) {
+            return None;
+        }
+        let words: Vec<&str> = pos.words.iter().map(|s| s.as_str()).collect();
+        let eff = sources::effective_command(&words)?;
+        let verb = sess
+            .env
+            .aliases
+            .get(eff)
+            .and_then(|e| e.split_whitespace().next())
+            .filter(|w| nav::is_navigational(w))
+            .unwrap_or(eff);
+
+        let home = std::env::var("HOME").ok();
+        let mut pane = nav::NavPane {
+            breadcrumb: nav::breadcrumb(&ctx.pwd, home.as_deref()),
+            ..Default::default()
+        };
+
+        let show_map = matches!(verb, "cd" | "chdir" | "pushd");
+        if show_map {
+            let rings = {
+                let mut sc = self.nav_scanner.lock().unwrap_or_else(|e| e.into_inner());
+                sc.rings(std::path::Path::new(&ctx.pwd))
+            };
+            pane.children = rings
+                .children
+                .iter()
+                .map(|c| (c.name.clone(), nav::count_label(c.count)))
+                .collect();
+            pane.hidden = rings.hidden;
+            pane.siblings = rings.siblings;
+        }
+
+        match verb {
+            "cd" | "chdir" => {
+                if let Some(old) = &ctx.oldpwd {
+                    pane.stack.push((
+                        "-".into(),
+                        nav::tilde(std::path::Path::new(old), home.as_deref()),
+                    ));
+                }
+            }
+            _ => {
+                for (i, d) in ctx.dirstack.iter().enumerate() {
+                    pane.stack.push((
+                        format!("+{}", i + 1),
+                        nav::tilde(std::path::Path::new(d), home.as_deref()),
+                    ));
+                }
+                // A bare popd (and pushd's no-argument swap) lands on the
+                // top stack entry.
+                if matches!(verb, "popd" | "pushd") && !pane.stack.is_empty() {
+                    pane.landing = Some(0);
+                }
+            }
+        }
+        Some(pane)
     }
 
     /// The failure-only recommendation (design note): a Tab-reachable
@@ -1026,7 +1104,8 @@ mod tests {
     #[test]
     fn nav_suggestion_is_insertable_via_tab_and_enter() {
         use crate::protocol::NavContext;
-        let root = std::env::temp_dir().join(format!("clicue-engine-navins-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("clicue-engine-navins-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         // unique-target is a SIBLING of pwd: typing its correct name from
         // inside pwd fails, and the suggestion carries its real location.
