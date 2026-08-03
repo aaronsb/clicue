@@ -164,11 +164,12 @@ fn confirm(prompt: &str) -> Result<bool> {
 /// manager present → instructions; else append with diff + confirmation.
 pub fn install(opts: &InstallOpts) -> Result<i32> {
     let probe = crate::doctor::run_probe()?;
-    let findings = crate::doctor::evaluate(
+    let mut findings = crate::doctor::evaluate(
         &probe,
         &crate::doctor::check_daemon(),
         &crate::doctor::corpus_state(),
     );
+    findings.extend(crate::doctor::check_themes());
     let code = crate::doctor::print_findings(&findings, &mut std::io::stdout());
     if code != 0 && !opts.force {
         bail!("doctor found fighters — resolve them, or rerun with --force");

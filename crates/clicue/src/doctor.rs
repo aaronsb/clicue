@@ -489,8 +489,82 @@ pub fn corpus_state() -> String {
 /// Returns the process exit code: 1 if any fighter, else 0.
 pub fn run() -> Result<i32> {
     let probe = run_probe()?;
-    let findings = evaluate(&probe, &check_daemon(), &corpus_state());
+    let mut findings = evaluate(&probe, &check_daemon(), &corpus_state());
+    findings.extend(check_themes());
     Ok(print_findings(&findings, &mut std::io::stdout()))
+}
+
+/// D5: theme health. The daemon never fails on a broken theme — it falls
+/// back and says so only on its own stderr, which nobody reads. Doctor is
+/// where the fallback becomes visible.
+pub fn check_themes() -> Vec<Finding> {
+    theme_findings(
+        &crate::config::load().config.theme,
+        crate::config::themes_dir().as_deref(),
+    )
+}
+
+pub fn theme_findings(active: &str, dir: Option<&std::path::Path>) -> Vec<Finding> {
+    use crate::theme;
+    let mut f = Vec::new();
+    let (_t, msgs) = theme::load(active, dir);
+    if msgs.is_empty() {
+        f.push(finding(
+            Severity::Info,
+            "theme",
+            format!(
+                "'{active}' loads cleanly ({} available)",
+                theme::available(dir).len()
+            ),
+        ));
+    } else {
+        f.push(finding(
+            Severity::Degradation,
+            "active theme does not load",
+            format!(
+                "cards render a fallback instead of '{active}': {}",
+                msgs.join("; ")
+            ),
+        ));
+    }
+    // Sweep the rest of the directory: a broken file only bites when
+    // selected — name it now, not then.
+    if let Some(d) = dir {
+        let mut broken: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(d) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("toml") {
+                    continue;
+                }
+                let Some(stem) = p.file_stem().and_then(|x| x.to_str()) else {
+                    continue;
+                };
+                if stem == active {
+                    continue;
+                }
+                let ok = std::fs::read_to_string(&p)
+                    .map(|src| theme::from_toml(stem, &src).is_ok())
+                    .unwrap_or(false);
+                if !ok {
+                    broken.push(stem.to_string());
+                }
+            }
+        }
+        if !broken.is_empty() {
+            broken.sort();
+            f.push(finding(
+                Severity::Info,
+                "theme files with problems",
+                format!(
+                    "{} — harmless until selected; `clicue theme preview <name>` names the \
+                     errors, deleting a file regenerates the shipped version",
+                    broken.join(", ")
+                ),
+            ));
+        }
+    }
+    f
 }
 
 pub fn print_findings(findings: &[Finding], out: &mut impl Write) -> i32 {
@@ -584,6 +658,41 @@ mod tests {
             !hit.detail.contains("Enter (^M)"),
             "intact keys are not listed"
         );
+    }
+
+    #[test]
+    fn theme_findings_name_the_fallback_and_the_broken_files() {
+        // D5: the daemon's fallback message goes to stderr nobody reads;
+        // this is where it becomes visible.
+        let dir = std::env::temp_dir().join(format!("clicue-doctor-themes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        // Healthy: nothing on disk, the active theme resolves embedded.
+        let f = theme_findings("aura", Some(&dir));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Info);
+        assert!(f[0].detail.contains("loads cleanly"), "{}", f[0].detail);
+        // Broken ACTIVE file: degraded, loader's message carried.
+        std::fs::write(dir.join("aura.toml"), "[palette]\naccent = \"\"\n").unwrap();
+        let f = theme_findings("aura", Some(&dir));
+        assert_eq!(f[0].severity, Severity::Degradation);
+        assert!(f[0].detail.contains("aura"), "{}", f[0].detail);
+        // Stray broken files: info, all named, recovery gestures included.
+        std::fs::write(dir.join("mystery.toml"), "not toml at all [").unwrap();
+        let f = theme_findings("base", Some(&dir));
+        let sweep = f
+            .iter()
+            .find(|x| x.title.contains("problems"))
+            .expect("broken files must be listed");
+        assert_eq!(sweep.severity, Severity::Info);
+        assert!(
+            sweep.detail.contains("aura") && sweep.detail.contains("mystery"),
+            "{}",
+            sweep.detail
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
