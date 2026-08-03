@@ -5,7 +5,6 @@
 # operator's daemon, corpus, or config (the e2e harness sandbox).
 source "${0:a:h}/../../tests/harness.zsh"
 
-T_ECHO=1
 T_SEED_HISTORY=(
   'git status'
   'git log --oneline -15'
@@ -32,6 +31,10 @@ say() {
 beat() { pty_drain $1 }
 
 pty_start demo
+# Echo ON only after boot: pty_start's integrity probe and the compinit
+# chatter are harness plumbing, not demo material (review #14 caught the
+# probe — local paths included — opening the published cast).
+T_ECHO=1
 
 # ── act 1: command cards from your own history ─────────────────────────
 say 'git '
@@ -74,7 +77,7 @@ pty_key $'\x03'; beat 0.5
 say 'clicue theme list'
 pty_key $'\r'
 beat 2.6
-say 'clicue config set theme dracula'
+say 'clicue config set theme chrome'
 pty_key $'\r'
 beat 1.8                             # daemon hot-reloads within a second
 say 'git '

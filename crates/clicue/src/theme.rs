@@ -607,16 +607,18 @@ fn parse_hex(s: &str) -> Option<(f32, f32, f32)> {
 /// row start; the caller shifts them. Invalid stops yield no spans (the
 /// flat border style stays underneath).
 pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, String)> {
-    const SEG: usize = 3;
     if width == 0 || stops.len() < 2 {
         return Vec::new();
     }
+    // Segment size scales with the row so a wide card costs ~24 spans of
+    // border, not width/3 — the shim pays ~15µs per span (spec §7a era).
+    let seg = (width / 24).max(3);
     let rgb: Option<Vec<(f32, f32, f32)>> = stops.iter().map(|s| parse_hex(s)).collect();
     let Some(rgb) = rgb else { return Vec::new() };
-    let mut out = Vec::new();
+    let mut out: Vec<(usize, usize, String)> = Vec::new();
     let mut start = 0usize;
     while start < width {
-        let end = (start + SEG).min(width);
+        let end = (start + seg).min(width);
         let mid = (start + end - 1) as f32 / 2.0;
         // position in [0,1] along the row, then into the stop list
         let t = if width == 1 {
@@ -634,7 +636,12 @@ pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, S
             (g0 + (g1 - g0) * f).round() as u8,
             (b0 + (b1 - b0) * f).round() as u8,
         );
-        out.push((start, end, format!("fg=#{r:02x}{g:02x}{b:02x}")));
+        let style = format!("fg=#{r:02x}{g:02x}{b:02x}");
+        // coalesce equal neighbours (flat stretches of the gradient)
+        match out.last_mut() {
+            Some(last) if last.2 == style => last.1 = end,
+            _ => out.push((start, end, style)),
+        }
         start = end;
     }
     out

@@ -809,14 +809,22 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
                 sp.style = format!("{},{bg}", sp.style);
             }
         }
-        spans.insert(
-            0,
-            Span {
-                start: 1,
-                end: offset - 1,
-                style: theme.palette.panel.clone(),
-            },
-        );
+        // One base span PER ROW, newlines excluded: a bg attribute active
+        // across a newline smears to the terminal's right edge on BCE
+        // terminals (review #14).
+        let mut base = Vec::new();
+        let mut at = 1usize;
+        for row in &rows {
+            if row.chars > 0 {
+                base.push(Span {
+                    start: at,
+                    end: at + row.chars,
+                    style: theme.palette.panel.clone(),
+                });
+            }
+            at += row.chars + 1;
+        }
+        spans.splice(0..0, base);
     }
 
     Some(Card {
@@ -1215,13 +1223,25 @@ mod tests {
         );
         let mut view = View::default();
         let card = render(&inp, &mut view, &t).unwrap();
-        // base span first, covering the whole card
-        let base = &card.spans[0];
-        assert_eq!(base.style, t.palette.panel);
-        assert_eq!(base.start, 1);
-        assert_eq!(base.end, card.text.chars().count());
-        // nothing above the base can punch a terminal-default hole
-        for s in &card.spans[1..] {
+        // per-row base spans first (a bg crossing a newline smears to the
+        // terminal edge on BCE terminals), tiling every visible row
+        let bases: Vec<_> = card
+            .spans
+            .iter()
+            .take_while(|s| s.style == t.palette.panel)
+            .collect();
+        let rows = card.text.lines().skip(1).count();
+        assert_eq!(bases.len(), rows, "one base span per row");
+        assert_eq!(bases[0].start, 1, "leading newline excluded");
+        let chars: Vec<char> = card.text.chars().collect();
+        for b in &bases {
+            assert!(
+                b.end == chars.len() || chars[b.end] == '\n',
+                "base span must stop before the newline"
+            );
+        }
+        // nothing above the bases can punch a terminal-default hole
+        for s in &card.spans[bases.len()..] {
             assert!(s.style.contains("bg="), "hole in the panel: {:?}", s.style);
         }
     }

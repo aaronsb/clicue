@@ -25,7 +25,7 @@ e2e: build ## Sandboxed pty scenarios: real shell, real daemon, real keys
 	zsh tests/run.zsh
 
 demo: build ## Record docs/demo/clicue.cast (+ .gif when agg is installed)
-	asciinema rec --overwrite --cols 100 --rows 32 -c "zsh docs/demo/record.zsh" docs/demo/clicue.cast
+	asciinema rec --overwrite --cols 84 --rows 26 -c "zsh docs/demo/record.zsh" docs/demo/clicue.cast
 	@command -v agg >/dev/null 2>&1 \
 	  && agg --font-size 14 docs/demo/clicue.cast docs/demo/clicue.gif \
 	  || echo "agg not installed — .cast only"
