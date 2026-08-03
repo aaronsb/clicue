@@ -279,7 +279,7 @@ impl Engine {
         let cues = set.cues;
         let info = set.info;
         let explain = self.explain_rows(sess, &pos, req.nav.as_ref());
-        let pane = self.nav_pane(sess, &pos, req.nav.as_ref());
+        let (pane, going) = self.nav_panes(sess, &pos, req.nav.as_ref());
         if cues.is_empty() && explain.is_empty() && pane.is_none() {
             sess.grid = None;
             return reply(String::new(), Vec::new(), String::new(), String::new());
@@ -327,6 +327,7 @@ impl Engine {
             tab_inserts,
             ghost: &ghost,
             nav: pane.as_ref(),
+            nav_going: going.as_ref(),
             invnote: &self.invnote(&pos),
             dims: Dims {
                 cols: req.cols,
@@ -414,7 +415,82 @@ impl Engine {
     /// cd, the dirstack for the stack verbs, with the landing entry
     /// marked. The map rings render for the verbs that go *somewhere
     /// new*; popd and dirs can only go to the stack, so they get only it.
-    fn nav_pane(
+    fn nav_panes(
+        &self,
+        sess: &Sess,
+        pos: &state::Position,
+        navctx: Option<&NavContext>,
+    ) -> (Option<nav::NavPane>, Option<nav::NavPane>) {
+        let here = self.nav_here(sess, pos, navctx);
+        let going = here
+            .is_some()
+            .then(|| self.nav_going(sess, pos, navctx))
+            .flatten();
+        (here, going)
+    }
+
+    /// The symmetric destination pane: the same rings drawn around where
+    /// the line will take you — the typed target when it resolves, or
+    /// the landing stack entry of a bare popd/pushd. `cd .` draws the
+    /// same place as "you are here"; `cd ..` shows here one level down
+    /// on the going map, marked (design note "you are going").
+    fn nav_going(
+        &self,
+        _sess: &Sess,
+        pos: &state::Position,
+        navctx: Option<&NavContext>,
+    ) -> Option<nav::NavPane> {
+        let ctx = navctx?;
+        let home = std::env::var("HOME").ok();
+        let dest = if pos.pfx.is_empty() {
+            // Bare stack verbs have a determined landing; bare cd's
+            // implicit home is withheld — nothing was typed to explain.
+            let words: Vec<&str> = pos.words.iter().map(|s| s.as_str()).collect();
+            let eff = sources::effective_command(&words)?;
+            if !matches!(eff, "popd" | "pushd") {
+                return None;
+            }
+            std::path::PathBuf::from(ctx.dirstack.first()?)
+        } else {
+            let r = nav::resolve_target(
+                &pos.pfx,
+                &ctx.pwd,
+                ctx.oldpwd.as_deref(),
+                &ctx.dirstack,
+                home.as_deref(),
+            )?;
+            if !r.exists {
+                return None;
+            }
+            r.path
+        };
+
+        let rings = {
+            let mut sc = self.nav_scanner.lock().unwrap_or_else(|e| e.into_inner());
+            sc.rings(&dest)
+        };
+        let pwd_path = std::path::Path::new(&ctx.pwd);
+        let here_child = rings
+            .children
+            .iter()
+            .map(|c| c.name.clone())
+            .find(|n| dest.join(n) == pwd_path);
+        Some(nav::NavPane {
+            breadcrumb: nav::breadcrumb(&dest.to_string_lossy(), home.as_deref()),
+            children: rings
+                .children
+                .iter()
+                .map(|c| (c.name.clone(), nav::count_label(c.count)))
+                .collect(),
+            hidden: rings.hidden,
+            siblings: rings.siblings,
+            stack: Vec::new(),
+            landing: None,
+            here_child,
+        })
+    }
+
+    fn nav_here(
         &self,
         sess: &Sess,
         pos: &state::Position,
@@ -1229,6 +1305,56 @@ mod tests {
             "cd ../.. must keep pane and resolution: {}",
             rep.card
         );
+    }
+
+    #[test]
+    fn going_pane_mirrors_here_for_dot_and_lifts_for_dotdot() {
+        use crate::protocol::NavContext;
+        let root = std::env::temp_dir().join(format!("clicue-engine-going-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("parent/herename/child-a")).unwrap();
+        std::fs::create_dir_all(root.join("parent/other-sibling")).unwrap();
+        let pwd = root.join("parent/herename").to_string_lossy().into_owned();
+        let e = engine_with(test_corpus());
+        let with_nav = |buf: &str| {
+            let mut r = req(Event::Redraw, buf);
+            r.cols = 200;
+            r.lines = 50;
+            r.nav = Some(NavContext {
+                pwd: pwd.clone(),
+                oldpwd: None,
+                dirstack: vec![],
+            });
+            r
+        };
+
+        // cd . — the same place drawn twice, symmetric headers.
+        let rep = e.handle(with_nav("cd ."));
+        assert!(rep.card.contains("you are here"), "{}", rep.card);
+        assert!(rep.card.contains("you are going"), "{}", rep.card);
+        assert_eq!(
+            rep.card.matches("child-a").count(),
+            2,
+            "cd . draws the same children on both maps: {}",
+            rep.card
+        );
+
+        // cd .. — the going map is the parent, and here sits on it as a
+        // child, one removed.
+        let rep = e.handle(with_nav("cd .."));
+        assert!(rep.card.contains("you are going"), "{}", rep.card);
+        assert!(
+            rep.card.contains("herename"),
+            "here must appear on the going map: {}",
+            rep.card
+        );
+        assert!(rep.card.contains("other-sibling"), "{}", rep.card);
+
+        // A target that does not resolve gets no going pane — the
+        // failure row already says everything true.
+        let rep = e.handle(with_nav("cd nowhere-zz"));
+        assert!(!rep.card.contains("you are going"), "{}", rep.card);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

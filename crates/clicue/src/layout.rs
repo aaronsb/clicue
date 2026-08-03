@@ -181,6 +181,9 @@ pub struct CardInput<'a> {
     /// The "you are here" pane for a navigational command (design note
     /// navigation-and-place.md); None for every other card.
     pub nav: Option<&'a crate::nav::NavPane>,
+    /// The symmetric "you are going" pane: the same rings drawn around
+    /// the RESOLVED destination. Never present without `nav`.
+    pub nav_going: Option<&'a crate::nav::NavPane>,
     /// E5 footer: `run N× · top P% · age`, empty for none.
     pub invnote: &'a str,
     pub dims: Dims,
@@ -577,21 +580,19 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     if er > 0 {
         gr = gr.saturating_sub(1); // the explanation's own border
     }
-    // The nav pane's rows: structure-driven only (H7 — a count filling in
+    // Nav pane rows: structure-driven only (H7 — a count filling in
     // must never add a row), clamped, taken from the grid's share like
     // the explanation. Children pack into cells later; two rows of them
-    // is the fisheye's whole budget, with "+n more" carrying the rest.
-    let nav_child_rows = input.nav.map_or(0, |n| match n.children.len() {
-        0 => 0,
-        _ => 2,
-    });
-    let nav_rows = input.nav.map_or(0, |n| {
+    // is a pane's whole budget, with "+n more" carrying the rest. Both
+    // panes (here and going) are counted.
+    let pane_rows = |n: &crate::nav::NavPane| {
         1 + usize::from(!n.breadcrumb.is_empty())
             + n.stack.len().min(4)
             + usize::from(n.stack.len() > 4)
-            + nav_child_rows
+            + (if n.children.is_empty() { 0 } else { 2 })
             + usize::from(!n.siblings.is_empty() || n.hidden > 0)
-    });
+    };
+    let nav_rows = input.nav.map_or(0, pane_rows) + input.nav_going.map_or(0, pane_rows);
     gr = gr.saturating_sub(nav_rows);
 
     // C1: column basis over everything tier 1 CAN show — the first t1n
@@ -669,7 +670,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         let ncols_full = (total - t1n).div_ceil(gr);
         need = need.max(3 + ncols_full * cellw);
     }
-    if let Some(np) = input.nav {
+    for np in [input.nav, input.nav_going].into_iter().flatten() {
         // One packed child cell must fit (name capped like grid cells,
         // count label ≤3); breadcrumb and siblings ellipsize instead of
         // driving width. Stack rows reserve label + a readable path stub.
@@ -964,24 +965,33 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         }
     }
 
-    // ── the "you are here" pane ──────────────────────────────────────────
+    // ── the place panes: "you are here", then "you are going" ────────────
     // Falloff is structural (names → counts → "+n more") and, for now,
     // spoken through existing palette roles: text for the focus ring,
     // accent for children, gloss for the distant ring. The semantic
     // falloff-0/1/2 theme vocabulary lands with the theming work, spec
     // first (design note "Falloff is semantic; themes own its look").
-    if let Some(np) = input.nav {
+    // Both panes are one renderer with two titles — the symmetry is the
+    // feature (`cd .` draws the same place twice; `cd ..` shows here as
+    // a styled child on the going map).
+    for (np, title, beside) in [
+        (input.nav, " you are here ", "beside you"),
+        (input.nav_going, " you are going ", "beside it"),
+    ]
+    .into_iter()
+    .filter_map(|(n, t, b)| n.map(|n| (n, t, b)))
+    {
         let (jl, jr) = if rows.is_empty() {
             (&g.tl, &g.tr)
         } else {
             (&g.jl, &g.jr)
         };
-        rows.push(border_row(inner, " you are here ", jl, jr, &g.h, theme));
+        rows.push(border_row(inner, title, jl, jr, &g.h, theme));
 
         // Chrome is border + 3-space indent + border: body = inner − 3,
         // exactly like the explanation's collapsed line.
         let body = inner.saturating_sub(3).max(1);
-        let mut line = |text: String, style: &str| {
+        let line = |rows: &mut Vec<Row>, text: String, style: &str| {
             let mut row = Row::new();
             row.push(&g.v, Some(&p.border));
             row.push("   ", None);
@@ -991,7 +1001,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         };
 
         if !np.breadcrumb.is_empty() {
-            line(np.breadcrumb.join(" › "), &p.text);
+            line(&mut rows, np.breadcrumb.join(" › "), &p.text);
         }
 
         // Labeled place rows: `-` / `+N`, landing entry marked. Clamped to
@@ -1003,15 +1013,21 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             } else {
                 ""
             };
-            line(format!("{label:<3} {path}{mark}"), &p.text);
+            line(&mut rows, format!("{label:<3} {path}{mark}"), &p.text);
         }
         if np.stack.len() > shown {
-            line(format!("    +{} deeper", np.stack.len() - shown), &p.gloss);
+            line(
+                &mut rows,
+                format!("    +{} deeper", np.stack.len() - shown),
+                &p.gloss,
+            );
         }
 
         // Children pack into two rows of `name/ N` cells; what the rows
         // cannot hold is counted into the last cell. Cell width is
-        // structure-stable: the count field is reserved (H7 cells).
+        // structure-stable: the count field is reserved (H7 cells). The
+        // here_child cell (the operator's own location on a going map)
+        // is emphasised by STYLE — every posture has that channel.
         if !np.children.is_empty() {
             let cellw = np
                 .children
@@ -1027,19 +1043,37 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             } else {
                 np.children.len()
             };
-            let mut cells: Vec<String> = np.children[..shown]
+            let mut cells: Vec<(String, bool)> = np.children[..shown]
                 .iter()
-                .map(|(n, c)| format!("{}/ {c}", fit_hard(n, 24)))
+                .map(|(n, c)| {
+                    (
+                        format!("{}/ {c}", fit_hard(n, 24)),
+                        np.here_child.as_deref() == Some(n.as_str()),
+                    )
+                })
                 .collect();
             if np.children.len() > shown {
-                cells.push(format!("+{} more", np.children.len() - shown));
+                cells.push((format!("+{} more", np.children.len() - shown), false));
             }
             for chunk in cells.chunks(ncols) {
-                let text = chunk
-                    .iter()
-                    .map(|c| pad_to(c.clone(), cellw))
-                    .collect::<String>();
-                line(text.trim_end().to_string(), &p.accent);
+                let mut row = Row::new();
+                row.push(&g.v, Some(&p.border));
+                row.push("   ", None);
+                let mut used = 3usize;
+                for (cell, is_here) in chunk {
+                    let text = pad_to(fit_hard(cell, body.saturating_sub(used - 3).max(1)), cellw);
+                    let w = wcols(&text);
+                    if used + w > body + 3 {
+                        break;
+                    }
+                    row.push(&text, Some(if *is_here { &p.matched } else { &p.accent }));
+                    used += w;
+                }
+                if used < inner {
+                    row.push(&" ".repeat(inner - used), None);
+                }
+                row.push(&g.v, Some(&p.border));
+                rows.push(row);
             }
         }
 
@@ -1047,7 +1081,7 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             let mut parts: Vec<String> = Vec::new();
             if !np.siblings.is_empty() {
                 let named: Vec<&str> = np.siblings.iter().take(3).map(|s| s.as_str()).collect();
-                let mut t = format!("beside you: {}", named.join(" · "));
+                let mut t = format!("{beside}: {}", named.join(" · "));
                 if np.siblings.len() > named.len() {
                     t.push_str(&format!(" · +{} more", np.siblings.len() - named.len()));
                 }
@@ -1058,7 +1092,11 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
             }
             // End-ellipsis here: unlike a path, this row's head carries
             // the meaning.
-            line(fit_ellipsis(&parts.join("  ·  "), body), &p.gloss);
+            line(
+                &mut rows,
+                fit_ellipsis(&parts.join("  ·  "), body),
+                &p.gloss,
+            );
         }
     }
 
@@ -1216,6 +1254,7 @@ mod tests {
             tab_inserts: false,
             ghost: "",
             nav: None,
+            nav_going: None,
             invnote: "",
             dims,
             cfg,
@@ -1248,6 +1287,7 @@ mod tests {
             siblings: vec!["patchbay".into(), "yay-friend".into()],
             stack: vec![("-".into(), "~/Knowledge".into())],
             landing: None,
+            here_child: None,
         }
     }
 

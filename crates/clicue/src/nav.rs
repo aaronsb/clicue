@@ -227,6 +227,12 @@ pub struct NavPane {
     pub stack: Vec<(String, String)>,
     /// Index into `stack` of the entry a bare invocation lands on.
     pub landing: Option<usize>,
+    /// Child name equal to the operator's CURRENT directory — set on the
+    /// "you are going" pane when here is one level under the destination
+    /// (`cd ..`), so the operator sees themself on the map. Marked by
+    /// style, not glyph: every shipped posture has an emphasis channel,
+    /// and no glyph vocabulary is spent (T7).
+    pub here_child: Option<String>,
 }
 
 /// The reserved-cell rendering of a grandchild count (H7: a later fill

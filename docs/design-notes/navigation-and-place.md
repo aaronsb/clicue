@@ -159,6 +159,22 @@ this is not a special presentation; the dirstack *is* the complete candidate spa
 for those commands, so showing it is the tier-2 contract taken literally. The
 landing entry is marked.
 
+### 2a. "You are going" — the symmetric destination pane
+
+Named by the operator, with the symmetry as the requirement: the same rings drawn
+around where the line will take you. It appears when the typed target resolves
+(and for a bare `popd`/`pushd`, whose landing is determined); a failing target
+gets no going pane — the failure row already says everything true. A bare `cd `
+is withheld too: its implicit home destination is real, but nothing was typed to
+explain, and doubling the idle card's height buys nothing.
+
+The acceptance pair, stated by the operator: `cd .` draws the same place on both
+maps; `cd ..` draws the parent on the going map with the operator's own directory
+visible as a child, one removed — marked by *style*, not glyph (every shipped
+posture has an emphasis channel, and no glyph vocabulary is spent, T7). One
+renderer serves both panes; the headers and the sibling row's pronoun ("beside
+you" / "beside it") are the whole difference.
+
 ### 3. Resolution and existence
 
 Every navigation target the operator has typed resolves against relayed place and

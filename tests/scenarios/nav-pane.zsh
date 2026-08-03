@@ -34,12 +34,23 @@ t_plain "$PTY_OUT"
 [[ $REPLY != *'did you mean'* ]]   || t_fail "success must not be recommended at"
 PTY_OUT=''
 
-# Clear the line, then a target that fails from here: the honest row.
+# Clear the line, then a target that fails from here: the honest row,
+# and no going pane — nothing true to draw there.
 local -i i
 for (( i = 1; i <= 12; i++ )); do pty_key $'\x7f'; done
 pty_type 'no-such-dir-zz'
 pty_drain 0.6
 t_plain "$PTY_OUT"
-[[ $REPLY == *'no such'* ]] || t_fail "missing the failure row for a dead target"
+[[ $REPLY == *'no such'* ]]        || t_fail "missing the failure row for a dead target"
+[[ $REPLY != *'you are going'* ]]  || t_fail "a dead target must not get a going pane"
+PTY_OUT=''
+
+# cd . — the operator's acceptance case: the same place on both maps.
+for (( i = 1; i <= 14; i++ )); do pty_key $'\x7f'; done
+pty_type '.'
+pty_drain 0.6
+t_plain "$PTY_OUT"
+[[ $REPLY == *'you are going'* ]]  || t_fail "cd . must draw the going pane"
+[[ $REPLY == *'beside it'* ]]      || t_fail "going pane keeps its own pronoun"
 
 t_done
