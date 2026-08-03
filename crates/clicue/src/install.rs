@@ -15,7 +15,18 @@ use anyhow::{bail, Context, Result};
 
 /// The one line. `eval` of the emitted shim is the zoxide pattern: the
 /// shim is generated output, so shim and daemon versions cannot drift.
-pub const INSTALL_LINE: &str = r#"eval "$(clicue init zsh)""#;
+/// Guarded on `command -v`: a package manager removing the binary
+/// (`pacman -R clicue`) must not leave every new shell printing
+/// "command not found" — absent beats degraded applies to the rc line
+/// too. The `if` form, not `&& … || true`: as the LAST line of a zshrc
+/// its exit status is what `$?` holds at the first prompt, and the
+/// bare `&&` form leaves 1 behind — an error glyph in every
+/// exit-status prompt (review #22, measured); `|| true` would also
+/// swallow a genuine eval failure when clicue IS present. Removal
+/// matches on the `clicue init zsh` substring, so older unguarded
+/// lines still uninstall (pinned by test against the legacy literal).
+pub const INSTALL_LINE: &str =
+    r#"if command -v clicue >/dev/null; then eval "$(clicue init zsh)"; fi"#;
 /// Marker comment so uninstall can also remove an annotated line.
 pub const MARKER: &str = "# clicue — live command guidance (managed by `clicue install`)";
 /// compinit, added ONLY when the probed shell never ran it (stock macOS
@@ -81,6 +92,14 @@ pub fn with_line_removed(text: &str) -> String {
         s.push('\n');
     }
     s
+}
+
+/// An active shim line that predates the `command -v` guard.
+pub fn needs_guard_migration(text: &str) -> bool {
+    text.lines().any(|l| {
+        let t = l.trim();
+        !t.starts_with('#') && t.contains("clicue init zsh") && !t.contains("command -v clicue")
+    })
 }
 
 /// Plugin manager detection from the doctor's probe map. When one is in
@@ -206,16 +225,32 @@ pub fn install(opts: &InstallOpts) -> Result<i32> {
         .map(PathBuf::from);
     let rc = rc_path(&home, zdot.as_deref());
     let before = std::fs::read_to_string(&rc).unwrap_or_default();
+    // compinit=0 in the probe means the loaded shell has no compsys —
+    // the stock-zshrc case; the block carries its own fix.
+    let add_compinit = probe.get("compinit").map(|v| v != "1").unwrap_or(true);
     if installed_in(&before) {
+        if needs_guard_migration(&before) {
+            // A pre-guard line: offer the rewrite through the same
+            // remove+append machinery, diff and confirmation included —
+            // otherwise the exact users the guard exists for (package
+            // removal) never receive it (review #22).
+            let after = with_line_appended(&with_line_removed(&before), add_compinit);
+            println!("installed, but with an unguarded line — package removal would leave shells complaining.");
+            println!("{}", render_diff(&rc, &before, &after));
+            if !opts.yes && !confirm(&format!("update {}?", rc.display()))? {
+                println!("nothing written.");
+                return Ok(1);
+            }
+            std::fs::write(&rc, after).with_context(|| format!("writing {}", rc.display()))?;
+            println!("guard added. Open shells are unaffected.");
+            return Ok(0);
+        }
         println!(
             "already installed: {} references `clicue init zsh`",
             rc.display()
         );
         return Ok(0);
     }
-    // compinit=0 in the probe means the loaded shell has no compsys —
-    // the stock-zshrc case; the block carries its own fix.
-    let add_compinit = probe.get("compinit").map(|v| v != "1").unwrap_or(true);
     let after = with_line_appended(&before, add_compinit);
     println!("{}", render_diff(&rc, &before, &after));
     if !opts.yes && !confirm(&format!("append to {}?", rc.display()))? {
@@ -403,5 +438,26 @@ mod tests {
         crate::theme::sync_all(&dir);
         remove_pristine_themes(&dir);
         assert!(!dir.exists(), "an emptied directory goes too");
+    }
+    #[test]
+    fn legacy_unguarded_line_still_uninstalls() {
+        // The literal spelled out, NOT built from INSTALL_LINE: this is
+        // what sits on users' disks from pre-guard installs, and a test
+        // constructed from the constant proves nothing about it.
+        let rc = "alias ll='ls -l'\n# clicue — live command guidance (managed by `clicue install`)\neval \"$(clicue init zsh)\"\n";
+        assert!(installed_in(rc));
+        assert!(needs_guard_migration(rc));
+        let removed = with_line_removed(rc);
+        assert!(!installed_in(&removed));
+        assert!(removed.contains("alias ll"));
+        // The guarded line is detected, and needs no migration.
+        let guarded = with_line_appended("", false);
+        assert!(installed_in(&guarded));
+        assert!(!needs_guard_migration(&guarded));
+        // Migration = remove + append: one guarded line, nothing doubled.
+        let migrated = with_line_appended(&with_line_removed(rc), false);
+        assert_eq!(migrated.matches("clicue init zsh").count(), 1);
+        assert!(!needs_guard_migration(&migrated));
+        assert!(migrated.contains("alias ll"));
     }
 }
