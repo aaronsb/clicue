@@ -78,11 +78,15 @@ spec/protocol.md §6). Each invariant below states WHICH side enforces it.
   a harvest that found words converts an informational card into a real one
   — leaving it informational fell through to native completion, the raw
   listing this replaces. (keys.zsh:237–290)
-- T4 [domain] When the sole candidate is exactly what is typed, Tab inserts
-  it with its declared suffix and descends a level — cycling a one-item
-  list does nothing visible and `gh org<Tab>` had no way forward. The same
-  named predicate drives the key and the legend; written twice they would
-  drift. (keys.zsh:186–193, 296–307)
+- T4 [domain, amended] When there is a SOLE candidate, Tab inserts it with
+  its declared suffix and descends a level — exactly typed or merely
+  unique. Cycling a one-item list does nothing visible, `gh org<Tab>` had
+  no way forward, and the unique-completion case is the universal
+  contract: `cd Pr<Tab>ai<Tab>ag<Tab><Enter>` is one gesture per level,
+  and requiring an Enter between levels broke thirty years of muscle
+  memory [operator-reported 2026-08-03]. Ambiguity still earns the card.
+  The same named predicate drives the key and the legend; written twice
+  they would drift. (keys.zsh:186–193, 296–307)
 - T5 [domain] Otherwise Tab cycles the PRIMARY card (tier 1 limit, wrapping
   to 1), engaging the card. (keys.zsh:309–317)
 - T6 [domain] Flag position is never delegated, even with nothing to

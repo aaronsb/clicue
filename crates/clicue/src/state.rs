@@ -229,19 +229,30 @@ impl SessionState {
     /// Will the next Tab INSERT rather than move? True when the only
     /// candidate is exactly what is typed (keys.md T-rules; prototype
     /// _clicue_tab_inserts).
-    pub fn tab_inserts(&self, cues: usize, first_is_exact_pfx: bool, info: bool) -> bool {
-        !info && cues == 1 && first_is_exact_pfx
+    pub fn tab_inserts(&self, cues: usize, _first_is_exact_pfx: bool, info: bool) -> bool {
+        // A sole candidate inserts whether or not it is fully typed (T4,
+        // amended): cycling a one-item list does nothing visible, and a
+        // unique completion inserting on the completion key is the
+        // universal contract — `cd Pr<Tab>ai<Tab>ag<Tab><Enter>` must
+        // stay one gesture per level. Ambiguity earns the card.
+        !info && cues == 1
     }
 
     /// Tab cycling within tier 1 (keys.md T5): engage, advance, wrap at
     /// the tier-1 boundary. `just_harvested` presses land on cue 1.
     pub fn tab_cycle(&mut self, t1n: usize, total: usize, just_harvested: bool) {
+        // The FIRST press engages and sits on cue 1 (T3/T5: the ranked
+        // top is "usually one press"); only an already-engaged press
+        // advances. `sel` defaults to 1 before engagement, so advancing
+        // unconditionally skipped the top cue — first Tab landed on 2,
+        // masked for years by single-cue wrap [MEASURED 2026-08-03].
+        let was_engaged = self.engaged;
         self.engaged = true;
         let lim = if t1n == 0 || t1n > total { total } else { t1n };
         if lim == 0 {
             return;
         }
-        if just_harvested || self.sel == 0 {
+        if just_harvested || self.sel == 0 || !was_engaged {
             self.sel = 1;
         } else {
             self.sel += 1;
@@ -341,11 +352,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_inserts_only_on_exact_single() {
+    fn tab_inserts_on_any_sole_candidate() {
         let s = SessionState::default();
         assert!(s.tab_inserts(1, true, false));
         assert!(!s.tab_inserts(1, true, true)); // info card
         assert!(!s.tab_inserts(2, true, false));
-        assert!(!s.tab_inserts(1, false, false));
+        assert!(
+            s.tab_inserts(1, false, false),
+            "a unique completion inserts — the universal contract (T4 amended)"
+        );
     }
 }

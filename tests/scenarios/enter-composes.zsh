@@ -7,9 +7,12 @@
 # the names live on opposite sides of the wire.
 source "${0:a:h}/../harness.zsh"
 
-# A remembered line whose EXECUTION output ("42") never appears in its
-# own text — so run-vs-composed is unambiguous in the pty stream.
-T_SEED_HISTORY=( 'echo $((6*7))' )
+# TWO remembered lines sharing the typed prefix: ambiguity is what keeps
+# Tab cycling (T4 amended: a sole candidate would insert on Tab, which is
+# its own contract and its own scenario). The newest — the one Tab lands
+# on — has EXECUTION output ("42") that never appears in its own text, so
+# run-vs-composed is unambiguous in the pty stream.
+T_SEED_HISTORY=( 'echo $HOME' 'echo $((6*7))' )
 
 pty_start plain
 
