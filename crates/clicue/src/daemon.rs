@@ -10,7 +10,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 
@@ -126,8 +127,62 @@ fn bind(path: &Path) -> Result<(UnixListener, File)> {
 pub fn run() -> Result<()> {
     let path = socket_path()?;
     let (listener, _lock) = bind(&path)?; // lock lives as long as serve()
-    let engine = std::sync::Arc::new(crate::engine::Engine::new()?);
-    serve_with(listener, std::sync::Arc::new(move |req| engine.handle(req)))
+    let render = reloading_render(crate::config::config_path().ok(), Duration::from_secs(1))?;
+    serve_with(listener, render)
+}
+
+fn cfg_stat(path: &Path) -> Option<(SystemTime, u64)> {
+    let m = fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// Engine that follows the config file: when its mtime/size changes, the
+/// next request (rate-limited to one stat per `min_interval`) swaps in a
+/// freshly built engine. Sessions are shared across swaps, so open shells
+/// keep their hello universes, dismissals and live harvests; a rebuild
+/// that fails keeps the current engine. This is why `theme set` and
+/// `config set` never ask for a daemon restart — and why an invalid edit
+/// behaves exactly like a daemon restart would (per-key fallback with
+/// warnings), never worse.
+pub fn reloading_render(cfg: Option<PathBuf>, min_interval: Duration) -> Result<Render> {
+    let sessions = crate::engine::SharedSessions::default();
+    let mk = move || -> Result<Render> {
+        let engine = std::sync::Arc::new(crate::engine::Engine::new_shared(sessions.clone())?);
+        Ok(std::sync::Arc::new(move |req| engine.handle(req)) as Render)
+    };
+    reloading_with(cfg, min_interval, mk)
+}
+
+/// The swap mechanism, factory-injected so tests need no real engine.
+fn reloading_with(
+    cfg: Option<PathBuf>,
+    min_interval: Duration,
+    factory: impl Fn() -> Result<Render> + Send + Sync + 'static,
+) -> Result<Render> {
+    let current = RwLock::new(factory()?);
+    let state = Mutex::new((Instant::now(), cfg.as_deref().and_then(cfg_stat)));
+    Ok(std::sync::Arc::new(move |req| {
+        if let Some(p) = &cfg {
+            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+            if st.0.elapsed() >= min_interval {
+                st.0 = Instant::now();
+                let now = cfg_stat(p);
+                if now != st.1 {
+                    st.1 = now;
+                    match factory() {
+                        Ok(r) => {
+                            *current.write().unwrap_or_else(|e| e.into_inner()) = r;
+                        }
+                        Err(e) => {
+                            eprintln!("clicue daemon: config reload failed, keeping current: {e:#}")
+                        }
+                    }
+                }
+            }
+        }
+        let r = current.read().unwrap_or_else(|e| e.into_inner()).clone();
+        r(req)
+    }))
 }
 
 pub fn serve(listener: UnixListener) -> Result<()> {
@@ -345,6 +400,37 @@ mod tests {
         let mut rest = String::new();
         let n = BufReader::new(conn).read_line(&mut rest).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn reload_swaps_on_config_change_and_keeps_current_on_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = temp_dir("reload");
+        let cfg = dir.join("config.toml");
+        fs::write(&cfg, "theme = \"aura\"\n").unwrap();
+        let gen = std::sync::Arc::new(AtomicUsize::new(0));
+        let g = gen.clone();
+        let render = reloading_with(Some(cfg.clone()), Duration::ZERO, move || {
+            let n = g.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 3 {
+                anyhow::bail!("boom"); // third build fails: engine must survive
+            }
+            Ok(std::sync::Arc::new(move |_req| Reply {
+                card: format!("gen{n}"),
+                ..Reply::stand_down()
+            }) as Render)
+        })
+        .unwrap();
+        let req = || serde_json::from_str::<Request>(&request_line(VERSION)).unwrap();
+        assert_eq!(render(req()).card, "gen1");
+        assert_eq!(render(req()).card, "gen1", "unchanged file, no swap");
+        // mtime granularity can be coarse; changing LENGTH always registers
+        fs::write(&cfg, "theme = \"mono\"  \n").unwrap();
+        assert_eq!(render(req()).card, "gen2", "changed file swaps");
+        fs::write(&cfg, "theme = \"plain\"\n").unwrap();
+        assert_eq!(render(req()).card, "gen2", "failed rebuild keeps current");
+        fs::write(&cfg, "theme = \"base\"    \n").unwrap();
+        assert_eq!(render(req()).card, "gen4", "recovers on the next change");
     }
 
     #[test]

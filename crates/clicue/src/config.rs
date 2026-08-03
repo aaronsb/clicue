@@ -293,9 +293,51 @@ fn string_array(v: &toml::Value) -> Option<Vec<String>> {
 
 /// Set one top-level string key in the config file, preserving everything
 /// else INCLUDING comments — a line edit, not a table round-trip.
-pub fn set_key_line(path: &Path, key: &str, value: &str) -> Result<()> {
+/// Top-level scalar keys `config set` may write. Tables ([keys],
+/// [emulates]) are edited in the file — a k=v verb cannot express them.
+pub const SCALAR_KEYS: &[&str] = &[
+    "theme",
+    "ranking",
+    "tier1-rows",
+    "tier2-rows",
+    "max-width",
+    "max-lines",
+];
+
+/// Validated scalar write: unknown keys and values the parser would
+/// reject are refused BEFORE the file changes — the daemon hot-reloads
+/// whatever is on disk, so a bad line must never land there.
+pub fn set_scalar(path: &Path, key: &str, value: &str) -> Result<()> {
+    if !SCALAR_KEYS.contains(&key) {
+        anyhow::bail!(
+            "unknown key {key:?} — settable: {}. Tables ([keys], [emulates]) are edited in {}",
+            SCALAR_KEYS.join(", "),
+            path.display()
+        );
+    }
+    // numbers unquoted, everything else a TOML string
+    let rendered = if value.parse::<i64>().is_ok() {
+        value.to_string()
+    } else {
+        format!("{value:?}")
+    };
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let line = format!("{key} = {value:?}");
+    let candidate = set_key_in(&existing, key, &rendered);
+    let loaded = load_str(&candidate);
+    if let Some(w) = loaded.warnings.iter().find(|w| w.contains(key)) {
+        anyhow::bail!("refusing to write: {w}");
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, candidate).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+/// The pure edit: replace `key = …` in place or insert before the first
+/// [table] section (top-level keys after a header change meaning).
+fn set_key_in(existing: &str, key: &str, rendered_value: &str) -> String {
+    let line = format!("{key} = {rendered_value}");
     let mut out = Vec::new();
     let mut replaced = false;
     for l in existing.lines() {
@@ -311,22 +353,27 @@ pub fn set_key_line(path: &Path, key: &str, value: &str) -> Result<()> {
         }
     }
     if !replaced {
-        // Top-level keys must precede any [table] section or they change
-        // meaning; insert before the first section header.
         let first_section = out.iter().position(|l| l.trim_start().starts_with('['));
         match first_section {
             Some(i) => out.insert(i, line),
             None => out.push(line),
         }
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let mut text = out.join("\n");
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+    text
+}
+
+pub fn set_key_line(path: &Path, key: &str, value: &str) -> Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let text = set_key_in(&existing, key, &format!("{value:?}"));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
 /// The `clicue config` display: every field, with provenance.
@@ -469,6 +516,31 @@ mod tests {
         let l = load_str("ranking = \"chaos\"\n");
         assert_eq!(l.config.ranking, "chaos");
         assert!(l.warnings[0].contains("frecency"));
+    }
+
+    #[test]
+    fn set_scalar_validates_before_writing() {
+        let dir = std::env::temp_dir().join(format!("clicue-scalar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.toml");
+        std::fs::write(&p, "theme = \"aura\"\n").unwrap();
+        // numbers land unquoted and parse back
+        set_scalar(&p, "tier1-rows", "7").unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("tier1-rows = 7"), "{t}");
+        assert_eq!(load_str(&t).config.tier1_rows, 7);
+        // a value the parser would warn about never lands
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(set_scalar(&p, "tier1-rows", "banana").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            before,
+            "file untouched"
+        );
+        // unknown keys are named, tables are pointed at the file
+        let err = set_scalar(&p, "keys", "x").unwrap_err().to_string();
+        assert!(err.contains("settable"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

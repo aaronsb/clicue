@@ -13,7 +13,7 @@ pty_exec 'clicue install --yes >$HOME/install.log 2>&1; print RC=$?'
 # sentinel wait, not a fixed drain: the install runs a full doctor probe
 # (nested zsh -i) whose duration varies by machine
 local -F deadline=$(( EPOCHREALTIME + 30 ))
-while [[ $PTY_OUT != *'RC='* ]] && (( EPOCHREALTIME < deadline )); do
+while [[ $PTY_OUT != *RC=[0-9]* ]] && (( EPOCHREALTIME < deadline )); do
   pty_drain 0.3
 done
 t_plain "$PTY_OUT"

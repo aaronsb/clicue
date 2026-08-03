@@ -20,7 +20,7 @@ use crate::sources::{self, ArgContext, HistoryWindow, SessionEnv, DEFAULT_WINDOW
 use crate::state::{self, SessionState};
 use crate::theme::{self, Theme};
 
-struct Sess {
+pub(crate) struct Sess {
     state: SessionState,
     /// Live compsys harvest for the exact buffer it was taken at —
     /// membership authority that supersedes the cache (sources spec).
@@ -43,7 +43,7 @@ pub struct Engine {
     path_commands: std::collections::HashSet<String>,
     /// Seed for each new session's history window (newest N of HISTFILE).
     hist_seed: Vec<String>,
-    sessions: Mutex<HashMap<Session, Sess>>,
+    sessions: SharedSessions,
 }
 
 /// What candidate resolution produced, beyond the cues themselves.
@@ -73,10 +73,20 @@ fn now_epoch() -> u64 {
         .unwrap_or(0)
 }
 
+/// Sessions live OUTSIDE the engine so a config hot-reload can swap the
+/// engine without open shells losing their hello universes (aliases,
+/// functions), dismissals, or live harvests.
+pub(crate) type SharedSessions = std::sync::Arc<Mutex<HashMap<Session, Sess>>>;
+
 impl Engine {
     /// Load corpus (rebuild if missing/stale — daemon start is the one
     /// place that cost is acceptable), theme, and the PATH universe.
     pub fn new() -> Result<Engine> {
+        Self::new_shared(SharedSessions::default())
+    }
+
+    /// The hot-reload entry: a fresh engine over EXISTING sessions.
+    pub(crate) fn new_shared(sessions: SharedSessions) -> Result<Engine> {
         let cache = corpus::cache_path()?;
         let dirs = corpus::path_dirs();
         let histfile = corpus::default_histfile()?;
@@ -127,12 +137,13 @@ impl Engine {
             rank: RankMode::parse(&cfgf.ranking),
             path_commands: corpus::scan_path(&corpus::path_dirs()),
             hist_seed,
-            sessions: Mutex::new(HashMap::new()),
+            sessions,
         })
     }
 
     pub fn handle(&self, req: Request) -> Reply {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        // (sessions are shared across engine swaps — see SharedSessions)
         let sess = sessions.entry(req.session.clone()).or_insert_with(|| {
             let mut window = HistoryWindow::new(DEFAULT_WINDOW);
             window.seed(self.hist_seed.iter().map(|s| s.as_str()));
@@ -664,7 +675,7 @@ mod tests {
                 .map(|s| s.to_string())
                 .collect(),
             hist_seed: vec!["git status".into(), "cargo build".into()],
-            sessions: Mutex::new(HashMap::new()),
+            sessions: SharedSessions::default(),
         }
     }
 
