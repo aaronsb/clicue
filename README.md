@@ -29,7 +29,8 @@ no compiler:
 curl -fsSL https://raw.githubusercontent.com/aaronsb/clicue/main/packaging/install.sh | sh
 ```
 
-(`CLICUE_VERSION=v0.2.1` pins a release; `CLICUE_INSTALL_DIR=…` relocates.)
+(Pin or relocate with `curl … | CLICUE_VERSION=v0.2.1 sh` — the variable goes
+before `sh`; before `curl` it would reach only curl.)
 
 **Arch, as a real pacman package** — one line builds and installs from the
 latest release's own checksummed `PKGBUILD`:
