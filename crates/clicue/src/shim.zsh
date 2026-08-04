@@ -248,12 +248,20 @@ _clicue_paint() {
   POSTDISPLAY="${POSTDISPLAY}${2}${1}"
   _clicue_ghost=$2
   _clicue_card=$1
-  (( ${#2} )) && region_highlight+=( "$gbase $base ${_clicue_gstyle:-fg=8},memo=clicue" )
+  # Batched into ONE += : region_highlight is a zle special whose setter
+  # reprocesses the whole array on every assignment, so appending ~300
+  # spans one at a time is quadratic — 12ms per paint against a 297-span
+  # grid card, ×2 paints per keypress (key + pre-redraw), which buffered
+  # held-down arrows past the key-repeat interval. Batched, the whole
+  # paint is 0.8ms and a press drops 22ms → 10ms [MEASURED 2026-08-04].
+  local -a add=()
+  (( ${#2} )) && add+=( "$gbase $base ${_clicue_gstyle:-fg=8},memo=clicue" )
   local -i i
   for (( i = 1; i + 2 <= ${#_clicue_rh}; i += 3 )); do
-    region_highlight+=(
+    add+=(
       "$(( base + _clicue_rh[i] )) $(( base + _clicue_rh[i+1] )) ${_clicue_rh[i+2]},memo=clicue" )
   done
+  (( ${#add} )) && region_highlight+=( "${(@)add}" )
   return 0
 }
 
