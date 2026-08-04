@@ -459,7 +459,15 @@ _clicue_cap_fn() {
 # $1 pos  $2 path  $3 live (1/0). Words capped so a pathological completer
 # cannot push the frame toward MAX_FRAME.
 _clicue_cs_json() {
-  local pos=$1 path=$2
+  # `cmdpath`, NEVER `path`: a local named `path` is zsh's special PATH
+  # array, and scoping it to a scalar like "glow" empties $PATH for
+  # everything beneath it. In _clicue_harvest that beneath-it was the
+  # WHOLE capture — every completer that forks its own binary (cobra's
+  # generated scripts fork for every completion) got command-not-found
+  # and captured empty, which the daemon then stored as "documents
+  # nothing" [MEASURED 2026-08-04: glow harvested empty while raw
+  # compsys completed fine].
+  local pos=$1 cmdpath=$2
   local lv=false
   (( $3 )) && lv=true
   if (( ${#_clicue_cs_words} > 800 )); then
@@ -482,7 +490,7 @@ _clicue_cs_json() {
   done
   local pj paj ij
   _clicue_json_esc "$pos";            pj=$REPLY
-  _clicue_json_esc "$path";           paj=$REPLY
+  _clicue_json_esc "$cmdpath";        paj=$REPLY
   _clicue_json_esc "$_clicue_cs_ipfx"; ij=$REPLY
   REPLY='{"pos":"'$pj'","path":"'$paj'","live":'$lv',"iprefix":"'$ij'","words":['${(j:,:)wj}'],"descs":['${(j:,:)dj}'],"sfx":{'${(j:,:)sj}'}}'
 }
@@ -520,7 +528,10 @@ _clicue_harvest() {
   [[ $_clicue_cs_for == "$BUFFER" ]] && return 0
   _clicue_cs_for=$BUFFER
   _clicue_argpath || return 0
-  local path=$REPLY
+  # `cmdpath`, never `path` — see _clicue_cs_json: this local is in scope
+  # for BOTH zle _clicue_cap captures below, and as zsh's special PATH
+  # array it silently emptied $PATH for every binary a completer forks.
+  local cmdpath=$REPLY
   local -a hj=()
   # The live capture must not move the line either — compstate suppression
   # is the mechanism, this restore is the guarantee (same discipline as the
@@ -528,9 +539,9 @@ _clicue_harvest() {
   local lbuf=$BUFFER
   local -i lcur=$CURSOR
   { zle _clicue_cap 2>/dev/null } always { BUFFER=$lbuf; CURSOR=$lcur }
-  _clicue_cs_json "$lbuf" "$path" 1
+  _clicue_cs_json "$lbuf" "$cmdpath" 1
   hj+=( "$REPLY" )
-  local -a parts=( ${(s.:.)path} )
+  local -a parts=( ${(s.:.)cmdpath} )
   local acc='' seg spaced sbuf pos mip
   local -i scur
   local -a mw md msw msv
