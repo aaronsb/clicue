@@ -58,7 +58,11 @@ enum Command {
 #[derive(Subcommand)]
 enum ThemeCmd {
     /// List available themes (built-in and installed TOML)
-    List,
+    List {
+        /// Structured output (ADR-400)
+        #[arg(long)]
+        json: bool,
+    },
     /// Set the theme in config.toml
     Set { name: String },
     /// Render a sample card with a theme
@@ -78,22 +82,57 @@ enum ConfigCmd {
 #[derive(Subcommand)]
 enum DataCmd {
     /// Corpus location, size, and staleness
-    Status,
+    Status {
+        /// Structured output (ADR-400)
+        #[arg(long)]
+        json: bool,
+    },
     /// Rebuild the corpus from history and whatis
     Rebuild,
     /// Everything clicue knows about one command
-    Inspect { cmd: String },
+    Inspect {
+        cmd: String,
+        /// Structured output (ADR-400)
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove one command's habits from the corpus (targeted deletion)
     Forget { cmd: String },
+    /// Usage statistics: run counts, top commands, harvest coverage
+    Stats {
+        /// Structured output (ADR-400)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
     use clicue::theme;
     let dir = clicue::config::themes_dir();
-    match cmd.unwrap_or(ThemeCmd::List) {
-        ThemeCmd::List => {
+    match cmd.unwrap_or(ThemeCmd::List { json: false }) {
+        ThemeCmd::List { json } => {
             let loaded = clicue::config::load();
-            println!("theme: {} (current)", loaded.config.theme);
+            if json {
+                let themes: Vec<_> = theme::available(dir.as_deref())
+                    .into_iter()
+                    .map(|name| {
+                        let (_, msgs) = theme::load(&name, dir.as_deref());
+                        serde_json::json!({ "name": name, "broken": !msgs.is_empty() })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({ "current": loaded.config.theme, "themes": themes })
+                );
+                return Ok(());
+            }
+            let out = clicue::cliout::Out::auto();
+            println!(
+                "{} {} {}",
+                out.hint("theme:"),
+                out.accent(&loaded.config.theme),
+                out.gloss("(current)")
+            );
             for name in theme::available(dir.as_deref()) {
                 let (t, msgs) = theme::load(&name, dir.as_deref());
                 if msgs.is_empty() {
@@ -101,11 +140,15 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
                 } else {
                     // The swatch shows the FALLBACK — say so, or the list
                     // hides exactly the breakage doctor reports.
-                    println!("{}  ← file broken; fallback shown", theme::swatch(&t));
+                    println!(
+                        "{}  {}",
+                        theme::swatch(&t),
+                        out.matched("← file broken; fallback shown")
+                    );
                 }
             }
-            println!("\nset:      clicue theme <name>");
-            println!("preview:  clicue theme preview <name>");
+            println!("\n{}      clicue theme <name>", out.hint("set:"));
+            println!("{}  clicue theme preview <name>", out.hint("preview:"));
             Ok(())
         }
         ThemeCmd::Set { name } => {
@@ -179,29 +222,54 @@ fn flag_store() -> Result<clicue::flags::FlagStore> {
 fn data(cmd: Option<DataCmd>) -> Result<()> {
     use clicue::corpus;
     let cache = corpus::cache_path()?;
-    match cmd.unwrap_or(DataCmd::Status) {
-        DataCmd::Status => {
+    match cmd.unwrap_or(DataCmd::Status { json: false }) {
+        DataCmd::Status { json } => {
             match corpus::load(&cache) {
                 Ok(c) => {
                     let current = corpus::stamp(&corpus::default_histfile()?, &corpus::path_dirs());
-                    println!("corpus:  {}", cache.display());
-                    println!("  glosses      {}", c.gloss.len());
-                    println!("  invocations  {}", c.invoke.len());
+                    if json {
+                        let state = match corpus::staleness(&c, &current) {
+                            corpus::Staleness::Current => "current",
+                            corpus::Staleness::TrailingHistory => "trailing-history",
+                            corpus::Staleness::Structural => "stale",
+                        };
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "corpus": cache.display().to_string(),
+                                "glosses": c.gloss.len(),
+                                "invocations": c.invoke.len(),
+                                "state": state,
+                            })
+                        );
+                        return Ok(());
+                    }
+                    let out = clicue::cliout::Out::auto();
+                    println!("{}  {}", out.hint("corpus:"), out.accent(&cache.display().to_string()));
+                    println!("  {}      {}", out.hint("glosses"), c.gloss.len());
+                    println!("  {}  {}", out.hint("invocations"), c.invoke.len());
                     // A live shell appends every command to history as it
                     // runs — `clicue data` itself moved the file before this
                     // check. Trailing history is the working state of derived
                     // data, not something to alarm about (S6).
                     let state = match corpus::staleness(&c, &current) {
-                        corpus::Staleness::Current => "current",
+                        corpus::Staleness::Current => "current".to_string(),
                         corpus::Staleness::TrailingHistory => {
-                            "current (trailing live history — folds in at the next daemon start, or now via `clicue data rebuild`)"
+                            "current (trailing live history — folds in at the next daemon start, or now via `clicue data rebuild`)".to_string()
                         }
                         corpus::Staleness::Structural => {
-                            "STALE — corpus format or installed commands changed; run `clicue data rebuild`"
+                            out.matched("STALE — corpus format or installed commands changed; run `clicue data rebuild`")
                         }
                     };
-                    println!("  state        {state}");
+                    println!("  {}        {state}", out.hint("state"));
                 }
+                Err(_) if json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "corpus": cache.display().to_string(),
+                        "state": "absent",
+                    })
+                ),
                 Err(_) => println!(
                     "corpus:  {} — absent; run `clicue data rebuild`",
                     cache.display()
@@ -221,24 +289,62 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             );
             Ok(())
         }
-        DataCmd::Inspect { cmd } => {
+        DataCmd::Inspect { cmd, json } => {
             let c = corpus::load(&cache)?;
-            println!("{cmd}:");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if json {
+                let prefix = format!("{cmd} ");
+                let invocations: Vec<_> = c
+                    .invoke
+                    .iter()
+                    .filter(|(k, _)| **k == cmd || k.starts_with(&prefix))
+                    .map(|(k, st)| {
+                        serde_json::json!({ "invocation": k, "count": st.count, "pct": st.pct })
+                    })
+                    .collect();
+                let store = flag_store()?;
+                let resolved =
+                    clicue::flags::resolve_path(&cmd, &Default::default(), &store.emulates);
+                let flags: Vec<_> = store
+                    .rows(&resolved)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| {
+                        serde_json::json!({ "insert": r.insert, "label": r.label, "gloss": r.gloss })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "cmd": cmd,
+                        "gloss": c.gloss.get(&cmd),
+                        "runs": c.freq.get(&cmd).copied().unwrap_or(0),
+                        "last_days": c.last.get(&cmd).filter(|l| **l > 0)
+                            .map(|l| now.saturating_sub(*l) / 86400),
+                        "args": c.args.get(&cmd),
+                        "invocations": invocations,
+                        "flags": flags,
+                        "subcommand_tables": store.subcommand_tables(&resolved),
+                    })
+                );
+                return Ok(());
+            }
+            let out = clicue::cliout::Out::auto();
+            println!("{}:", out.accent(&cmd));
             match c.gloss.get(&cmd) {
-                Some(g) => println!("  gloss     {g}"),
-                None => println!("  gloss     (none)"),
+                Some(g) => println!("  {}     {}", out.hint("gloss"), out.gloss(g)),
+                None => println!("  {}     (none)", out.hint("gloss")),
             }
             let count = c.freq.get(&cmd).copied().unwrap_or(0);
-            println!("  runs      {count}");
+            println!("  {}      {count}", out.hint("runs"));
             if let Some(last) = c.last.get(&cmd).filter(|l| **l > 0) {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                println!("  last      {}d ago", now.saturating_sub(*last) / 86400);
+                println!("  {}      {}d ago", out.hint("last"), now.saturating_sub(*last) / 86400);
             }
             if let Some(toks) = c.args.get(&cmd) {
-                println!("  args      {}", toks.join(" "));
+                println!("  {}      {}", out.hint("args"), toks.join(" "));
             }
             let prefix = format!("{cmd} ");
             let mut invocations: Vec<_> = c
@@ -248,7 +354,7 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                 .collect();
             invocations.sort_by(|a, b| b.1.count.cmp(&a.1.count));
             if !invocations.is_empty() {
-                println!("  invocations:");
+                println!("  {}:", out.hint("invocations"));
                 for (k, s) in invocations.iter().take(10) {
                     println!("    {:<40} {}×  top {}%", k, s.count, s.pct);
                 }
@@ -262,16 +368,16 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             let resolved = clicue::flags::resolve_path(&cmd, &Default::default(), &store.emulates);
             if let Some(mut rows) = store.rows(&resolved) {
                 rows.sort_by(|a, b| a.insert.cmp(&b.insert));
-                println!("  flags     {} harvested", rows.len());
+                println!("  {}     {} harvested", out.hint("flags"), rows.len());
                 for r in rows.iter().take(8) {
-                    println!("    {:<24} {}", r.label, r.gloss);
+                    println!("    {:<24} {}", r.label, out.gloss(&r.gloss));
                 }
                 if rows.len() > 8 {
                     println!("    … `clicue data inspect` shows 8; the card shows all");
                 }
             }
             for sub in store.subcommand_tables(&resolved) {
-                println!("  flags     {sub} (subcommand table)");
+                println!("  {}     {sub} (subcommand table)", out.hint("flags"));
             }
             Ok(())
         }
@@ -308,6 +414,136 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             // The daemon watches the corpus cache: the swap builds a fresh
             // flag store too, so the memoised tables go with it.
             println!("applied live; the daemon reloads within a second");
+            Ok(())
+        }
+        DataCmd::Stats { json } => {
+            let c = match corpus::load(&cache) {
+                Ok(c) => c,
+                Err(_) if json => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "corpus": cache.display().to_string(),
+                            "state": "absent",
+                        })
+                    );
+                    return Ok(());
+                }
+                Err(_) => {
+                    println!(
+                        "corpus:  {} — absent; run `clicue data rebuild`",
+                        cache.display()
+                    );
+                    return Ok(());
+                }
+            };
+            let total_runs: u64 = c.freq.values().sum();
+            let mut top: Vec<_> = c.freq.iter().collect();
+            top.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            let mut inv: Vec<_> = c.invoke.iter().collect();
+            inv.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(a.0.cmp(b.0)));
+            // Full command lines only: a bare head duplicates the top table.
+            inv.retain(|(k, _)| k.contains(' '));
+            // Recency buckets from last-used stamps.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let (mut day, mut week, mut older) = (0usize, 0usize, 0usize);
+            for last in c.last.values().filter(|l| **l > 0) {
+                match now.saturating_sub(*last) {
+                    0..=86_399 => day += 1,
+                    86_400..=604_799 => week += 1,
+                    _ => older += 1,
+                }
+            }
+            let store = flag_store()?;
+            let mut stored = store.stored();
+            stored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            let flags_total: usize = stored.iter().map(|(_, n)| n).sum();
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "corpus": {
+                            "path": cache.display().to_string(),
+                            "distinct_commands": c.freq.len(),
+                            "total_runs": total_runs,
+                            "glosses": c.gloss.len(),
+                        },
+                        "top_commands": top.iter().take(10).map(|(cmd, runs)| {
+                            serde_json::json!({
+                                "cmd": cmd,
+                                "runs": runs,
+                                "pct": (**runs * 100) / total_runs.max(1),
+                            })
+                        }).collect::<Vec<_>>(),
+                        "top_invocations": inv.iter().take(10).map(|(k, st)| {
+                            serde_json::json!({ "invocation": k, "count": st.count })
+                        }).collect::<Vec<_>>(),
+                        "recency": { "today": day, "this_week": week, "older": older },
+                        "flags": {
+                            "tables": stored.len(),
+                            "flags_stored": flags_total,
+                            "largest": stored.iter().take(5).map(|(p, n)| {
+                                serde_json::json!({ "path": p, "entries": n })
+                            }).collect::<Vec<_>>(),
+                        },
+                    })
+                );
+                return Ok(());
+            }
+
+            let out = clicue::cliout::Out::auto();
+            println!("{}  {}", out.hint("corpus:"), out.accent(&cache.display().to_string()));
+            println!("  {}  {}", out.hint("distinct commands"), c.freq.len());
+            println!("  {}         {total_runs}", out.hint("total runs"));
+            println!("  {}            {}", out.hint("glosses"), c.gloss.len());
+
+            let max = top.first().map(|(_, n)| **n).unwrap_or(0).max(1);
+            if !top.is_empty() {
+                println!("\n{}", out.hint("top commands:"));
+                for (cmd, runs) in top.iter().take(10) {
+                    // Bar scaled to the leader; ▪ is the card's own mark.
+                    let w = ((**runs * 24) / max).max(1) as usize;
+                    let pct = (**runs * 100) / total_runs.max(1);
+                    // Pad BEFORE painting: format widths count ANSI bytes.
+                    println!(
+                        "  {} {:>6}  {} {:>2}%",
+                        out.accent(&format!("{cmd:<14}")),
+                        runs,
+                        out.gloss(&format!("{:<24}", "▪".repeat(w))),
+                        pct
+                    );
+                }
+            }
+
+            if !inv.is_empty() {
+                println!("\n{}", out.hint("top invocations:"));
+                for (k, st) in inv.iter().take(10) {
+                    println!("  {} {:>5}×", out.accent(&format!("{k:<40}")), st.count);
+                }
+            }
+
+            if day + week + older > 0 {
+                println!("\n{}", out.hint("recency (distinct commands):"));
+                println!("  {}              {day}", out.hint("today"));
+                println!("  {}          {week}", out.hint("this week"));
+                println!("  {}              {older}", out.hint("older"));
+            }
+
+            println!("\n{}", out.hint("flags (Tab-harvested):"));
+            println!("  {}             {}", out.hint("tables"), stored.len());
+            println!("  {}       {flags_total}", out.hint("flags stored"));
+            if !stored.is_empty() {
+                let biggest: Vec<String> = stored
+                    .iter()
+                    .take(5)
+                    .map(|(p, n)| format!("{} ({n})", out.accent(p)))
+                    .collect();
+                println!("  {}            {}", out.hint("largest"), biggest.join(", "));
+            }
             Ok(())
         }
     }

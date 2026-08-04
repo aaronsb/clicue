@@ -394,6 +394,30 @@ impl FlagStore {
         Some(out)
     }
 
+    /// Every table on disk: (resolved path, entry count), unsorted.
+    /// The `clicue data stats` surface — disk, not memory, because the
+    /// CLI process has no session warmth. Stamps are NOT checked: a
+    /// stale table is still storage the operator may want to know about.
+    pub fn stored(&self) -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        if let Ok(rd) = fs::read_dir(&self.dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(stem) = name.strip_suffix(".json") else {
+                    continue;
+                };
+                let Ok(bytes) = fs::read(e.path()) else {
+                    continue;
+                };
+                let Ok(table) = serde_json::from_slice::<PathFlags>(&bytes) else {
+                    continue;
+                };
+                out.push((stem.replace('%', "/"), table.entries.len()));
+            }
+        }
+        out
+    }
+
     /// Stored subcommand tables under a path (`git` → `git:stash`, …) —
     /// the inspect/forget surface; the engine itself always asks by
     /// exact resolved path.
@@ -666,6 +690,31 @@ mod tests {
             store.get("cmd"),
             Some(None),
             "fetched, and there is nothing"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stored_lists_tables_from_disk_with_entry_counts() {
+        let dir = std::env::temp_dir().join(format!("clicue-flagstats-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = FlagStore::new(dir.clone(), vec![], HashMap::new());
+        assert!(store.stored().is_empty(), "empty dir, empty listing");
+        store
+            .ingest(
+                &harvest(&["-a", "-b"], &["-a  -- a", "-b  -- b"], "", &[]),
+                &HashMap::new(),
+            )
+            .unwrap();
+        let mut sub = harvest(&["-x"], &["-x  -- x"], "", &[]);
+        sub.path = "cmd:sub".into();
+        store.ingest(&sub, &HashMap::new()).unwrap();
+        let mut got = store.stored();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("cmd".to_string(), 2), ("cmd:sub".to_string(), 1)],
+            "one row per table, entries counted, subcommand paths intact"
         );
         let _ = fs::remove_dir_all(&dir);
     }

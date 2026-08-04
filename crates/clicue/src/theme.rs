@@ -676,7 +676,9 @@ pub fn gradient_segments(stops: &[String], width: usize) -> Vec<(usize, usize, S
 // included — region_highlight styles translated to ANSI.
 
 /// One region_highlight style string → ANSI SGR sequence ("" = default).
-fn style_to_ansi(style: &str) -> String {
+/// Public seam (ADR-400): cliout paints CLI text through the same
+/// conversion the swatch and preview use, so the tool wears the theme.
+pub fn style_to_ansi(style: &str) -> String {
     let mut codes: Vec<String> = Vec::new();
     for part in style.split(',') {
         let part = part.trim();

@@ -180,7 +180,12 @@ clicue data status         # current? how big?
 clicue data rebuild        # synchronously, now
 clicue data inspect git    # everything clicue knows about one command
 clicue data forget git     # habits AND harvested flags, gone
+clicue data stats          # usage: run counts, top commands, harvest coverage
 ```
+
+CLI output follows [ADR-400](docs/architecture/tool/ADR-400-cli-output-themed-at-a-tty-plain-when-piped-json-for-data-shaped-commands.md):
+themed with your palette at a tty, plain when piped, and `--json` on the
+data-shaped verbs (`data status|stats|inspect`, `theme list`) for scripts.
 
 ## Architecture
 
