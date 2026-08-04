@@ -11,7 +11,7 @@
 # the real check before publishing a depends change is a clean-chroot
 # build (devtools' extra-x86_64-build) plus namcap on the package.
 pkgname=clicue
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Live, contextual command guidance for zsh — a daemon behind a generated shim"
 arch=('x86_64' 'aarch64')
