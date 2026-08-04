@@ -43,8 +43,12 @@ Three output modes, selected in this order:
    zero ANSI — the `--color=auto` convention. Piping any command yields
    grep-able output without a flag.
 
-Doctor is exempt from theming for now: its report is diagnostic prose,
-often pasted into issues, and its 700-line surface is a separate sweep.
+Two exemptions. Doctor keeps its unthemed report for now: diagnostic
+prose, often pasted into issues, and a 700-line surface that is a
+separate sweep. The theme **swatch** keeps its ANSI even when piped: a
+swatch IS its colours — stripped, it is a row of box glyphs asserting
+nothing — and the machine form of `theme list` is `--json`, not a
+decolourised swatch.
 
 ## Consequences
 

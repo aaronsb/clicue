@@ -290,7 +290,21 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             Ok(())
         }
         DataCmd::Inspect { cmd, json } => {
-            let c = corpus::load(&cache)?;
+            let c = match corpus::load(&cache) {
+                Ok(c) => c,
+                Err(_) if json => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "cmd": cmd,
+                            "corpus": { "path": cache.display().to_string() },
+                            "state": "absent",
+                        })
+                    );
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -302,6 +316,8 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                     .iter()
                     .filter(|(k, _)| **k == cmd || k.starts_with(&prefix))
                     .map(|(k, st)| {
+                        // `pct` is the K7 rank percentile (lower = nearer the
+                        // top), not a share — stats calls its share `share_pct`
                         serde_json::json!({ "invocation": k, "count": st.count, "pct": st.pct })
                     })
                     .collect();
@@ -420,10 +436,12 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             let c = match corpus::load(&cache) {
                 Ok(c) => c,
                 Err(_) if json => {
+                    // Same nesting as the populated shape: `.corpus.path`
+                    // must resolve in both (review #33 finding 1).
                     println!(
                         "{}",
                         serde_json::json!({
-                            "corpus": cache.display().to_string(),
+                            "corpus": { "path": cache.display().to_string() },
                             "state": "absent",
                         })
                     );
@@ -463,9 +481,16 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
             let flags_total: usize = stored.iter().map(|(_, n)| n).sum();
 
             if json {
+                let current = corpus::stamp(&corpus::default_histfile()?, &corpus::path_dirs());
+                let state = match corpus::staleness(&c, &current) {
+                    corpus::Staleness::Current => "current",
+                    corpus::Staleness::TrailingHistory => "trailing-history",
+                    corpus::Staleness::Structural => "stale",
+                };
                 println!(
                     "{}",
                     serde_json::json!({
+                        "state": state,
                         "corpus": {
                             "path": cache.display().to_string(),
                             "distinct_commands": c.freq.len(),
@@ -476,7 +501,9 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                             serde_json::json!({
                                 "cmd": cmd,
                                 "runs": runs,
-                                "pct": (**runs * 100) / total_runs.max(1),
+                                // share of all runs — NOT inspect's `pct`,
+                                // which is the K7 rank percentile
+                                "share_pct": (**runs * 100) / total_runs.max(1),
                             })
                         }).collect::<Vec<_>>(),
                         "top_invocations": inv.iter().take(10).map(|(k, st)| {

@@ -44,19 +44,19 @@ impl Out {
 
     /// Names: commands, paths, theme names.
     pub fn accent(&self, s: &str) -> String {
-        self.paint(&self.theme.palette.accent.clone(), s)
+        self.paint(&self.theme.palette.accent, s)
     }
     /// Descriptions and secondary prose.
     pub fn gloss(&self, s: &str) -> String {
-        self.paint(&self.theme.palette.gloss.clone(), s)
+        self.paint(&self.theme.palette.gloss, s)
     }
     /// Labels, keys, section headers.
     pub fn hint(&self, s: &str) -> String {
-        self.paint(&self.theme.palette.hint.clone(), s)
+        self.paint(&self.theme.palette.hint, s)
     }
     /// Emphasis: warnings, the thing that changed.
     pub fn matched(&self, s: &str) -> String {
-        self.paint(&self.theme.palette.matched.clone(), s)
+        self.paint(&self.theme.palette.matched, s)
     }
 }
 
