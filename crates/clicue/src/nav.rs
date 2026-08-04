@@ -21,10 +21,13 @@ use std::time::{Duration, Instant, SystemTime};
 /// the cap is what bounds a 5k-entry child to ~0.3 ms [MEASURED].
 pub const COUNT_CAP: usize = 100;
 
-/// Total scan budget per render. Warm local filesystems finish in well
-/// under 1 ms; a fired deadline means a cold network mount, and the pane
-/// renders reserved `…` cells that later renders fill (layout keeps height
-/// constant per card-layout H7 — cells, not rows).
+/// Total scan budget per REQUEST — the render thread's whole wait on
+/// [`NavWorker`], across every rings/resolve call one card needs. Warm
+/// local filesystems finish in well under 1 ms; a fired deadline means a
+/// cold or dead mount, and the card degrades honestly (reserved `…`
+/// cells, then paneless) while the worker warms the cache off-thread.
+/// The deadline bounds WAITING, not the syscalls themselves — only the
+/// worker ever blocks on the filesystem.
 pub const SCAN_DEADLINE: Duration = Duration::from_millis(5);
 
 /// A grandchild count, or the reason there isn't one.
@@ -205,6 +208,51 @@ impl NavScanner {
     }
 }
 
+/// The scanner behind a channel: one worker thread owns the cache and does
+/// ALL filesystem I/O, so the render path never blocks on a syscall — it
+/// waits at most until its deadline and then degrades (empty rings, no
+/// resolution row). Without this, one shell sitting on a dead network
+/// mount would wedge the daemon's per-request lock and freeze every
+/// connected shell's card; with it, the wedged mount costs detail, never
+/// liveness. The worker keeps working past the deadline, so the cache is
+/// warm for the next keystroke.
+#[derive(Debug)]
+pub struct NavWorker {
+    tx: std::sync::mpsc::Sender<Job>,
+}
+
+type Job = Box<dyn FnOnce(&mut NavScanner) + Send>;
+
+impl NavWorker {
+    pub fn spawn() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        std::thread::spawn(move || {
+            let mut sc = NavScanner::new();
+            while let Ok(job) = rx.recv() {
+                job(&mut sc);
+            }
+        });
+        Self { tx }
+    }
+
+    /// Run `job` on the worker, waiting only until `deadline`. None when
+    /// the deadline fires first (or the worker is gone) — the caller
+    /// renders without, honestly.
+    pub fn run<T: Send + 'static>(
+        &self,
+        deadline: Instant,
+        job: impl FnOnce(&mut NavScanner) -> T + Send + 'static,
+    ) -> Option<T> {
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        let boxed: Job = Box::new(move |sc| {
+            let _ = rtx.send(job(sc));
+        });
+        self.tx.send(boxed).ok()?;
+        rrx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
+    }
+}
+
 // ── the "you are here" pane content ─────────────────────────────────────
 
 /// What the pane shows, assembled by the engine from relayed place and
@@ -317,6 +365,28 @@ pub struct ResolvedTarget {
 /// relative to pwd — all with logical `..` resolution. None when the
 /// word needs state we do not have (`-` with no oldpwd, `+3` off the
 /// stack) — unknown fails safe to no row, never to a guess.
+/// Enough unquoting for what WE insert ([`shell_component`],
+/// [`shell_path`]): single-quoted segments and backslash escapes. The
+/// resolver sees the buffer's spelling; without this, picking a quoted
+/// name would draw a false "no such directory" over a cd that succeeds.
+fn unquote(typed: &str) -> String {
+    let mut out = String::new();
+    let mut chars = typed.chars();
+    let mut in_quote = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => in_quote = !in_quote,
+            '\\' if !in_quote => {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn resolve_target(
     typed: &str,
     pwd: &str,
@@ -324,6 +394,13 @@ pub fn resolve_target(
     dirstack: &[String],
     home: Option<&str>,
 ) -> Option<ResolvedTarget> {
+    let unquoted;
+    let typed = if typed.contains('\'') || typed.contains('\\') {
+        unquoted = unquote(typed);
+        unquoted.as_str()
+    } else {
+        typed
+    };
     let path: PathBuf = match typed {
         "" | "~" => PathBuf::from(home?),
         "-" => PathBuf::from(oldpwd?),
@@ -343,11 +420,15 @@ pub fn resolve_target(
             };
             PathBuf::from(entry)
         }
-        t if t == "~" || t.starts_with("~/") => {
+        t if t.starts_with("~/") => {
             let mut p = PathBuf::from(home?);
             p.push(&t[2..]);
             p
         }
+        // ~user, ~+, ~-, ~name (named dirs) need shell state we do not
+        // relay; treating them as relative would produce a confidently
+        // wrong "no such directory" for a cd that succeeds. No row.
+        t if t.starts_with('~') => return None,
         t if t.starts_with('/') => PathBuf::from(t),
         t => {
             let mut p = PathBuf::from(pwd);
@@ -415,8 +496,46 @@ pub fn did_you_mean(
     // (deferred), where rank supplies the confidence a prefix lacks.
     let exact: Vec<&PathBuf> = pool.iter().filter(|p| name_of(p) == want).collect();
     match exact.len() {
-        1 => Some(exact[0].clone()),
-        _ => None, // absent or ambiguous — silence either way
+        // The winner is stat'ed before it is offered: dirstack and oldpwd
+        // entries outlive the directories they name, and a recommendation
+        // that itself fails to resolve is worse than silence.
+        1 if fs::metadata(exact[0]).map(|m| m.is_dir()).unwrap_or(false) => Some(exact[0].clone()),
+        _ => None, // absent, ambiguous, or gone — silence either way
+    }
+}
+
+// ── shell spelling ──────────────────────────────────────────────────────
+
+/// True when every character rides the shell untouched — alphanumerics
+/// (any script) plus `extra`. Anything else needs quoting before it can
+/// be inserted into an executable buffer.
+fn shell_quiet(s: &str, extra: &[char]) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || extra.contains(&c))
+}
+
+/// A single directory NAME in a spelling that survives the shell: quiet
+/// names as-is, anything else single-quoted (`'` escaped the POSIX way).
+/// Raw filesystem names go into a buffer Enter executes — a space would
+/// split the argument, and `` ` ``/`$(…)`/`;` in a hostile name (a cloned
+/// repo chooses its own directory names) would run.
+pub fn shell_component(name: &str) -> String {
+    if shell_quiet(name, &['.', '_', '-', '+']) {
+        name.into()
+    } else {
+        format!("'{}'", name.replace('\'', r"'\''"))
+    }
+}
+
+/// A suggested PATH in a spelling that survives the shell: the `~`-display
+/// when quiet (`~` must expand, so it cannot be quoted), else the absolute
+/// path quoted whole.
+pub fn shell_path(display: &str, abs: &Path) -> String {
+    if shell_quiet(display, &['/', '.', '_', '-', '~', '+']) {
+        display.into()
+    } else {
+        format!("'{}'", abs.to_string_lossy().replace('\'', r"'\''"))
     }
 }
 
@@ -635,11 +754,45 @@ mod tests {
         // compsys's job, so the correction stays silent.
         assert_eq!(did_you_mean("alp", &pwds, &rings, None, &[]), None);
         assert_eq!(did_you_mean("alpha", &pwds, &rings, None, &[]), None);
-        // The dirstack is part of the pool.
-        let ds = vec!["/somewhere/target-dir".to_string()];
+        // The dirstack is part of the pool — when its entry still exists.
+        let stacked = fx.0.join("elsewhere/target-dir");
+        fs::create_dir_all(&stacked).unwrap();
+        let ds = vec![stacked.to_string_lossy().into_owned()];
         assert_eq!(
             did_you_mean("target-dir", &pwds, &rings, None, &ds),
-            Some(PathBuf::from("/somewhere/target-dir"))
+            Some(stacked)
+        );
+        // A stale entry — the directory is gone — is never recommended:
+        // the winner is stat'ed and dropped (design note).
+        let ds = vec!["/nonexistent/clicue-gone/target-dir".to_string()];
+        assert_eq!(did_you_mean("target-dir", &pwds, &rings, None, &ds), None);
+    }
+
+    #[test]
+    fn unrelayed_tilde_forms_fail_safe_to_no_row() {
+        // ~user/~+/~- need shell state we lack; the relative-arm fallback
+        // would say "no such directory" about a cd that succeeds.
+        let r = |t: &str| resolve_target(t, "/pwd", Some("/old"), &[], Some("/home/op"));
+        assert!(r("~root").is_none());
+        assert!(r("~+").is_none());
+        assert!(r("~-").is_none());
+        assert!(r("~named/sub").is_none());
+        assert!(r("~/x").is_some(), "plain ~/ still resolves");
+    }
+
+    #[test]
+    fn shell_spelling_quotes_what_the_shell_would_eat() {
+        assert_eq!(shell_component("alpha"), "alpha");
+        assert_eq!(shell_component("caf\u{e9}"), "caf\u{e9}");
+        assert_eq!(shell_component("my dir"), "'my dir'");
+        assert_eq!(shell_component("a;rm -rf"), "'a;rm -rf'");
+        assert_eq!(shell_component("$(boom)"), "'$(boom)'");
+        assert_eq!(shell_component("it's"), r"'it'\''s'");
+        assert_eq!(shell_path("~/Projects", Path::new("/home/op/Projects")), "~/Projects");
+        assert_eq!(
+            shell_path("~/my dir", Path::new("/home/op/my dir")),
+            "'/home/op/my dir'",
+            "a quoted ~ would not expand — the absolute path rides instead"
         );
     }
 

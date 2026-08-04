@@ -147,12 +147,18 @@ unbounded walk and is not promised. Above: the breadcrumb answers it for free.
 
 Mechanics: cache per `(dir, mtime)`, revalidated by one stat per render; the daemon
 outlives shells, so the cache is shared. Dotdirs fold into a `+n hidden` cell.
-Symlinks are not followed. A total scan deadline (~5 ms) covers cold network
-filesystems: on overrun, render breadcrumb and names with reserved `…` cells where
-counts go, and fill them on a later render — **cells, not rows**, so card height
-never changes for a given buffer (layout H7). Scanning is event-driven only; a
-non-interactive shell has no ZLE, never loads the shim, and can never reach this
-path, so scripts are structurally unaffected.
+Symlinks are not followed. All nav filesystem I/O — rings, counts, the existence
+stat behind resolution — runs on a dedicated scanner worker thread; the request
+thread (which holds the sessions lock) sends a job and waits at most a per-request
+deadline (~5 ms across every call one card makes), then renders without. The
+deadline therefore bounds **waiting, not syscalls**: a cold or dead network mount
+degrades the card by degrees — reserved `…` cells where counts go, then paneless,
+row-less renders — while the worker warms the cache off-thread, and no shell's card
+ever wedges on another shell's mount [review PR #26: the first cut held a shared
+lock across the scan, which would have frozen every connected shell]. Fill-later is
+**cells, not rows**, so card height never changes for a given buffer (layout H7).
+Scanning is event-driven only; a non-interactive shell has no ZLE, never loads the
+shim, and can never reach this path, so scripts are structurally unaffected.
 
 For `pushd`/`popd`/`cd -N`, the dirstack is rendered with indexes and full paths —
 this is not a special presentation; the dirstack *is* the complete candidate space
