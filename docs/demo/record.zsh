@@ -35,6 +35,11 @@ pty_start demo
 # chatter are harness plumbing, not demo material (review #14 caught the
 # probe — local paths included — opening the published cast).
 T_ECHO=1
+# The boot drain above ate the shell's first prompt paint, so without a
+# repaint the recording opens on a bare line and the first keystrokes
+# echo un-prompted ('gi' stranded at column 1, visible in the published
+# gif). ^L repaints the prompt at the top before any typing.
+pty_key $'\x0c'; beat 0.5
 
 # ── act 1: command cards from your own history ─────────────────────────
 say 'git '
