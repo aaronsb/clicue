@@ -21,3 +21,10 @@ _Architecture, data model, ranking and corpus semantics_
 | ADR | Title | Status |
 |-----|-------|--------|
 | [ADR-100](./core/ADR-100-rebuild-as-a-rust-daemon-behind-a-generated-zsh-shim.md) | Rebuild as a Rust daemon behind a generated zsh shim | Accepted |
+
+## Tool
+_CLI tool surface — install, doctor, config, theme, data_
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [ADR-400](./tool/ADR-400-cli-output-themed-at-a-tty-plain-when-piped-json-for-data-shaped-commands.md) | CLI output: themed at a tty, plain when piped, --json for data-shaped commands | Accepted |

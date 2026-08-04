@@ -12,6 +12,7 @@
 //! - `doctor`   — live-shell probing and the conflict catalog
 //! - `shim`     — the generated zsh source
 
+pub mod cliout;
 pub mod config;
 pub mod corpus;
 pub mod daemon;
