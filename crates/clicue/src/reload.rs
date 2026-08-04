@@ -248,6 +248,7 @@ mod tests {
                 pending: None,
                 env: None,
                 hist: vec![],
+                nav: None,
             })
             .unwrap(),
         )

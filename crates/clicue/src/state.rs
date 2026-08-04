@@ -26,6 +26,13 @@ pub struct Position {
     pub words: Vec<String>,
     /// The segment ends in whitespace (a fresh word position).
     pub trailing: bool,
+    /// The word under the cursor is unambiguously filesystem (`/` or a
+    /// leading `~`). Compsys owns completing it — but whether that means
+    /// standing DOWN is the caller's call, not this function's: for a
+    /// navigational command a path is exactly what the card explains
+    /// (design note navigation-and-place.md), so the verdict needs the
+    /// command class, which pure buffer analysis does not have.
+    pub pathlike: bool,
 }
 
 /// Why clicue is standing down for this event.
@@ -35,9 +42,6 @@ pub enum StandDown {
     TooShort,
     /// Command position starting with `-`, `.` or `/` — pathish typing.
     PathLike,
-    /// Argument token is unambiguously filesystem (`/` or `~` present) —
-    /// compsys owns this entirely (clicue.zsh:303).
-    Filesystem,
     /// zsh's own completion menu owns the display (clicue.zsh:250).
     MenuSelect,
     /// Operator dismissed this exact buffer (Esc; clicue.zsh:239–245).
@@ -118,15 +122,14 @@ pub fn analyze(buffer: &str, min_input: usize) -> Result<Position, StandDown> {
             optctx: false,
             words,
             trailing,
+            pathlike: false,
         });
     }
 
     // ── argument position ───────────────────────────────────────────
     let cmd = words[0].clone();
     let last = words.last().cloned().unwrap_or_default();
-    if last.contains('/') || last.starts_with('~') {
-        return Err(StandDown::Filesystem);
-    }
+    let pathlike = last.contains('/') || last.starts_with('~');
     // Path from non-flag tokens BEFORE the word being typed. With a
     // trailing space every word is complete; otherwise the last word is
     // the one being typed and does not extend the path.
@@ -152,6 +155,7 @@ pub fn analyze(buffer: &str, min_input: usize) -> Result<Position, StandDown> {
         optctx,
         words,
         trailing,
+        pathlike,
     })
 }
 
@@ -225,19 +229,30 @@ impl SessionState {
     /// Will the next Tab INSERT rather than move? True when the only
     /// candidate is exactly what is typed (keys.md T-rules; prototype
     /// _clicue_tab_inserts).
-    pub fn tab_inserts(&self, cues: usize, first_is_exact_pfx: bool, info: bool) -> bool {
-        !info && cues == 1 && first_is_exact_pfx
+    pub fn tab_inserts(&self, cues: usize, _first_is_exact_pfx: bool, info: bool) -> bool {
+        // A sole candidate inserts whether or not it is fully typed (T4,
+        // amended): cycling a one-item list does nothing visible, and a
+        // unique completion inserting on the completion key is the
+        // universal contract — `cd Pr<Tab>ai<Tab>ag<Tab><Enter>` must
+        // stay one gesture per level. Ambiguity earns the card.
+        !info && cues == 1
     }
 
     /// Tab cycling within tier 1 (keys.md T5): engage, advance, wrap at
     /// the tier-1 boundary. `just_harvested` presses land on cue 1.
     pub fn tab_cycle(&mut self, t1n: usize, total: usize, just_harvested: bool) {
+        // The FIRST press engages and sits on cue 1 (T3/T5: the ranked
+        // top is "usually one press"); only an already-engaged press
+        // advances. `sel` defaults to 1 before engagement, so advancing
+        // unconditionally skipped the top cue — first Tab landed on 2,
+        // masked for years by single-cue wrap [MEASURED 2026-08-03].
+        let was_engaged = self.engaged;
         self.engaged = true;
         let lim = if t1n == 0 || t1n > total { total } else { t1n };
         if lim == 0 {
             return;
         }
-        if just_harvested || self.sel == 0 {
+        if just_harvested || self.sel == 0 || !was_engaged {
             self.sel = 1;
         } else {
             self.sel += 1;
@@ -293,8 +308,15 @@ mod tests {
         assert_eq!(p.cmdpath, "gh:org:list");
         assert!(p.optctx);
 
-        assert_eq!(analyze("cat src/ma", 1), Err(StandDown::Filesystem));
-        assert_eq!(analyze("ls ~/pro", 1), Err(StandDown::Filesystem));
+        // Pathlike is a FACT on the position now, not a verdict — the
+        // engine stands down unless the command is navigational.
+        assert!(analyze("cat src/ma", 1).unwrap().pathlike);
+        assert!(analyze("ls ~/pro", 1).unwrap().pathlike);
+        assert!(analyze("cd ../..", 1).unwrap().pathlike);
+        assert!(
+            analyze("cat src/ma ", 1).unwrap().pathlike,
+            "same fact after the trailing space — unchanged from the Err era"
+        );
     }
 
     #[test]
@@ -330,11 +352,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_inserts_only_on_exact_single() {
+    fn tab_inserts_on_any_sole_candidate() {
         let s = SessionState::default();
         assert!(s.tab_inserts(1, true, false));
         assert!(!s.tab_inserts(1, true, true)); // info card
         assert!(!s.tab_inserts(2, true, false));
-        assert!(!s.tab_inserts(1, false, false));
+        assert!(
+            s.tab_inserts(1, false, false),
+            "a unique completion inserts — the universal contract (T4 amended)"
+        );
     }
 }

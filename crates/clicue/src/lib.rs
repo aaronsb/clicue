@@ -21,6 +21,7 @@ pub mod flags;
 pub mod install;
 pub mod layout;
 pub mod model;
+pub mod nav;
 pub mod protocol;
 pub mod rank;
 pub mod reload;

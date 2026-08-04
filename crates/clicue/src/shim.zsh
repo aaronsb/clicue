@@ -189,9 +189,14 @@ _clicue_disconnect() {
   _clicue_fd=
 }
 
-# One request line out, one reply line in, 5ms read deadline (spec §8). One
-# reconnect attempt per event, never more — reconnect costs 0.26ms measured,
-# but a wedged daemon must cost one deadline, not several.
+# One request line out, one reply line in, 25ms read deadline (spec §8,
+# amended: 5ms was measured against sub-KB replies; a nav card is ~27KB
+# with a harvest-laden request, and the round trip measured 9-10ms — the
+# old deadline failed HEALTHY traffic at the edge, and a fired deadline
+# delegates the completion key, which inserts [MEASURED 2026-08-03]). One
+# reconnect attempt per event, never more — a wedged daemon must cost one
+# deadline, not several; 25ms is the typing-latency gate, so the worst
+# wedge costs one gated keystroke.
 _clicue_rpc() {
   (( _clicue_dead )) && return 1
   local -i attempt
@@ -201,7 +206,7 @@ _clicue_rpc() {
     if syswrite -o $_clicue_fd "$1"$'\n' 2>/dev/null; then
       buf=''
       while [[ $buf != *$'\n' ]]; do
-        if ! sysread -i $_clicue_fd -t 0.005 chunk 2>/dev/null; then
+        if ! sysread -i $_clicue_fd -t 0.025 chunk 2>/dev/null; then
           buf=''
           break
         fi
@@ -303,6 +308,28 @@ _clicue_apply() {
   return 0
 }
 
+# ── nav context: relayed place, never recorded (spec §4c) ────────────────────
+# $PWD, $OLDPWD and $dirstack ride every request so the daemon can render
+# "you are here" — used for that reply, never persisted (the relay/record
+# line of §4c). $dirstack needs zsh/parameter, like $history; unloaded, the
+# expansion is empty and the field degrades to pwd alone. No conditionals
+# beyond set-ness: sending is not a decision (§4).
+_clicue_nav_json() {
+  local out d ds=''
+  _clicue_json_esc "$PWD"
+  out='"pwd":"'$REPLY'"'
+  if [[ -n $OLDPWD ]]; then
+    _clicue_json_esc "$OLDPWD"
+    out+=',"oldpwd":"'$REPLY'"'
+  fi
+  for d in "${(@)dirstack}"; do
+    _clicue_json_esc "$d"
+    ds+="${ds:+,}\"$REPLY\""
+  done
+  [[ -n $ds ]] && out+=',"dirstack":['$ds']'
+  REPLY=',"nav":{'$out'}'
+}
+
 # ── requests ─────────────────────────────────────────────────────────────────
 # $1 = event JSON fragment. Builds the full request into REPLY. A pending
 # harvest fragment (set by _clicue_harvest) rides exactly one request.
@@ -310,9 +337,11 @@ _clicue_request() {
   local ev=$1
   _clicue_hist_json
   local hist=$REPLY
+  _clicue_nav_json
+  local nav=$REPLY
   _clicue_json_esc "$BUFFER"
   local buf=$REPLY
-  REPLY='{"v":'$_clicue_v',"session":{"pid":'$$',"start":'$_clicue_start'},"event":'$ev',"buffer":"'$buf'","cursor":'${CURSOR:-0}',"cols":'${COLUMNS:-80}',"lines":'${LINES:-24}',"keymap":"'${KEYMAP:-main}'"'$hist$_clicue_pending'}'
+  REPLY='{"v":'$_clicue_v',"session":{"pid":'$$',"start":'$_clicue_start'},"event":'$ev',"buffer":"'$buf'","cursor":'${CURSOR:-0}',"cols":'${COLUMNS:-80}',"lines":'${LINES:-24}',"keymap":"'${KEYMAP:-main}'"'$nav$hist$_clicue_pending'}'
   _clicue_pending=''
 }
 
@@ -629,7 +658,11 @@ _clicue_w_up()       { _clicue_key arrow-up    "${_clicue_fb[up]:-up-line-or-his
 _clicue_w_down()     { _clicue_key arrow-down  "${_clicue_fb[down]:-down-line-or-history}" }
 _clicue_w_left()     { _clicue_key arrow-left  "${_clicue_fb[left]:-backward-char}" }
 _clicue_w_right()    { _clicue_key arrow-right "${_clicue_fb[right]:-forward-char}" }
-_clicue_w_enter()    { _clicue_key insert      "${_clicue_fb[enter]:-accept-line}" }
+# Wire name "enter", matching the engine's dispatch — this was "insert"
+# once, which no engine arm matched, so every Enter fell through to
+# accept-line and RAN the command while the legend advertised ⏎ insert
+# (E1/E2 violated in one word, caught live 2026-08-03).
+_clicue_w_enter()    { _clicue_key enter       "${_clicue_fb[enter]:-accept-line}" }
 _clicue_w_home()     { _clicue_key home        "${_clicue_fb[home]:-beginning-of-line}" }
 _clicue_w_end()      { _clicue_key end         "${_clicue_fb[end]:-end-of-line}" }
 _clicue_w_pgup()     { _clicue_key page-up     "${_clicue_fb[pgup]:-beginning-of-buffer-or-history}" }

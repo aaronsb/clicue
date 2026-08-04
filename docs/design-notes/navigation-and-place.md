@@ -1,0 +1,378 @@
+# Navigation is about place, and place is relayed, never recorded
+
+> Status: **proposal, implementation starting.** Sibling to
+> [composition-and-comprehension.md](composition-and-comprehension.md) (which split
+> the card into two jobs) and
+> [habits-in-argument-position.md](habits-in-argument-position.md) (which decided
+> what fills the composition half). This note decides what the card does when the
+> command *is a movement* — `cd`, `pushd`, `popd`, `dirs` — and why the first slice
+> of it needs no history at all.
+
+## The value being protected
+
+Stated by the operator, across three remarks that pull in different directions and
+must all survive:
+
+> thinking about when a cd */to/* a directory vs */from/* a directory, and its
+> commonality. for example `cd ~` I often invoke anywhere as a 'return to home base'
+
+> maybe they're just used to 30 years of using `cd` everywhere, maybe someone else
+> uses pushd and popd all the time — we don't really know
+
+> we don't want to force a design decision
+
+The first names the real structure of navigation habits: some destinations are
+**source-independent** (home base, reachable from anywhere) and some are
+**source-conditional** (from this project root, you usually go one place). The second
+forbids the tool from having an opinion about which navigation dialect an operator
+speaks. The third, said about theming, generalises: where this note can define a
+semantic contract instead of a concrete rendering, it must.
+
+A fourth value arrived with a deadline attached: the tool will be put in front of
+operators with **empty histories** — people who have only ever opened a terminal
+with a stock zsh, learning why `git clone` from a directory of their choosing is
+something to understand rather than delegate. What serves them is decided below, and
+it turns out to be exactly the part that needs no data.
+
+## Measured: history cannot fund a ranked-destination card **[MEASURED]**
+
+Probed against a real 1,792-line history, 340 of them cd-family:
+
+| shape | count | usable as a ranked destination? |
+|---|---|---|
+| relative (`cd <name>`) | 311 (91%) | no — meaning depends on the cwd at the time, which history never recorded |
+| absolute / `~/`-anchored | 17 | yes, but thin |
+| `cd ~` exactly | 1 | see below |
+| bare `cd`, `cd -` | 1 each | same |
+
+Two findings, both extensions of the habits note:
+
+1. **The motivating example is invisible in the data.** The operator describes
+   `cd ~` as their most habitual invocation, and `HIST_IGNORE_ALL_DUPS` collapses it
+   to exactly one line — the same count as a typo. This is "counting is structurally
+   broken" at its limit: the invocation that is habitual *precisely because it is
+   retyped identically from anywhere* is the one a deduplicated history cannot
+   distinguish from noise. Recency does not rescue it either: `cd ~` is refreshed
+   often, but so is every recent one-off.
+2. **91% of the data is unanchorable.** History records the *text* of navigation,
+   not the *place*. `cd <name>` 28 times almost certainly means one directory — but
+   that is an inference about the operator, not evidence. This gap is exactly what
+   zoxide fills by instrumenting `chpwd`, and exactly what this project's promises
+   prevent it from filling the same way (next section).
+
+Consequence: **ranked destination proposals are deferred**, not designed here. The
+slice below is everything that needs no ranking — and the empty-history audience
+makes the same cut from the other side: they have no habits to rank, and need all of
+what remains.
+
+## Relay, never record
+
+The pane below needs the shell's place: `$PWD`, `$OLDPWD`, the dirstack. These are
+**relayed** with the request — read at request time, used for that render, never
+persisted. The distinction is the same one the protocol already draws for the
+compsys harvest, and it is a hard line, not a preference:
+
+- The project promises `HIST_IGNORE_SPACE` works as a per-command opt-out. A
+  space-prefixed ` cd <secret>` never enters history — but a `chpwd`-based recorder
+  would capture the transition anyway. Recording place does not merely bend the
+  no-instrumentation promise; it **defeats an existing opt-out**.
+- Consuming zoxide's database, when the operator has installed zoxide, stays on the
+  right side of the line: they opted into that recorder themselves, and it carries
+  its own opt-out (`_ZO_EXCLUDE_DIRS`). That is the compsys pattern — consume the
+  engine, add ranking and presentation — and it is the *deferred* path to ranked
+  destinations, not part of this slice.
+
+Spec consequence (protocol.md): nav context is an optional request field; the daemon
+must never write it to disk. Sibling constraint to sources.md D4.
+
+## The navigational class
+
+`cd`, `pushd`, `popd` sit in `pathish`, so tier 1 is flag-only invocation keys —
+which for `cd` means the card is empty by design. The pathish rationale (F1: a
+remembered path may be stale, and a stale *destructive* path inverts the tool's
+purpose) fails twice for navigation:
+
+1. Navigation is non-destructive. The worst stale proposal costs an error message.
+2. Unlike an `rm` argument, a navigation target's staleness is **verifiable before
+   render** — stat it and drop it.
+
+`pathish` was built for commands whose path arguments are *data*; for the cd family
+the path is the *entire habit*. So: a **navigational** class — `cd`, `chdir`,
+`pushd`, `popd`, `dirs` — resolved through the same effective-command walk and alias
+map as pathish. It begins as a runtime constant; when the corpus builder starts
+emitting destination data it moves into the corpus for the G2 reason (one copy of a
+judgement call, or two copies drift). Membership stays a judgement call exactly as
+pathish's is.
+
+Dialect neutrality falls out of the class being about *shape*, not verbs: every
+member gets the same pane, destination data (when it exists) pools across verbs — a
+place you go often is a habit regardless of which verb takes you there — and the
+verb typed decides only what the explanation pane explains. Nobody is asked whether
+they are a pushd person. One honest edge: an operator with `AUTO_PUSHD` has a
+dirstack whether they know it or not; showing it is disclosure of state that exists,
+not a recommendation. Discovery by seeing is the only teaching this product does.
+
+## Decision — the zero-data slice
+
+Five pieces, each usable with an empty history:
+
+### 1. Nav context in the protocol
+
+`pwd`, `oldpwd`, `dirstack` as an optional request field, following the
+`pending`/`env` pattern. Relay-only per above.
+
+### 2. The fisheye "you are here" pane
+
+For a navigational command in argument position, the comprehension box becomes a
+degree-of-interest view of place. Detail falls off with distance, and the falloff
+**is** the cost model:
+
+| ring | source | cost [MEASURED, warm] |
+|---|---|---|
+| ancestors (breadcrumb) | string-split of relayed pwd | zero I/O |
+| siblings + children | one `read_dir` each | ~0.01 ms |
+| grandchild counts | one `read_dir` per child, early-stop at 100 | 0.1–0.3 ms even for `/usr` and a build dir |
+
+Uncapped, counting `/usr/bin`'s ~5k entries cost 3.0 ms; the display cap ("99+")
+bounds the scan too. Below the count ring: nothing — "how many levels down" is an
+unbounded walk and is not promised. Above: the breadcrumb answers it for free.
+
+```
+├ you are here ─────────────────────────────────────────┤
+│  ~ › Projects › app › clicue                           │
+│  ▾ crates/ 1    docs/ 4       spec/ 9     tests/ 3     │
+│    dist/ 2      packaging/ 3  prototype/ 6   +3 more   │
+│  ⌂ beside you: patchbay · yay-friend · +6 more         │
+```
+
+Mechanics: cache per `(dir, mtime)`, revalidated by one stat per render; the daemon
+outlives shells, so the cache is shared. Dotdirs fold into a `+n hidden` cell.
+Symlinks are not followed. All nav filesystem I/O — rings, counts, the existence
+stat behind resolution — runs on a dedicated scanner worker thread; the request
+thread (which holds the sessions lock) sends a job and waits at most a per-request
+deadline (~5 ms across every call one card makes), then renders without. The
+deadline therefore bounds **waiting, not syscalls**: a cold or dead network mount
+degrades the card by degrees — reserved `…` cells where counts go, then paneless,
+row-less renders — while the worker warms the cache off-thread, and no shell's card
+ever wedges on another shell's mount [review PR #26: the first cut held a shared
+lock across the scan, which would have frozen every connected shell]. Fill-later is
+**cells, not rows**, so card height never changes for a given buffer (layout H7).
+Scanning is event-driven only; a non-interactive shell has no ZLE, never loads the
+shim, and can never reach this path, so scripts are structurally unaffected.
+
+For `pushd`/`popd`/`cd -N`, the dirstack is rendered with indexes and full paths —
+this is not a special presentation; the dirstack *is* the complete candidate space
+for those commands, so showing it is the tier-2 contract taken literally. The
+landing entry is marked.
+
+### 2a. "You are going" — the symmetric destination pane
+
+Named by the operator, with the symmetry as the requirement: the same rings drawn
+around where the line will take you. It appears when the typed target resolves
+(and for a bare `popd`/`pushd`, whose landing is determined); a failing target
+gets no going pane — the failure row already says everything true. A bare `cd `
+is withheld too: its implicit home destination is real, but nothing was typed to
+explain, and doubling the idle card's height buys nothing.
+
+The acceptance pair, stated by the operator: `cd .` draws the same place on both
+maps; `cd ..` draws the parent on the going map with the operator's own directory
+visible as a child, one removed — marked by *style*, not glyph (every shipped
+posture has an emphasis channel, and no glyph vocabulary is spent, T7). One
+renderer serves both panes; the headers and the sibling row's pronoun ("beside
+you" / "beside it") are the whole difference.
+
+### 2b. Locations are navigable — through the machinery that already navigates
+
+Stated by the operator as two constraints that sound opposed and are not: never
+break the universal `cd<completion-key>` contract, and let arrows walk the
+destination map with many items (80) and insert. The resolution: destination
+children become **cues** — the grid already does arrows, paging, maximize
+(`[keys] maximize`, default Alt+M — the operator's ^B is a config edit), and
+Enter-insertion, so the map's names graduate into it rather than growing their
+own navigation. The panes keep orientation (breadcrumb, stack, siblings, hidden)
+and stop repeating children the grid covers; the grid border names the place
+(`24 inside ~/Projects/app`).
+
+The completion contract survives by role, not by exception: our children are
+**fork-free provisional membership** — the flag cache's role — and on the
+completion key compsys harvests and its membership supersedes (H6). Nothing here
+touches what that key does, and the key itself was never hardcoded: the shim
+binds the accept *action* to `[keys] accept` and delegates to whichever
+completion widget it captured.
+
+Mechanics: inserted entries carry a `/` suffix, so Enter descends and the card
+follows — the build-up loop. A trailing-slash base sources its own children
+(`crates/` → inside crates); an all-dots leaf is a base (`cd ..` offers the
+parent's children as `../name` — up and back down in one gesture). Two more
+mid-typing silences joined the earlier ones: the failure row stays quiet while a
+completion is on offer (an unfinished name is not a failed target), and
+navigation's ghost is the engaged cue or nothing — the top-cue stem ghosted
+`/boot` after `cd ..` before that rule closed over it. Dotdir names are not held
+(the scanner folds them to a count); a dot-leaf offers nothing until compsys
+speaks.
+
+**Attention drives the map.** While the operator arrows over destination
+candidates, the going pane previews the *highlighted* one — breadcrumb, its
+children, its siblings — reverting to the typed target when disengaged. This is
+the Miller attention model arriving through the pane that already existed:
+arrow onto `ai/` and you are looking inside it before you commit. It composes
+with the base flow (`cd ../../<Tab>`, arrow, Enter) into pure
+navigate-by-looking. One hardening came with it: compsys's IPREFIX (the
+consumed `../../`) is re-prepended to harvested words on insert — the old rule
+covered only dash clusters, and this path was unreachable before pathlike
+buffers kept their card.
+
+**The going pane is a fixed shape, and panes fit whole or not at all.** Both
+rules arrived from an 80×24 pty **[MEASURED]**. Attention retargets the going
+pane within one buffer, so a pane whose height tracked its content was H7's
+exact hazard — the card grew as the preview did and pushed the legend
+off-screen. The going box is therefore border + four body rows, padded blank,
+reserved (with a hint line) from the first render in which arrowing could
+summon it. And pane rows were being carved from the grid's share without being
+clamped to it — past the budget they simply leaked, and ZLE clipped the card's
+bottom. The r2 share now has explicit tenants in order: explanation first
+(S5), then the here pane, then the going pane, each fitting WHOLE or dropping
+whole — a missing pane reads better than a mangled card — then the grid takes
+the remainder. Consequence stated plainly: an 80×24 terminal shows one pane,
+not two; both panes plus an explanation want ~30 lines.
+
+### 3. Resolution and existence
+
+Every navigation target the operator has typed resolves against relayed place and
+says where it lands: `-` → old pwd, `..` → parent, `+2` → dirstack entry, a
+relative name → its absolute resolution, each with an existence mark. The habits
+note found 91% of cd lines are relative and therefore useless as *proposals*; as
+*comprehension* they are fully resolvable, and the card catches a doomed `cd` before
+Enter instead of after. This is also where the empty-history audience lives: the
+lesson "commands act where you are" is not told, it is made ambient.
+
+Two more rules arrived from the first minutes of live use **[MEASURED]**:
+
+- **A pathlike word stands the card down only for non-navigational commands.**
+  The blanket Filesystem stand-down (any word with `/` or leading `~`) predates
+  commands for which the path IS the content: `cd ../..` lost its entire card at
+  the second dot. Pathlike is now a fact on the analyzed position; the engine —
+  which knows the command class — renders the verdict. `cat src/ma` still belongs
+  to compsys.
+- **No whole-line history ghost for navigational commands.** The pathish decision
+  kept remembered lines out of cd's cues (F1) but the ghost never got the rule:
+  `cd ..` ghosted the remainder of an old `cd ....` line — a relative path from
+  another cwd, the 91% finding proposed as ghost text. Navigation's ghost comes
+  from the engaged cue or nothing.
+
+### 4. Failure-only recommendation
+
+> **Recommend only at the moment the typed line is about to fail. Otherwise,
+> explain.**
+
+"Did you mean" fires only when (the target does not resolve from here) AND (exactly
+one known directory — dirstack, ancestors, scanned children/siblings in this slice;
+the ranked pool later — carries exactly the typed final component as its name). It
+is a candidate row, Tab-reachable, never a buffer rewrite (H8: losing what you typed
+is the worst outcome). Ambiguity degrades to silence — guessing wrong three ways is
+worse than the honest resolution-failure row alone. The rule's payoff is structural:
+the recommendation surface cannot accumulate, and an operator who never mistypes
+never sees one. Recommending at success-point ("you could have used `z`") is nagging
+at a 30-year habit and is rejected below.
+
+Two constraints arrived while building it, both from the e2e pty and both the
+failure-only rule defending itself **[MEASURED]**:
+
+- **A match in the directory the typed path already points at is excluded.**
+  Mid-word, every keystroke of a correct name is transiently "failing", and the
+  card recommended `projects-dir` on every letter of `projects-dir` being typed —
+  a completion wearing a correction's clothes, and completion is compsys's job.
+  The suggestion corrects *place*, never spelling-in-progress.
+- **No prefix fallback — exact name or silence.** The first cut matched unique
+  prefixes, and a transient `pr` confidently suggested a stranger's
+  `/tmp/pressure-vessel-libs-…`. A prefix carries no evidence of intent; rank
+  would supply that, and rank is the deferred half. Until then a prefix is not a
+  match.
+
+### 5. `nav.view` — two views later, one now, and off means off
+
+```toml
+[nav]
+view = "fisheye"   # fisheye | columns | off
+```
+
+Default `fisheye` (survives every width; the pane it replaces was near-empty for
+nav commands, so default-on displaces nothing in use). `off` disables the scanner
+entirely — no hidden I/O behind a hidden pane. `columns` (Miller columns: parent |
+here | attended child, headers carrying orientation, familiar from Finder and
+ranger) is designed but **deferred**; until it renders, the parser rejects the
+value rather than accepting a spelling that lies — accepting-and-substituting is
+design value 1's invisible fallback. When it lands it needs a width floor with a
+*visible* fallback (config provenance names it), and both views are projections of
+the same ring data: one scanner, two renderers.
+
+### Falloff is semantic; themes own its look
+
+The renderer emits three distance classes — `falloff-0/1/2` (focus, adjacent,
+distant) — and the theme binds each to a palette entry and a glyph-set entry. Aura
+can bind brightness interpolation; mono binds weight and dimming (its whole
+vocabulary); a theme author can bind a braille density ramp; plain binds nothing and
+**structural falloff** — names → counts → `+n more` → nothing — carries the meaning
+alone, which is why it is the information design and not themable. The renderer says
+how far; the theme says what far looks like. Nothing is hardcoded, per the operator's
+stated constraint.
+
+One hazard recorded now because it is this project's kind of bug: the CP437 shades
+`░ ▒ ▓` (U+2591–2593) are East-Asian-**ambiguous** width — `unicode-width` says one
+column, CJK-configured terminals may render two, the T6 failure arriving through a
+side door. Theme validation warns on ambiguous-width bindings (the T7 posture: the
+author who knows their terminal opts in; the default never gambles), and shades are
+used only in fill positions, where a disagreement truncates a fill instead of
+misaligning content. In this slice the pane emits distance via existing theme
+styles; the `falloff-*` vocabulary lands with the theming work, spec first.
+
+## Rejected
+
+**A chpwd recorder of our own.** Defeats `HIST_IGNORE_SPACE`, per above. This is
+the one rejection that is a promise, not a trade-off.
+
+**Whole history lines for cd** (the F1 debate rerun for navigation). Not for
+staleness this time — 91% of the lines are relative and unanchorable. The data is
+simply not there.
+
+**Success-point recommendations.** A card that interrupts a working `cd` to promote
+a different verb demands complexity from the operator to *stop* being helped. The
+familiarity gate ships off for the same reason (J3).
+
+**Subsequence-fuzzy matching** for partial destinations. Component-anchored prefix
+matching at most; H8's incident (completion rewriting `cat -l1` to `cat -A`) stands
+as the boundary — clever matching that loses what you typed costs more than it
+saves.
+
+## What it costs
+
+- A protocol field and its spec constraint; a version-compatibility check for the
+  additive case.
+- A scanner module with a cache, a cap, and a deadline — three knobs that must each
+  be tested, including permission-denied and symlink-loop fixtures.
+- The layout engine learns a second pane shape inside the existing height budget;
+  the reserved-cell fill must be exercised for height constancy.
+- A second judgement-call list (navigational), with the G2 drift obligation when it
+  reaches the corpus.
+- An e2e scenario (`tests/scenarios/`) for the pane: the zpty harness can now
+  exercise a real shell, so breadcrumb rendering, count-fill without height jump,
+  and a live `nav.view` flip are provable there; what still needs a human at a
+  prompt is the subjective part — whether the pane reads as orientation or noise.
+
+## Open, and deliberately not decided here
+
+- **Ranked destinations** — the pooled cross-verb destination map, zoxide as an
+  opted-in source, existence-checked history fallback, and whether tier 1 should mix
+  contextual candidates (high-ranked subdirectories of here) above global ones. The
+  from/to question in its sharpest form; wants a week of real navigation against
+  both orderings, not an argument.
+- **Miller columns** — column headers' exact grammar, the width floor number, and
+  whether the attended-child column scans on highlight (cost proportional to
+  attention) or renders from the count ring.
+- **Insert form** — display the absolute truth, insert the shortest spelling that
+  resolves (H4's shape). Unimplemented until destinations are proposable at all.
+- **Whether the pane participates in grid selection** (S1) in this slice or is
+  display-only at first. The seam is recorded either way.
+- **`git clone` and friends** — commands that *create* directories could state
+  where the result will land, which is the offsite lesson in one row. A different
+  class (creational?) and a different note.
