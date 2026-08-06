@@ -2,3 +2,4 @@ scratch/
 *.log
 /target
 dist/
+experiments/*/target/

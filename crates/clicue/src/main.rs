@@ -63,6 +63,8 @@ enum ThemeCmd {
     Set { name: String },
     /// Render a sample card with a theme
     Preview { name: String },
+    /// Check a theme file (or name) against the theme contract
+    Lint { target: String },
     /// `clicue theme <name>` — the obvious spelling sets the theme
     #[command(external_subcommand)]
     Bare(Vec<String>),
@@ -96,8 +98,14 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             println!("theme: {} (current)", loaded.config.theme);
             for name in theme::available(dir.as_deref()) {
                 let (t, msgs) = theme::load(&name, dir.as_deref());
+                // A tier above unicode means tofu here is the FONT, not
+                // breakage (ADR-400) — say which font the theme assumes.
+                let tier = match theme::font_tier(&t) {
+                    theme::FontTier::Ascii | theme::FontTier::Unicode => String::new(),
+                    other => format!("  · requires {}", other.name()),
+                };
                 if msgs.is_empty() {
-                    println!("{}", theme::swatch(&t));
+                    println!("{}{tier}", theme::swatch(&t));
                 } else {
                     // The swatch shows the FALLBACK — say so, or the list
                     // hides exactly the breakage doctor reports.
@@ -106,6 +114,7 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             }
             println!("\nset:      clicue theme <name>");
             println!("preview:  clicue theme preview <name>");
+            println!("lint:     clicue theme lint <name|file.toml>");
             Ok(())
         }
         ThemeCmd::Set { name } => {
@@ -161,6 +170,52 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
                 .unwrap_or(80);
             print!("{}", theme::preview(&t, cols));
             Ok(())
+        }
+        ThemeCmd::Lint { target } => {
+            // A path (anything with a slash, a .toml suffix, or an existing
+            // file) lints the FILE — the author's copy, installed or not.
+            // A bare name lints what the loader would actually serve.
+            let path = std::path::Path::new(&target);
+            let (name, src) = if target.contains('/') || target.ends_with(".toml") || path.exists()
+            {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("theme")
+                    .to_string();
+                let src =
+                    std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("{target}: {e}"))?;
+                (stem, src)
+            } else {
+                let file = dir.as_deref().map(|d| d.join(format!("{target}.toml")));
+                match file.as_deref().map(std::fs::read_to_string) {
+                    Some(Ok(src)) => (target.clone(), src),
+                    _ => match theme::template(&target) {
+                        Some(tpl) => (target.clone(), tpl.to_string()),
+                        None => anyhow::bail!(
+                            "no theme named {target:?} and no such file — available: {}",
+                            theme::available(dir.as_deref()).join("  ")
+                        ),
+                    },
+                }
+            };
+            // The loader's own path (T14): the linter can never drift from
+            // what the daemon accepts.
+            match theme::from_toml(&name, &src) {
+                Ok(t) => {
+                    println!("{name}: ok — requires: {}", theme::font_tier(&t).name());
+                    Ok(())
+                }
+                Err(errs) => {
+                    for e in &errs {
+                        eprintln!("{name}: {e}");
+                    }
+                    anyhow::bail!(
+                        "{name}: {} problem(s) — the daemon would fall back",
+                        errs.len()
+                    )
+                }
+            }
         }
     }
 }

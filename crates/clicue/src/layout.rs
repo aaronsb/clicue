@@ -344,13 +344,27 @@ impl Row {
     }
 }
 
+/// Fill `cols` columns by cycling the rule pattern's chars — each char is
+/// validated to one column, so char count IS column count (ADR-400). A
+/// 1-char h degenerates to the old `repeat`.
+fn hfill(h: &str, cols: usize) -> String {
+    h.chars().cycle().take(cols).collect()
+}
+
+/// Columns a corner pair overhangs beyond the two 1-column `v` positions
+/// the body rows put under them — the rule absorbs it (ADR-400).
+fn overhang(l: &str, r: &str) -> usize {
+    wcols(l).saturating_sub(1) + wcols(r).saturating_sub(1)
+}
+
 fn border_row(inner: usize, label: &str, l: &str, r: &str, h: &str, t: &Theme) -> Row {
-    let label = fit_label(label, inner);
-    let rule = inner.saturating_sub(wcols(&label)).max(1);
+    let over = overhang(l, r);
+    let label = fit_label(label, inner.saturating_sub(over));
+    let rule = inner.saturating_sub(wcols(&label) + over).max(1);
     let mut row = Row::new();
     row.push(l, None);
     row.push(&label, None);
-    row.push(&h.repeat(rule), None);
+    row.push(&hfill(h, rule), None);
     row.push(r, None);
     border_overlay(&mut row, t);
     row
@@ -1148,14 +1162,15 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     }
 
     // ── legend ───────────────────────────────────────────────────────────
+    let over = overhang(&g.bl, &g.br);
     let segs = legend(input, view.maxed, focus, grid_out, canmax);
-    let hint = fit_legend(&segs, inner);
+    let hint = fit_legend(&segs, inner.saturating_sub(over));
     {
-        let rule = inner.saturating_sub(wcols(&hint));
+        let rule = inner.saturating_sub(wcols(&hint) + over);
         let mut row = Row::new();
         row.push(&g.bl, None);
         row.push(&hint, None);
-        row.push(&g.h.repeat(rule), None);
+        row.push(&hfill(&g.h_bottom, rule), None);
         row.push(&g.br, None);
         border_overlay(&mut row, theme);
         let start = g.bl.chars().count();
@@ -1190,7 +1205,10 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
 
         let mut close = Row::new();
         close.push(&g.bl, None);
-        close.push(&g.h.repeat(inner), None);
+        close.push(
+            &hfill(&g.h_bottom, inner.saturating_sub(overhang(&g.bl, &g.br))),
+            None,
+        );
         close.push(&g.br, None);
         border_overlay(&mut close, theme);
         rows.push(close);
