@@ -28,3 +28,4 @@ _CLI tool surface — install, doctor, config, theme, data_
 | ADR | Title | Status |
 |-----|-------|--------|
 | [ADR-400](./tool/ADR-400-multi-column-border-glyphs-font-requirements-and-theme-lint.md) | Multi-column border glyphs, font requirements, and theme lint | Accepted |
+| [ADR-401](./tool/ADR-401-github-release-as-a-pacman-repository.md) | GitHub release as a pacman repository | Accepted |

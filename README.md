@@ -32,8 +32,24 @@ curl -fsSL https://raw.githubusercontent.com/aaronsb/clicue/main/packaging/insta
 (Pin or relocate with `curl … | CLICUE_VERSION=v0.2.1 sh` — the variable goes
 before `sh`; before `curl` it would reach only curl.)
 
-**Arch, as a real pacman package** — one line builds and installs from the
-latest release's own checksummed `PKGBUILD`:
+**Arch, from the [clicue] repo** — the GitHub release doubles as a pacman
+repository (x86_64): add the stanza once and `pacman -Syu` follows every
+release like an official package. No AUR, no helper, no makepkg:
+
+```ini
+# /etc/pacman.conf
+[clicue]
+SigLevel = Optional TrustAll
+Server = https://github.com/aaronsb/clicue/releases/latest/download/
+```
+
+```zsh
+sudo pacman -Sy clicue
+```
+
+**Arch, built locally** — one line builds and installs from the latest
+release's own checksummed `PKGBUILD` (this and the AUR package compile
+from source; the repo above ships the prebuilt binary):
 
 ```zsh
 mkdir clicue-pkg && cd clicue-pkg && curl -sLO https://github.com/aaronsb/clicue/releases/latest/download/PKGBUILD -sLO https://github.com/aaronsb/clicue/releases/latest/download/clicue.install && makepkg -si

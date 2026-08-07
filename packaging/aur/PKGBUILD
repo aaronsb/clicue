@@ -21,6 +21,9 @@ depends=('zsh' 'gcc-libs')
 makedepends=('cargo')
 optdepends=('man-db: glosses for system commands (whatis)')
 install=clicue.install
+# cargo already strips the release binary (profile.release strip=true), so
+# makepkg's debug split would ship an empty -debug package — suppress it.
+options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
