@@ -308,9 +308,19 @@ const MAX_RULE_CHARS: usize = 8;
 /// the emoji blocks that measures NARROW (🕷 U+1F577) is exactly a glyph
 /// most fonts draw two columns wide anyway. Legacy-computing (U+1FB00+)
 /// is excluded: unambiguously narrow graphics, not presentation-swayed.
+/// Control characters are a different attack, not a width one — a \n in
+/// a corner splits the row, an ESC injects terminal control through
+/// every render — banned by class (review #35).
+/// KNOWN SCOPE (review #35): BMP text-presentation-default emoji (☠ ❤ ▶,
+/// scattered through U+2600–27BF and beyond) are the same hazard class
+/// in principle, but the default unicode-rounded set itself ships ▪
+/// U+25AA (Emoji=Yes) and monospace stacks draw these narrow with
+/// near-total consistency — banning the class would reject every theme
+/// shipped since day one on evidence experiment 03 never measured.
 fn width_hazard(c: char) -> Option<&'static str> {
     match c {
-        '\u{fe00}'..='\u{fe0f}' => Some("variation selector"),
+        _ if c.is_control() => Some("control character"),
+        '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}' => Some("variation selector"),
         '\u{200d}' => Some("zero-width joiner"),
         '\u{1f000}'..='\u{1faff}' if unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) < 2 => {
             Some("text-presentation pictograph (width differs across terminals)")
@@ -1297,6 +1307,31 @@ mod tests {
     }
 
     #[test]
+    fn control_characters_are_rejected_in_every_glyph() {
+        // Review #35: the multi-column allowance must not open the corner
+        // keys to row-splitting newlines or terminal-control injection —
+        // a theme that lints ok must be safe to render.
+        for toml in [
+            "[glyphs]\ntl = \"a\\nb\"\n",
+            "[glyphs]\ntl = \"a\\u001B[31m\"\n",
+            "[glyphs]\ntl = \"a\\tb\"\n",
+            "[glyphs]\ntl = \"x\\u0007\"\n",
+        ] {
+            let err = from_toml("bad", toml).unwrap_err();
+            assert!(
+                err.iter().any(|e| e.contains("control character")),
+                "{toml:?}: {err:?}"
+            );
+        }
+        // The supplement variation selectors too (U+E0100+, width 0).
+        let err = from_toml("bad", "[glyphs]\ntl = \"a\u{e0100}\"\n").unwrap_err();
+        assert!(
+            err.iter().any(|e| e.contains("variation selector")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn corner_ramps_and_rule_patterns_are_legal() {
         // ADR-400: multi-column corners tile because the rule absorbs
         // the overhang; h cycles; h-bottom defaults to h.
@@ -1492,6 +1527,38 @@ mod tests {
                     continue;
                 }
                 assert_eq!(cols(&plain), 63, "{name}: row width drifted: {plain:?}");
+            }
+        }
+        // Below the card floor the terminal squeezes lw (W3): rows must
+        // DEGRADE (1-column corner stand-ins), never overflow — an
+        // 8-column ramp scrambled an 18-column tmux slice (review #35).
+        // Every row of a render agrees with its own body rows, at every
+        // width, for the widest shipped ramps and a max-legal theme.
+        let maxed = from_toml(
+            "max-legal",
+            "[glyphs]\ntl = \"\u{1f383}\u{1f383}\u{1f383}\u{1f383}\"\n\
+             tr = \"\u{1f383}\u{1f383}\u{1f383}\u{1f383}\"\n\
+             bl = \"\u{1f987}\u{1f987}\u{1f987}\u{1f987}\"\n\
+             br = \"\u{1f987}\u{1f987}\u{1f987}\u{1f987}\"\n",
+        )
+        .unwrap();
+        // From 12 up: at ≤11 columns even 1-column-corner themes drift
+        // (pre-existing, measured in review #35) — the pin here is that
+        // ramps add NO width where the baseline holds.
+        for t in [&builtin("halloween").unwrap(), &maxed] {
+            for w in 12..=80u16 {
+                let mut widths = std::collections::BTreeSet::new();
+                for line in preview(t, w).lines() {
+                    let plain = strip_ansi(line);
+                    if !plain.trim().is_empty() {
+                        widths.insert(cols(&plain));
+                    }
+                }
+                assert!(
+                    widths.len() <= 1,
+                    "{} at {w} cols: rows disagree: {widths:?}",
+                    t.name
+                );
             }
         }
     }

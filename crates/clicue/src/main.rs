@@ -176,7 +176,9 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
             // file) lints the FILE — the author's copy, installed or not.
             // A bare name lints what the loader would actually serve.
             let path = std::path::Path::new(&target);
-            let (name, src) = if target.contains('/') || target.ends_with(".toml") || path.exists()
+            // is_file, not exists: a DIRECTORY named like a theme in cwd
+            // must not hijack name resolution (review #35).
+            let (name, src) = if target.contains('/') || target.ends_with(".toml") || path.is_file()
             {
                 let stem = path
                     .file_stem()
@@ -190,6 +192,14 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
                 let file = dir.as_deref().map(|d| d.join(format!("{target}.toml")));
                 match file.as_deref().map(std::fs::read_to_string) {
                     Some(Ok(src)) => (target.clone(), src),
+                    // An unreadable installed file means the operator's
+                    // edits have no effect — the loader NAMES that state
+                    // (review #21), so lint must not bless it (review #35).
+                    Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => anyhow::bail!(
+                        "{}: unreadable ({e}) — the daemon would fall back; \
+                         lint the file the loader actually reads",
+                        file.as_deref().unwrap().display()
+                    ),
                     _ => match theme::template(&target) {
                         Some(tpl) => (target.clone(), tpl.to_string()),
                         None => anyhow::bail!(

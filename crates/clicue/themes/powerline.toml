@@ -11,13 +11,13 @@ glyph-set = "unicode-rounded"
 requires = "nerd-font"
 
 [glyphs]
-tl = "█"
-tr = "█"
-bl = "█"
-br = "█"
-jl = "█"
-jr = "█"
-sel = ""
+tl = "\uE0B6█\uE0B0"
+tr = "\uE0B2█\uE0B4"
+bl = "\uE0B6█\uE0B0"
+br = "\uE0B2█\uE0B4"
+jl = "█\uE0B0"
+jr = "\uE0B2█"
+sel = "\uE0B1"
 nosel = " "
 
 [palette]
