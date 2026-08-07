@@ -75,8 +75,12 @@ keystroke.
 
 Anything odd later: `clicue doctor` diagnoses the live shell — load-order fights,
 stolen key bindings, silent degradations — each finding with its severity and the
-concrete fix. `clicue uninstall` removes exactly what install added. `clicue-off`
-detaches the current shell only.
+concrete fix. `clicue daemon status` says whether a daemon runs and whether its
+binary is still current; `stop` and `restart` manage it (you rarely need to — a
+daemon notices when its binary has been replaced by an upgrade and retires
+itself, and any wired shell respawns one on the next keystroke). `clicue
+uninstall` removes exactly what install added. `clicue-off` detaches the current
+shell only.
 
 Configuration lives in `~/.config/clicue/config.toml` and applies **live**: the
 daemon reloads within a second of any change, no restart, open shells keep their

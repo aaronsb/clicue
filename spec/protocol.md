@@ -126,6 +126,26 @@ one fork [MEASURED]). Everything here is [domain] unless tagged otherwise.
    per window, never a hot loop — and repeat deaths still surface via
    `clicue doctor`.
 
+9a. [ADR-300] The daemon's own BINARY is a watched input, answered by
+   retirement, not reload: the executable is stamped (path,
+   device/inode) at start, the reloader's rate-limited poll rechecks
+   it, and a missing or different inode makes the daemon log one line
+   and exit cleanly — §9's auto-spawn brings up the replacement.
+   [MEASURED 2026-08-06: a daemon three days and two releases stale
+   served an operator whose new themes "defaulted", nothing naming
+   why.] Cost per upgrade: one absent card per open shell, one
+   re-hello.
+
+9b. [ADR-300] `clicue daemon status|stop|restart`; bare `clicue
+   daemon` still runs it (the shim's spawn line, unchanged). The
+   lockfile is the truth and carries the holder's pid: acquirable
+   means no daemon, held means the recorded pid lives. `status` names
+   the stale-binary state (`/proc/pid/exe` deleted or moved). `stop`
+   SIGTERMs only after the pid's comm matches `clicue`, then waits for
+   the lock to free — no SIGKILL escalation; a daemon surviving
+   SIGTERM is an incident to name. `restart` is stop, spawn detached,
+   wait for the lock to be held again.
+
 ## Versioning
 
 10. Request and reply carry `v` (integer). The daemon probes `v` BEFORE

@@ -30,6 +30,12 @@ pub struct WatchSet {
     /// Watched by entry list + per-entry stat, so create, edit, and
     /// delete all register (a directory's own mtime misses in-place edits).
     pub dirs: Vec<PathBuf>,
+    /// The binary itself is an input the engine swap cannot serve — a
+    /// replaced executable RETIRES the daemon (clean exit; §9 auto-spawn
+    /// brings up the successor). Set only by `daemon_inputs`: any other
+    /// reloader user (tests included) must never exit the process.
+    /// (spec §9a, ADR-300)
+    pub retire_on_exe_change: bool,
 }
 
 impl WatchSet {
@@ -48,6 +54,7 @@ impl WatchSet {
         if let Ok(p) = crate::corpus::cache_path() {
             w.files.push(p);
         }
+        w.retire_on_exe_change = true;
         w
     }
 
@@ -97,6 +104,39 @@ fn inputs_stat(watch: &WatchSet) -> InputsStamp {
         })
         .collect();
     (files, dirs)
+}
+
+/// Identity of the executable at daemon start: the path current_exe
+/// resolved plus its device/inode. Replacement is an inode change, not
+/// a content diff — pacman, cargo install, and `cp` all land a new file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExeStamp {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+fn exe_stamp() -> Option<ExeStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let path = std::env::current_exe().ok()?;
+    let meta = fs::metadata(&path).ok()?;
+    Some(ExeStamp {
+        path,
+        dev: meta.dev(),
+        ino: meta.ino(),
+    })
+}
+
+/// Gone, or a different file at the same path — either way the binary
+/// this process is running no longer represents `clicue` on this system
+/// (spec §9a). A stat error other than the file's absence counts too:
+/// we cannot claim currency we cannot verify.
+fn exe_replaced(orig: &ExeStamp) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(&orig.path) {
+        Ok(m) => m.dev() != orig.dev || m.ino() != orig.ino,
+        Err(_) => true,
+    }
 }
 
 /// First ATTEMPT, not first success — sound today because the
@@ -149,6 +189,11 @@ fn reloading_with(
     let current = std::sync::Arc::new(RwLock::new(factory()?));
     let factory = std::sync::Arc::new(factory);
     let busy = std::sync::Arc::new(AtomicBool::new(false));
+    let exe0 = std::sync::Arc::new(if watch.retire_on_exe_change {
+        exe_stamp()
+    } else {
+        None
+    });
     let watch = std::sync::Arc::new(watch);
     // Stat AFTER the first build: a write landing during it must trigger
     // a reload, not be mistaken for the state already built. (The first
@@ -182,7 +227,24 @@ fn reloading_with(
                 let busy = busy.clone();
                 let state = state.clone();
                 let watch = watch.clone();
+                let exe0 = exe0.clone();
                 std::thread::spawn(move || {
+                    // Binary replaced → retire (spec §9a): the successor
+                    // serves the NEXT keystroke via §9 auto-spawn. Checked
+                    // here so it costs a stat only at poll cadence, and
+                    // only the daemon's own watch set can exit the process.
+                    if watch.retire_on_exe_change {
+                        if let Some(orig) = exe0.as_ref() {
+                            if exe_replaced(orig) {
+                                eprintln!(
+                                    "clicue daemon: binary replaced at {} — retiring; \
+                                     the next keystroke spawns the new one",
+                                    orig.path.display()
+                                );
+                                std::process::exit(0);
+                            }
+                        }
+                    }
                     let now = Some(inputs_stat(&watch));
                     let changed = {
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -289,6 +351,7 @@ mod tests {
             WatchSet {
                 files: vec![cfg.clone()],
                 dirs: vec![],
+                retire_on_exe_change: false,
             },
             Duration::ZERO,
             move || {
@@ -329,6 +392,7 @@ mod tests {
             WatchSet {
                 files: vec![corpus.clone()],
                 dirs: vec![themes.clone()],
+                retire_on_exe_change: false,
             },
             Duration::ZERO,
             counting_factory(&gen),
@@ -360,6 +424,7 @@ mod tests {
             WatchSet {
                 files: vec![],
                 dirs: vec![themes.clone()],
+                retire_on_exe_change: false,
             },
             Duration::ZERO,
             counting_factory(&gen),
@@ -392,6 +457,7 @@ mod tests {
             WatchSet {
                 files: vec![],
                 dirs: vec![themes],
+                retire_on_exe_change: false,
             },
             Duration::ZERO,
             counting_factory(&gen),
@@ -428,5 +494,45 @@ mod tests {
         assert_eq!(swap_policy(&started), CorpusPolicy::RebuildIfStale);
         assert_eq!(swap_policy(&started), CorpusPolicy::LoadOnly);
         assert_eq!(swap_policy(&started), CorpusPolicy::LoadOnly);
+    }
+
+    #[test]
+    fn exe_replacement_is_an_inode_change() {
+        // §9a: pacman, cargo install, and cp all land a NEW file at the
+        // same path; content is irrelevant and never read.
+        let dir = temp_dir("exe");
+        let path = dir.join("binary");
+        fs::write(&path, "one").unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let stamp = ExeStamp {
+            path: path.clone(),
+            dev: meta.dev(),
+            ino: meta.ino(),
+        };
+        assert!(!exe_replaced(&stamp), "untouched binary is not replaced");
+        // In-place rewrite keeps the inode: NOT a replacement (an
+        // append-to-log or prelink-style touch must not retire daemons).
+        fs::write(&path, "one-edited").unwrap();
+        assert!(
+            !exe_replaced(&stamp),
+            "same-inode rewrite is not a replacement"
+        );
+        // Rename-over (how installers land files) changes the inode.
+        let staged = dir.join("binary.new");
+        fs::write(&staged, "two").unwrap();
+        fs::rename(&staged, &path).unwrap();
+        assert!(exe_replaced(&stamp), "rename-over must read as replaced");
+        // Deletion counts too.
+        fs::remove_file(&path).unwrap();
+        assert!(exe_replaced(&stamp), "a deleted binary is replaced");
+    }
+
+    #[test]
+    fn only_the_daemon_watchset_retires() {
+        // The exit path is gated on retire_on_exe_change; every other
+        // reloader user (this test process included) must never see it.
+        assert!(WatchSet::daemon_inputs().retire_on_exe_change);
+        assert!(!WatchSet::default().retire_on_exe_change);
     }
 }
