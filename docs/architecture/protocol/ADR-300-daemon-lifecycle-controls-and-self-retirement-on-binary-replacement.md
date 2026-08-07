@@ -68,4 +68,15 @@ hook keeps working on systems where it is the only mechanism.
   process.
 - `stop` does not escalate to SIGKILL: a daemon that survives SIGTERM
   is an incident to name, not to mask.
+- Retirement is request-driven (it rides the reloader's poll): a
+  daemon with NO connected shells outlives its binary until the first
+  keystroke that would have met it — which also retires it, at the
+  cost of that one stale-served keystroke.
+- The stamp is the post-exec resolved path: symlink-flip upgrade
+  schemes (Nix/Homebrew-style, where the old store file survives) are
+  invisible to both retirement and `status` — those environments keep
+  `daemon restart`.
+- A pre-0.4.0 daemon's lock carries no pid; the verbs name that state
+  (`RunningOpaque` → "pkill -x clicue") rather than erroring on the
+  exact daemon this ADR was written about (review #44).
 - spec/protocol.md §9 gains the retirement and control clauses.

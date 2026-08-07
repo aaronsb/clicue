@@ -71,8 +71,20 @@ fn acquire_lock(sock: &Path) -> Result<File> {
         .write(true)
         .open(&lock_path)
         .with_context(|| format!("opening {}", lock_path.display()))?;
-    let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc != 0 {
+    // A few NB retries over ~250ms: probe_state tests the lock by BRIEFLY
+    // acquiring it, and a daemon whose flock lands inside that window
+    // must not die "refusing to start twice" against a hold that is
+    // already gone (review #44). A real holder keeps the lock across
+    // every retry; a probe never does.
+    let mut acquired = false;
+    for _ in 0..5 {
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            acquired = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !acquired {
         bail!(
             "another daemon holds {} — refusing to start twice",
             lock_path.display()
@@ -100,6 +112,11 @@ pub enum DaemonState {
         /// an existing file — the stale-binary signal (ADR-300).
         exe_current: bool,
     },
+    /// Held, but no readable pid: a daemon started by a pre-0.4.0 binary
+    /// (which never wrote one) or one caught mid-write. The verbs must
+    /// NAME this state, not error on it — it is exactly the legacy
+    /// daemon ADR-300 was written about (review #44).
+    RunningOpaque,
 }
 
 fn probe_state(sock: &Path) -> Result<DaemonState> {
@@ -116,10 +133,9 @@ fn probe_state(sock: &Path) -> Result<DaemonState> {
     }
     let mut text = String::new();
     BufReader::new(&lock).read_to_string(&mut text).ok();
-    let pid: i32 = text
-        .trim()
-        .parse()
-        .with_context(|| format!("{} is held but carries no pid", lock_path.display()))?;
+    let Ok(pid) = text.trim().parse::<i32>() else {
+        return Ok(DaemonState::RunningOpaque);
+    };
     let exe = fs::read_link(format!("/proc/{pid}/exe")).ok();
     let exe_current = exe
         .as_deref()
@@ -127,6 +143,10 @@ fn probe_state(sock: &Path) -> Result<DaemonState> {
         .unwrap_or(false);
     Ok(DaemonState::Running { pid, exe_current })
 }
+
+/// The one line of guidance every opaque-lock path shares.
+const OPAQUE_HELP: &str = "a daemon holds the lock but recorded no pid — started by a \
+     pre-0.4.0 clicue; `pkill -x clicue`, and shells respawn a fresh one";
 
 /// Public probe against the configured socket.
 pub fn state() -> Result<(DaemonState, PathBuf)> {
@@ -153,20 +173,32 @@ fn wait_lock_free(sock: &Path, budget: Duration) -> bool {
 
 /// SIGTERM the lock-holding daemon and wait for the lock to free. No
 /// SIGKILL escalation: a daemon surviving SIGTERM is an incident to
-/// name, not to mask (spec §9b). Idempotent: Ok(None) when nothing runs.
+/// name, not to mask (spec §9b). Idempotent: Ok(None) when nothing runs
+/// — including when the daemon dies BETWEEN our probe and our signal
+/// (self-retirement fires exactly around upgrades, which is exactly
+/// when operators run stop; review #44).
 pub fn stop(sock: &Path) -> Result<Option<i32>> {
     let pid = match probe_state(sock)? {
         DaemonState::NotRunning => return Ok(None),
+        DaemonState::RunningOpaque => bail!("{OPAQUE_HELP}"),
         DaemonState::Running { pid, .. } => pid,
     };
     if !comm_is_clicue(pid) {
+        // Died under us (comm gone) or pid reuse. If the lock freed, the
+        // stop already happened; only a live impostor is an error.
+        if wait_lock_free(sock, Duration::from_millis(500)) {
+            return Ok(None);
+        }
         bail!("lock names pid {pid}, but that process is not clicue — not signalling it");
     }
     if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
-        bail!(
-            "SIGTERM to pid {pid} failed: {}",
-            std::io::Error::last_os_error()
-        );
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH)
+            && wait_lock_free(sock, Duration::from_millis(500))
+        {
+            return Ok(None);
+        }
+        bail!("SIGTERM to pid {pid} failed: {err}");
     }
     if !wait_lock_free(sock, Duration::from_secs(5)) {
         bail!("pid {pid} still holds the lock 5s after SIGTERM — investigate before retrying");
@@ -175,7 +207,11 @@ pub fn stop(sock: &Path) -> Result<Option<i32>> {
 }
 
 /// Spawn a detached daemon (the shim's own gesture, from the CLI) and
-/// wait for it to hold the lock.
+/// wait for the lock to be HELD — not necessarily by our child: a §9
+/// auto-spawn racing us may win the singleton flock, our child loses
+/// and exits, and the pid returned is the winner's. That outcome is
+/// correct — a fresh daemon from the same (new) binary — so it is
+/// reported, not fought (review #44).
 pub fn start_detached(sock: &Path) -> Result<i32> {
     let exe = std::env::current_exe().context("resolving our own binary")?;
     let mut cmd = std::process::Command::new(exe);
@@ -561,5 +597,52 @@ mod tests {
     fn stop_is_idempotent_when_nothing_runs() {
         let sock = temp_socket("stopnone");
         assert_eq!(stop(&sock).unwrap(), None);
+    }
+
+    #[test]
+    fn a_held_lock_without_a_pid_is_named_not_an_error() {
+        // Review #44: a pre-0.4.0 daemon never wrote its pid — the exact
+        // daemon ADR-300 was written about must get guidance, not a
+        // parse error, from every verb.
+        let sock = temp_socket("opaque");
+        // Hold the flock the legacy way: no pid written.
+        let lock = File::options()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(lock_path(&sock))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        assert_eq!(probe_state(&sock).unwrap(), DaemonState::RunningOpaque);
+        let err = stop(&sock).expect_err("opaque must refuse with guidance");
+        assert!(err.to_string().contains("pre-0.4.0"), "{err}");
+    }
+
+    #[test]
+    fn a_garbage_pid_never_reaches_kill() {
+        // A poisoned lockfile ("-1" would TERM the whole uid's processes
+        // if it reached kill) stops at the comm check or earlier.
+        let sock = temp_socket("poison");
+        let mut lock = File::options()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(lock_path(&sock))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        lock.write_all(b"-1\n").unwrap();
+        match probe_state(&sock).unwrap() {
+            DaemonState::Running { pid, .. } => assert_eq!(pid, -1),
+            other => panic!("{other:?}"),
+        }
+        // comm_is_clicue(-1) cannot succeed; stop must bail, not signal.
+        let err = stop(&sock).expect_err("-1 must never be signalled");
+        assert!(err.to_string().contains("not clicue"), "{err}");
     }
 }

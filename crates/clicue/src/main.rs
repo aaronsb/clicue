@@ -250,13 +250,22 @@ fn daemon_cmd(cmd: Option<DaemonCmd>) -> Result<()> {
     let Some(cmd) = cmd else {
         return daemon::run();
     };
-    let (st, sock) = daemon::state()?;
+    // Stop/Restart probe inside stop() itself — no pre-probe here: every
+    // observation briefly perturbs the lock other daemons are trying to
+    // take (review #44).
+    let sock = daemon::socket_path()?;
     match cmd {
         DaemonCmd::Status => {
-            match st {
+            match daemon::state()?.0 {
                 DaemonState::NotRunning => {
                     println!(
                         "daemon: not running — it auto-spawns on the next keystroke in a wired shell"
+                    );
+                }
+                DaemonState::RunningOpaque => {
+                    println!(
+                        "daemon: running, started by a pre-0.4.0 clicue (no pid recorded) — \
+                         `pkill -x clicue`; wired shells respawn a fresh one"
                     );
                 }
                 DaemonState::Running { pid, exe_current } => {

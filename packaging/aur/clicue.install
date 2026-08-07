@@ -7,7 +7,9 @@ post_upgrade() {
   # Daemons from 0.4.0 on retire themselves when their binary is
   # replaced (spec §9a); this covers daemons started by OLDER versions.
   # Root reaches every user's daemon; each wired shell respawns a fresh
-  # one on its next keystroke.
+  # one on its next keystroke. Known collateral: an in-flight clicue
+  # CLI invocation (same comm) also gets the SIGTERM — rare, and every
+  # write path is staged-rename, so nothing tears.
   pkill -x clicue >/dev/null 2>&1 || :
   echo "Running daemons were stopped; each shell respawns a fresh one on"
   echo "its next keystroke. Re-run 'clicue install' to update unedited"

@@ -30,10 +30,12 @@ t_plain "$PTY_OUT"
 [[ $REPLY != *"pid $T_DAEMON_PID"* ]]   || t_fail "status still shows the pre-restart pid"
 
 # The restarted daemon is detached — the harness tracks only its own
-# spawn, so stop it here or it outlives the sandbox. A §9 auto-spawn
-# may follow within the scenario's lifetime; its 30s window was already
-# consumed above if so, and pty_stop tears the sandbox out from under
-# any straggler's socket path either way.
+# spawn, so stop it here or it outlives the sandbox. DISARM the shim's
+# §9 spawner first: this shell's window was never consumed (its first
+# connect succeeded against the harness daemon), so the prompt repaint
+# after this stop would otherwise auto-spawn a straggler that nothing
+# ever reaps — unlinked socket, no requests, no retirement (review #44).
+pty_exec '_clicue_spawned=1; _clicue_spawn_at=$EPOCHSECONDS'
 PTY_OUT=''
 pty_exec 'clicue daemon stop'
 pty_wait_for '*stopped*pid*' 10
