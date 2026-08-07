@@ -758,8 +758,7 @@ impl Engine {
                 // cloned repo picks its own) must not become syntax. A
                 // baseless leading dash or plus would parse as an option
                 // or stack index even quoted, so it rides behind `./`.
-                insert: if base.is_empty() && (c.name.starts_with('-') || c.name.starts_with('+'))
-                {
+                insert: if base.is_empty() && (c.name.starts_with('-') || c.name.starts_with('+')) {
                     format!("./{}", nav::shell_component(&c.name))
                 } else {
                     format!("{base}{}", nav::shell_component(&c.name))
@@ -808,8 +807,7 @@ impl Engine {
                 home.clone(),
             );
             self.nav_worker.run(deadline, move |sc| {
-                let resolved =
-                    nav::resolve_target(&typed, &pwd, old.as_deref(), &ds, h.as_deref());
+                let resolved = nav::resolve_target(&typed, &pwd, old.as_deref(), &ds, h.as_deref());
                 // Only a target that fails from here earns a suggestion; a
                 // target that resolves (or needs state we lack) gets
                 // explanation only.

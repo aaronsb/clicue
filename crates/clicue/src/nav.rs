@@ -510,9 +510,7 @@ pub fn did_you_mean(
 /// (any script) plus `extra`. Anything else needs quoting before it can
 /// be inserted into an executable buffer.
 fn shell_quiet(s: &str, extra: &[char]) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_alphanumeric() || extra.contains(&c))
+    !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || extra.contains(&c))
 }
 
 /// A single directory NAME in a spelling that survives the shell: quiet
@@ -788,7 +786,10 @@ mod tests {
         assert_eq!(shell_component("a;rm -rf"), "'a;rm -rf'");
         assert_eq!(shell_component("$(boom)"), "'$(boom)'");
         assert_eq!(shell_component("it's"), r"'it'\''s'");
-        assert_eq!(shell_path("~/Projects", Path::new("/home/op/Projects")), "~/Projects");
+        assert_eq!(
+            shell_path("~/Projects", Path::new("/home/op/Projects")),
+            "~/Projects"
+        );
         assert_eq!(
             shell_path("~/my dir", Path::new("/home/op/my dir")),
             "'/home/op/my dir'",
