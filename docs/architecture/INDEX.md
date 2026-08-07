@@ -21,3 +21,10 @@ _Architecture, data model, ranking and corpus semantics_
 | ADR | Title | Status |
 |-----|-------|--------|
 | [ADR-100](./core/ADR-100-rebuild-as-a-rust-daemon-behind-a-generated-zsh-shim.md) | Rebuild as a Rust daemon behind a generated zsh shim | Accepted |
+
+## Tool
+_CLI tool surface — install, doctor, config, theme, data_
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [ADR-400](./tool/ADR-400-multi-column-border-glyphs-font-requirements-and-theme-lint.md) | Multi-column border glyphs, font requirements, and theme lint | Accepted |

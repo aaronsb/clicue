@@ -344,14 +344,51 @@ impl Row {
     }
 }
 
+/// Fill `cols` columns by cycling the rule pattern's chars — each char is
+/// validated to one column, so char count IS column count (ADR-400). A
+/// 1-char h degenerates to the old `repeat`.
+fn hfill(h: &str, cols: usize) -> String {
+    h.chars().cycle().take(cols).collect()
+}
+
+/// Columns a corner pair overhangs beyond the two 1-column `v` positions
+/// the body rows put under them — the rule absorbs it (ADR-400).
+fn overhang(l: &str, r: &str) -> usize {
+    wcols(l).saturating_sub(1) + wcols(r).saturating_sub(1)
+}
+
+/// A 1-column stand-in for a ramp: its first 1-column char keeps the
+/// theme's texture; `+` (the base corner) if the ramp has none.
+fn one_col(s: &str) -> String {
+    s.chars()
+        .find(|c| UnicodeWidthChar::width(*c).unwrap_or(0) == 1)
+        .map(String::from)
+        .unwrap_or_else(|| "+".into())
+}
+
+/// The validator's 8-column cap keeps the rule ≥1 at the card FLOOR, but
+/// W3 lets the terminal itself squeeze below it — there a full ramp
+/// would overflow the row (review #35, measured: 8-col corners scramble
+/// an 18-column tmux slice). Same never-break posture as the theme
+/// loader: degrade the pair to 1-column stand-ins, never overflow.
+fn fit_corners<'a>(l: &'a str, r: &'a str, inner: usize) -> (String, String) {
+    if overhang(l, r) > inner.saturating_sub(3) {
+        (one_col(l), one_col(r))
+    } else {
+        (l.to_string(), r.to_string())
+    }
+}
+
 fn border_row(inner: usize, label: &str, l: &str, r: &str, h: &str, t: &Theme) -> Row {
-    let label = fit_label(label, inner);
-    let rule = inner.saturating_sub(wcols(&label)).max(1);
+    let (l, r) = fit_corners(l, r, inner);
+    let over = overhang(&l, &r);
+    let label = fit_label(label, inner.saturating_sub(over));
+    let rule = inner.saturating_sub(wcols(&label) + over).max(1);
     let mut row = Row::new();
-    row.push(l, None);
+    row.push(&l, None);
     row.push(&label, None);
-    row.push(&h.repeat(rule), None);
-    row.push(r, None);
+    row.push(&hfill(h, rule), None);
+    row.push(&r, None);
     border_overlay(&mut row, t);
     row
 }
@@ -359,7 +396,10 @@ fn border_row(inner: usize, label: &str, l: &str, r: &str, h: &str, t: &Theme) -
 /// Flat border style, or the theme's gradient swept across the row —
 /// segment spans land AFTER the flat overlay, so region_highlight's
 /// last-wins stacking shows the gradient with the flat colour as the
-/// fallback for anything the segments miss.
+/// fallback for anything the segments miss. The sweep is positioned by
+/// CHAR count (`row.chars`, what region_highlight indexes); multi-char
+/// corners make it drift a few chars from column-true — invisible at
+/// card widths (ADR-400).
 fn border_overlay(row: &mut Row, t: &Theme) {
     row.overlay(&t.palette.border);
     for (s, e, style) in crate::theme::gradient_segments(&t.palette.border_gradient, row.chars) {
@@ -1148,17 +1188,19 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
     }
 
     // ── legend ───────────────────────────────────────────────────────────
+    let (bl, br) = fit_corners(&g.bl, &g.br, inner);
+    let over = overhang(&bl, &br);
     let segs = legend(input, view.maxed, focus, grid_out, canmax);
-    let hint = fit_legend(&segs, inner);
+    let hint = fit_legend(&segs, inner.saturating_sub(over));
     {
-        let rule = inner.saturating_sub(wcols(&hint));
+        let rule = inner.saturating_sub(wcols(&hint) + over);
         let mut row = Row::new();
-        row.push(&g.bl, None);
+        row.push(&bl, None);
         row.push(&hint, None);
-        row.push(&g.h.repeat(rule), None);
-        row.push(&g.br, None);
+        row.push(&hfill(&g.h_bottom, rule), None);
+        row.push(&br, None);
         border_overlay(&mut row, theme);
-        let start = g.bl.chars().count();
+        let start = bl.chars().count();
         row.spans
             .push((start, start + hint.chars().count(), p.hint.clone()));
         rows.push(row);
@@ -1189,9 +1231,9 @@ pub fn render(input: &CardInput, view: &mut View, theme: &Theme) -> Option<Card>
         rows.push(row);
 
         let mut close = Row::new();
-        close.push(&g.bl, None);
-        close.push(&g.h.repeat(inner), None);
-        close.push(&g.br, None);
+        close.push(&bl, None);
+        close.push(&hfill(&g.h_bottom, inner.saturating_sub(over)), None);
+        close.push(&br, None);
         border_overlay(&mut close, theme);
         rows.push(close);
     }

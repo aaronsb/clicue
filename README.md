@@ -120,15 +120,24 @@ clicue theme dracula    # set it — applies live, open shells included
 clicue theme preview chrome
 ```
 
-Seventeen ship with it. Classics: `aura` (default), `base` (pure ASCII,
+Twenty ship with it. Classics: `aura` (default), `base` (pure ASCII,
 deliberately colourless — the renders-anywhere contract), `mono`, `plain`,
 `monokai`, `dracula`, `nord`, `gruvbox`, `solarized`, `solarized-light` (a light
 card that works on a dark terminal), `tokyo-night`, `catppuccin`. Showcases:
 `agnoster` paints the card on its own solid blue, `chrome` sweeps a gradient
 along the borders that reads as brushed metal, and `solid-metal` does both —
 gunmetal ground, brushed-steel edges (the name is an affectionate genre nod;
-every colour is generic issue). Seasonal, because why not: `valentine` and
-`halloween`.
+every colour is generic issue). `synthwave` runs a sunset gradient into
+shade-ramp corners; `petscii` is a Commodore 64 boot screen; `powerline`
+speaks fluent Nerd Font (and says so — themes declare what they assume of
+your font, and `clicue theme` labels anything above plain Unicode).
+Seasonal, because why not: `valentine` and `halloween` — the latter with
+actual jack-o-lantern and bat corners, if your font has emoji.
+
+Corners can be multi-column "ramps" (`🎃▓▒░` greebles down into the border
+rule), the rule itself can be a repeating pattern, and
+`clicue theme lint my-theme.toml` checks any theme you write against the
+same validator the daemon runs.
 
 **Every theme is a file.** `clicue install` seeds each one as its own TOML in
 `~/.config/clicue/themes/`; edit any of them and the change applies live in

@@ -37,7 +37,9 @@ pub struct Palette {
 }
 
 /// Box drawing, markers, and the source gutter. Dead vocabulary from the
-/// prototype (badge, k_history) is dropped per T11.
+/// prototype (badge, k_history) is dropped per T11. Corners and junctions
+/// may be multi-column strings ("ramps", ADR-400); `h` is a repeating
+/// pattern of 1-column chars; everything else is exactly one column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Glyphs {
     pub tl: String,
@@ -48,6 +50,9 @@ pub struct Glyphs {
     pub jr: String,
     pub v: String,
     pub h: String,
+    /// Bottom-edge rule pattern; defaults to `h`. Exists because a
+    /// PETSCII-style frame needs ▀ on top and ▄ below (ADR-400).
+    pub h_bottom: String,
     pub sel: String,
     pub nosel: String,
     pub k_alias: String,
@@ -59,11 +64,49 @@ pub struct Glyphs {
     pub k_none: String,
 }
 
+/// What a theme's glyphs assume of the operator's font, as a ladder
+/// (ADR-400). Shipped defaults stay at Unicode or below; novelty themes
+/// may require more, declared in the file and surfaced by `theme list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FontTier {
+    /// 7-bit — serial console, TERM=dumb.
+    Ascii,
+    /// Box drawing, blocks, shades: any monospace font of this century.
+    Unicode,
+    /// Emoji-presentation pictographs — needs an emoji-capable font path.
+    Emoji,
+    /// Private Use Area (powerline, nerd symbols) or legacy computing.
+    NerdFont,
+}
+
+impl FontTier {
+    pub fn name(self) -> &'static str {
+        match self {
+            FontTier::Ascii => "ascii",
+            FontTier::Unicode => "unicode",
+            FontTier::Emoji => "emoji",
+            FontTier::NerdFont => "nerd-font",
+        }
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "ascii" => FontTier::Ascii,
+            "unicode" => FontTier::Unicode,
+            "emoji" => FontTier::Emoji,
+            "nerd-font" => FontTier::NerdFont,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     pub name: String,
     pub palette: Palette,
     pub glyphs: Glyphs,
+    /// Declared font tier, if the file carries `requires`. The effective
+    /// tier for display is `font_tier()` — declared, else inferred.
+    pub requires: Option<FontTier>,
 }
 
 /// One glyph SET per encoding, referenced by themes, so adding a glyph key
@@ -78,6 +121,7 @@ fn glyphs_ascii() -> Glyphs {
         jr: "+".into(),
         v: "|".into(),
         h: "-".into(),
+        h_bottom: "-".into(),
         sel: ">".into(),
         nosel: " ".into(),
         k_alias: "=".into(),
@@ -100,6 +144,7 @@ fn glyphs_unicode_rounded() -> Glyphs {
         jr: "┤".into(),
         v: "│".into(),
         h: "─".into(),
+        h_bottom: "─".into(),
         sel: "▸".into(),
         nosel: " ".into(),
         k_alias: "≈".into(),
@@ -129,6 +174,7 @@ pub fn base() -> Theme {
             border_gradient: Vec::new(),
         },
         glyphs: glyphs_ascii(),
+        requires: None,
     }
 }
 
@@ -158,6 +204,9 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("solid-metal", include_str!("../themes/solid-metal.toml")),
     ("valentine", include_str!("../themes/valentine.toml")),
     ("halloween", include_str!("../themes/halloween.toml")),
+    ("synthwave", include_str!("../themes/synthwave.toml")),
+    ("petscii", include_str!("../themes/petscii.toml")),
+    ("powerline", include_str!("../themes/powerline.toml")),
 ];
 
 /// The embedded template text for a shipped theme name.
@@ -193,6 +242,8 @@ struct ThemeFile {
     /// `ascii` (default) or `unicode-rounded`.
     #[serde(rename = "glyph-set")]
     glyph_set: Option<String>,
+    /// Declared font tier: ascii | unicode | emoji | nerd-font (ADR-400).
+    requires: Option<String>,
     #[serde(default)]
     palette: PaletteFile,
     #[serde(default)]
@@ -227,6 +278,8 @@ struct GlyphsFile {
     jr: Option<String>,
     v: Option<String>,
     h: Option<String>,
+    #[serde(rename = "h-bottom")]
+    h_bottom: Option<String>,
     sel: Option<String>,
     nosel: Option<String>,
     k_alias: Option<String>,
@@ -242,25 +295,152 @@ fn cols(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
-/// Every key the renderer reads, checked in COLUMNS (T3, T5, T6). The
-/// border/marker arithmetic in layout assumes one column per glyph.
+/// Corner/junction ramps are capped so the rule keeps ≥1 column at the
+/// minimum card width and a corner can never swallow the label (ADR-400).
+const MAX_CORNER_COLS: usize = 8;
+/// The rule pattern is cycled; more chars than this is noise, not style.
+const MAX_RULE_CHARS: usize = 8;
+
+/// Codepoints where unicode-width and the terminal can DISAGREE about
+/// width — the actual hazard T6 existed to prevent (ADR-400, experiment
+/// 03 [MEASURED]): variation selectors flip a pictograph between 1- and
+/// 2-column presentation, ZWJ fuses sequences, and a bare pictograph in
+/// the emoji blocks that measures NARROW (🕷 U+1F577) is exactly a glyph
+/// most fonts draw two columns wide anyway. Legacy-computing (U+1FB00+)
+/// is excluded: unambiguously narrow graphics, not presentation-swayed.
+/// Control characters are a different attack, not a width one — a \n in
+/// a corner splits the row, an ESC injects terminal control through
+/// every render — banned by class (review #35).
+/// KNOWN SCOPE (review #35): BMP text-presentation-default emoji (☠ ❤ ▶,
+/// scattered through U+2600–27BF and beyond) are the same hazard class
+/// in principle, but the default unicode-rounded set itself ships ▪
+/// U+25AA (Emoji=Yes) and monospace stacks draw these narrow with
+/// near-total consistency — banning the class would reject every theme
+/// shipped since day one on evidence experiment 03 never measured.
+fn width_hazard(c: char) -> Option<&'static str> {
+    match c {
+        _ if c.is_control() => Some("control character"),
+        '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}' => Some("variation selector"),
+        '\u{200d}' => Some("zero-width joiner"),
+        '\u{1f000}'..='\u{1faff}' if unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) < 2 => {
+            Some("text-presentation pictograph (width differs across terminals)")
+        }
+        _ => None,
+    }
+}
+
+/// The minimum font tier a set of glyph strings assumes (ADR-400).
+fn infer_tier<'a>(glyphs: impl Iterator<Item = &'a str>) -> FontTier {
+    let mut tier = FontTier::Ascii;
+    for g in glyphs {
+        for c in g.chars() {
+            let t = match c {
+                '\u{e000}'..='\u{f8ff}'
+                | '\u{1fb00}'..='\u{1fbff}'
+                | '\u{f0000}'..='\u{10fffd}' => FontTier::NerdFont,
+                _ if unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) >= 2 => FontTier::Emoji,
+                _ if !c.is_ascii() => FontTier::Unicode,
+                _ => FontTier::Ascii,
+            };
+            tier = tier.max(t);
+        }
+    }
+    tier
+}
+
+fn all_glyphs(g: &Glyphs) -> [(&'static str, &str); 18] {
+    [
+        ("tl", &g.tl),
+        ("tr", &g.tr),
+        ("bl", &g.bl),
+        ("br", &g.br),
+        ("jl", &g.jl),
+        ("jr", &g.jr),
+        ("v", &g.v),
+        ("h", &g.h),
+        ("h-bottom", &g.h_bottom),
+        ("sel", &g.sel),
+        ("nosel", &g.nosel),
+        ("k_alias", &g.k_alias),
+        ("k_function", &g.k_function),
+        ("k_builtin", &g.k_builtin),
+        ("k_system", &g.k_system),
+        ("k_flag", &g.k_flag),
+        ("k_sub", &g.k_sub),
+        ("k_none", &g.k_none),
+    ]
+}
+
+/// The effective font tier for display: declared, else inferred from the
+/// glyphs actually used.
+pub fn font_tier(t: &Theme) -> FontTier {
+    t.requires
+        .unwrap_or_else(|| infer_tier(all_glyphs(&t.glyphs).iter().map(|(_, g)| *g)))
+}
+
+/// Every key the renderer reads, checked in COLUMNS (T3, T5, T6 as
+/// amended by ADR-400). Corners/junctions may span up to 8 columns —
+/// the border rows absorb the overhang; the rules are cycled patterns
+/// of 1-column chars; everything else is exactly one column.
 pub fn validate(t: &Theme) -> Vec<String> {
     let mut errs = Vec::new();
-    let boxes: [(&str, &str); 10] = [
+    for (k, g) in all_glyphs(&t.glyphs) {
+        for c in g.chars() {
+            if let Some(why) = width_hazard(c) {
+                errs.push(format!("glyphs.{k}: {c:?} is a {why} — rejected"));
+            }
+        }
+    }
+    let corners: [(&str, &str); 6] = [
         ("tl", &t.glyphs.tl),
         ("tr", &t.glyphs.tr),
         ("bl", &t.glyphs.bl),
         ("br", &t.glyphs.br),
         ("jl", &t.glyphs.jl),
         ("jr", &t.glyphs.jr),
+    ];
+    for (k, g) in corners {
+        let c = cols(g);
+        if !(1..=MAX_CORNER_COLS).contains(&c) {
+            errs.push(format!(
+                "glyphs.{k} must be 1–{MAX_CORNER_COLS} columns wide (is {c})"
+            ));
+        }
+    }
+    for (k, g) in [("h", &t.glyphs.h), ("h-bottom", &t.glyphs.h_bottom)] {
+        let n = g.chars().count();
+        if !(1..=MAX_RULE_CHARS).contains(&n) {
+            errs.push(format!(
+                "glyphs.{k} must be 1–{MAX_RULE_CHARS} chars (a cycled pattern; is {n})"
+            ));
+        }
+        for c in g.chars() {
+            if unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) != 1 {
+                errs.push(format!(
+                    "glyphs.{k}: every char of the rule pattern must be exactly one \
+                     column ({c:?} is not)"
+                ));
+            }
+        }
+    }
+    let boxes: [(&str, &str); 3] = [
         ("v", &t.glyphs.v),
-        ("h", &t.glyphs.h),
         ("sel", &t.glyphs.sel),
         ("nosel", &t.glyphs.nosel),
     ];
     for (k, g) in boxes {
         if cols(g) != 1 {
             errs.push(format!("glyphs.{k} must be exactly one column wide"));
+        }
+    }
+    if let Some(declared) = t.requires {
+        let inferred = infer_tier(all_glyphs(&t.glyphs).iter().map(|(_, g)| *g));
+        if declared < inferred {
+            errs.push(format!(
+                "requires = \"{}\" but the glyphs need \"{}\"",
+                declared.name(),
+                inferred.name()
+            ));
         }
     }
     let gutter: [(&str, &str); 7] = [
@@ -322,6 +502,17 @@ fn merge(name: &str, file: ThemeFile) -> Result<Theme, Vec<String>> {
             )])
         }
     };
+    let requires = match file.requires.as_deref() {
+        None => None,
+        Some(s) => match FontTier::parse(s) {
+            Some(t) => Some(t),
+            None => {
+                return Err(vec![format!(
+                    "requires '{s}' is not one of: ascii, unicode, emoji, nerd-font"
+                )])
+            }
+        },
+    };
     let b = base();
     let p = file.palette;
     let g = file.glyphs;
@@ -347,6 +538,12 @@ fn merge(name: &str, file: ThemeFile) -> Result<Theme, Vec<String>> {
             jl: g.jl.unwrap_or(glyph_base.jl),
             jr: g.jr.unwrap_or(glyph_base.jr),
             v: g.v.unwrap_or(glyph_base.v),
+            // h-bottom falls back to the theme's own h, not the set's —
+            // overriding h alone should carry the whole horizontal edge.
+            h_bottom: g
+                .h_bottom
+                .or_else(|| g.h.clone())
+                .unwrap_or(glyph_base.h_bottom),
             h: g.h.unwrap_or(glyph_base.h),
             sel: g.sel.unwrap_or(glyph_base.sel),
             nosel: g.nosel.unwrap_or(glyph_base.nosel),
@@ -358,6 +555,7 @@ fn merge(name: &str, file: ThemeFile) -> Result<Theme, Vec<String>> {
             k_sub: g.k_sub.unwrap_or(glyph_base.k_sub),
             k_none: g.k_none.unwrap_or(glyph_base.k_none),
         },
+        requires,
     };
     let errs = validate(&theme);
     if errs.is_empty() {
@@ -740,8 +938,10 @@ pub fn swatch(t: &Theme) -> String {
     let p = &t.palette;
     let g = &t.glyphs;
     // (text, style, is_border) — border chars take the per-char gradient.
+    // The rule is a cycled pattern (ADR-400): sample its first two chars.
+    let hh: String = g.h.chars().cycle().take(2).collect();
     let segs: Vec<(String, &str, bool)> = vec![
-        (format!("{}{}{}", g.tl, g.h, g.h), &p.border, true),
+        (format!("{}{}", g.tl, hh), &p.border, true),
         (" ".into(), "", false),
         (g.sel.clone(), &p.accent, false),
         (" ".into(), "", false),
@@ -754,7 +954,7 @@ pub fn swatch(t: &Theme) -> String {
         ("  ".into(), "", false),
         ("Tab cycle".into(), &p.hint, false),
         (" ".into(), "", false),
-        (format!("{}{}{}", g.h, g.h, g.tr), &p.border, true),
+        (format!("{hh}{}", g.tr), &p.border, true),
     ];
     // The gradient sampled by BORDER ORDINAL, not row position (T13): the
     // swatch's border is six glyphs in a sixty-column line, and indexing
@@ -1107,6 +1307,120 @@ mod tests {
     }
 
     #[test]
+    fn control_characters_are_rejected_in_every_glyph() {
+        // Review #35: the multi-column allowance must not open the corner
+        // keys to row-splitting newlines or terminal-control injection —
+        // a theme that lints ok must be safe to render.
+        for toml in [
+            "[glyphs]\ntl = \"a\\nb\"\n",
+            "[glyphs]\ntl = \"a\\u001B[31m\"\n",
+            "[glyphs]\ntl = \"a\\tb\"\n",
+            "[glyphs]\ntl = \"x\\u0007\"\n",
+        ] {
+            let err = from_toml("bad", toml).unwrap_err();
+            assert!(
+                err.iter().any(|e| e.contains("control character")),
+                "{toml:?}: {err:?}"
+            );
+        }
+        // The supplement variation selectors too (U+E0100+, width 0).
+        let err = from_toml("bad", "[glyphs]\ntl = \"a\u{e0100}\"\n").unwrap_err();
+        assert!(
+            err.iter().any(|e| e.contains("variation selector")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn corner_ramps_and_rule_patterns_are_legal() {
+        // ADR-400: multi-column corners tile because the rule absorbs
+        // the overhang; h cycles; h-bottom defaults to h.
+        let t = from_toml(
+            "ramp",
+            "[glyphs]\ntl = \"\u{1f383}▓▒░\"\ntr = \"░▒▓\u{1f383}\"\nh = \"─┄\"\n",
+        )
+        .unwrap();
+        assert_eq!(t.glyphs.h_bottom, "─┄", "h-bottom must follow h");
+        let t = from_toml("edges", "[glyphs]\nh = \"▀\"\n\"h-bottom\" = \"▄\"\n").unwrap();
+        assert_eq!(
+            (t.glyphs.h.as_str(), t.glyphs.h_bottom.as_str()),
+            ("▀", "▄")
+        );
+    }
+
+    #[test]
+    fn oversize_corner_is_rejected() {
+        // Ten columns of skulls exceeds the 8-column cap.
+        let err = from_toml(
+            "bad",
+            "[glyphs]\ntl = \"\u{1f480}\u{1f480}\u{1f480}\u{1f480}\u{1f480}\"\n",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| e.contains("tl")), "{err:?}");
+    }
+
+    #[test]
+    fn width_ambiguous_codepoints_are_rejected_by_name() {
+        // VS16 flips presentation width; a bare U+1F577 measures narrow
+        // but draws wide — both are exactly the ruler/terminal
+        // disagreement T6 exists to prevent (experiment 03).
+        let err = from_toml("bad", "[glyphs]\ntl = \"\u{1f577}\u{fe0f}\"\n").unwrap_err();
+        assert!(
+            err.iter().any(|e| e.contains("variation selector")),
+            "{err:?}"
+        );
+        let err = from_toml("bad", "[glyphs]\ntl = \"\u{1f577}\"\n").unwrap_err();
+        assert!(err.iter().any(|e| e.contains("pictograph")), "{err:?}");
+    }
+
+    #[test]
+    fn rule_pattern_chars_must_be_one_column() {
+        // A 2-column char inside h would make the cycle fill drift.
+        let err = from_toml("bad", "[glyphs]\nh = \"─\u{1f383}\"\n").unwrap_err();
+        assert!(err.iter().any(|e| e.contains("glyphs.h")), "{err:?}");
+    }
+
+    #[test]
+    fn requires_is_validated_against_the_inferred_tier() {
+        // Declaring less than the glyphs need is a lie the linter names.
+        let err = from_toml(
+            "bad",
+            "requires = \"unicode\"\n[glyphs]\ntl = \"\u{1f383}\"\n",
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|e| e.contains("requires")), "{err:?}");
+        // Declaring more than needed is allowed (author's intent).
+        let t = from_toml("fine", "requires = \"emoji\"\n").unwrap();
+        assert_eq!(font_tier(&t), FontTier::Emoji);
+        // Unknown tier is a named error.
+        let err = from_toml("bad", "requires = \"comic-sans\"\n").unwrap_err();
+        assert!(err[0].contains("comic-sans"), "{err:?}");
+    }
+
+    #[test]
+    fn font_tier_is_inferred_from_glyphs() {
+        assert_eq!(font_tier(&base()), FontTier::Ascii);
+        assert_eq!(font_tier(&builtin("aura").unwrap()), FontTier::Unicode);
+        assert_eq!(font_tier(&builtin("halloween").unwrap()), FontTier::Emoji);
+        assert_eq!(
+            font_tier(&builtin("powerline").unwrap()),
+            FontTier::NerdFont
+        );
+    }
+
+    #[test]
+    fn shipped_defaults_stay_at_unicode_or_below() {
+        // T7 as amended: the accessibility postures must render in any
+        // monospace font without opt-in.
+        for name in ["base", "aura", "mono", "plain"] {
+            assert!(
+                font_tier(&builtin(name).unwrap()) <= FontTier::Unicode,
+                "{name} exceeds the default-font tier"
+            );
+        }
+    }
+
+    #[test]
     fn wide_gutter_glyph_is_rejected_with_named_key() {
         // T6: emoji is two columns in most terminals.
         let err = from_toml("bad", "[glyphs]\nk_alias = \"🚀\"\n").unwrap_err();
@@ -1181,6 +1495,71 @@ mod tests {
             let t = builtin(name).expect(name);
             assert!(validate(&t).is_empty(), "{name}: {:?}", validate(&t));
             assert!(!preview(&t, 80).is_empty(), "{name} preview");
+        }
+    }
+
+    #[test]
+    fn every_builtin_preview_tiles_in_columns() {
+        // ADR-400: multi-column corners and cycled rules must still give
+        // every card row the same COLUMN width — the invariant that made
+        // T6 a correctness rule, now pinned through the real renderer.
+        fn strip_ansi(s: &str) -> String {
+            let mut out = String::new();
+            let mut chars = s.chars();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    for d in chars.by_ref() {
+                        if d == 'm' {
+                            break;
+                        }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+        for name in builtin_names() {
+            let t = builtin(name).expect(name);
+            for line in preview(&t, 64).lines() {
+                let plain = strip_ansi(line);
+                if plain.trim().is_empty() {
+                    continue;
+                }
+                assert_eq!(cols(&plain), 63, "{name}: row width drifted: {plain:?}");
+            }
+        }
+        // Below the card floor the terminal squeezes lw (W3): rows must
+        // DEGRADE (1-column corner stand-ins), never overflow — an
+        // 8-column ramp scrambled an 18-column tmux slice (review #35).
+        // Every row of a render agrees with its own body rows, at every
+        // width, for the widest shipped ramps and a max-legal theme.
+        let maxed = from_toml(
+            "max-legal",
+            "[glyphs]\ntl = \"\u{1f383}\u{1f383}\u{1f383}\u{1f383}\"\n\
+             tr = \"\u{1f383}\u{1f383}\u{1f383}\u{1f383}\"\n\
+             bl = \"\u{1f987}\u{1f987}\u{1f987}\u{1f987}\"\n\
+             br = \"\u{1f987}\u{1f987}\u{1f987}\u{1f987}\"\n",
+        )
+        .unwrap();
+        // From 12 up: at ≤11 columns even 1-column-corner themes drift
+        // (pre-existing, measured in review #35) — the pin here is that
+        // ramps add NO width where the baseline holds.
+        for t in [&builtin("halloween").unwrap(), &maxed] {
+            for w in 12..=80u16 {
+                let mut widths = std::collections::BTreeSet::new();
+                for line in preview(t, w).lines() {
+                    let plain = strip_ansi(line);
+                    if !plain.trim().is_empty() {
+                        widths.insert(cols(&plain));
+                    }
+                }
+                assert!(
+                    widths.len() <= 1,
+                    "{} at {w} cols: rows disagree: {widths:?}",
+                    t.name
+                );
+            }
         }
     }
 }

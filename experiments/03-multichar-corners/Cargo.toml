@@ -1,0 +1,16 @@
+[package]
+name = "corner-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Pinned to the workspace's version: the whole question is what THIS
+# crate claims about emoji columns, because it is what validate() uses.
+[dependencies]
+unicode-width = "=0.2.2"
+
+[[bin]]
+name = "corner-spike"
+path = "main.rs"
+
+[workspace]

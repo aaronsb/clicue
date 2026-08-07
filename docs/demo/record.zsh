@@ -81,13 +81,18 @@ beat 2.0
 pty_key $'\x03'; beat 0.5
 say 'clicue theme list'
 pty_key $'\r'
-beat 2.6
-say 'clicue config set theme chrome'
-pty_key $'\r'
-beat 1.8                             # daemon hot-reloads within a second
-say 'git '
-beat 2.2                             # the same card, recolored live
-pty_key $'\x03'; beat 0.4
+beat 3.0                             # twenty swatches, tier labels included
+# Costume parade: the same card re-dressed live — synthwave's sunset
+# gradient running into shade ramps, halloween's pumpkin/bat corners
+# (ADR-400 ramps), petscii's C64 boot screen with its ▀/▄ split rule.
+for costume in synthwave halloween petscii; do
+  say "clicue config set theme $costume"
+  pty_key $'\r'
+  beat 1.4                           # daemon hot-reloads within a second
+  say 'git '
+  beat 2.4                           # the same card, recolored live
+  pty_key $'\x03'; beat 0.4
+done
 say ' exit'
 pty_key $'\r'
 beat 0.4

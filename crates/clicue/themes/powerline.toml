@@ -1,0 +1,32 @@
+# clicue theme "powerline" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+# Powerline / oh-my-posh flavoured: solid caps ending in the PUA
+# separator glyphs (written as \u escapes — PUA is tofu in most
+# editors: E0B6/E0B4 round caps, E0B0/E0B2 triangles, E0B1 chevron).
+# Requires a Nerd Font (or any powerline-patched font) — without one
+# the corners render as tofu, which `theme list` labels, not hides.
+
+glyph-set = "unicode-rounded"
+requires = "nerd-font"
+
+[glyphs]
+tl = "\uE0B6█\uE0B0"
+tr = "\uE0B2█\uE0B4"
+bl = "\uE0B6█\uE0B0"
+br = "\uE0B2█\uE0B4"
+jl = "█\uE0B0"
+jr = "\uE0B2█"
+sel = "\uE0B1"
+nosel = " "
+
+[palette]
+border = "fg=#569cd6"
+accent = "fg=#c586c0"
+text = "fg=#d4d4d4"
+gloss = "fg=#8a8a8a"
+hint = "fg=#8a8a8a"
+ghost = "fg=#6a6a6a"
+selected = "fg=#1e1e1e,bg=#569cd6"
+match = "fg=#4ec9b0,bold"
+panel = "bg=#1e1e1e"

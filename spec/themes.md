@@ -35,15 +35,26 @@ daemon; `clicue theme` lists, sets, and previews.
 - T5 [domain] The selection marker and its blank counterpart must be the
   same width, or every unselected row sits one column off the selected one.
   (theme.zsh:117–119; base comment at 44–54)
-- T6 [domain] Gutter glyphs are exactly one COLUMN wide — East Asian Wide
-  and emoji codepoints are two columns in most terminals and shift the
-  whole row. The prototype polices character count by hand; the daemon
-  measures columns with unicode-width, which is the actual invariant.
-  (theme.zsh:122–127; themes/aura.zsh comments)
-- T7 [domain] Default themes use no Nerd Font or emoji glyphs: those are
-  present by default nowhere, and a missing glyph renders as a hollow box —
-  breakage, not style. An operator who knows their font can opt in
-  explicitly. (themes/aura.zsh:1–10)
+- T6 [domain, amended by ADR-400] Gutter glyphs, `v`, and the selection
+  markers are exactly one COLUMN wide — East Asian Wide and emoji
+  codepoints are two columns in most terminals and shift the whole row.
+  The prototype polices character count by hand; the daemon measures
+  columns with unicode-width, which is the actual invariant. Corners and
+  junctions (`tl` `tr` `bl` `br` `jl` `jr`) are exempt: they may be
+  strings of 1–8 columns ("ramps", `🎃▓▒░`), whose overhang the border
+  rule absorbs so every row still tiles; the rules `h`/`h-bottom` are
+  1–8 char patterns of 1-column chars, cycled to fill. What is banned
+  outright, everywhere, is any codepoint whose width unicode-width and
+  the terminal can disagree about: variation selectors, ZWJ, and
+  narrow-measuring pictographs in the emoji blocks (experiment 03,
+  [MEASURED]). (theme.zsh:122–127; themes/aura.zsh comments)
+- T7 [domain, amended by ADR-400] Default themes (base, aura, mono,
+  plain) use no Nerd Font or emoji glyphs: those are present by default
+  nowhere, and a missing glyph renders as a hollow box — breakage, not
+  style. Novelty themes may assume more of the font, but must DECLARE it:
+  `requires = ascii|unicode|emoji|nerd-font`, validated against the tier
+  the glyphs actually imply and surfaced by `theme list`, so tofu reads
+  as a named font requirement, not breakage. (themes/aura.zsh:1–10)
 - T8 [domain] Three shipped encodings, each a distinct accessibility
   posture: aura (colour + Unicode), mono (Unicode, weight and dimming
   instead of hue — for operators for whom colour is not a channel), plain
@@ -109,3 +120,10 @@ daemon; `clicue theme` lists, sets, and previews.
   the fallback: `theme set` on a broken-but-shipped name says the
   fallback is serving, and `theme list` marks the swatch it drew from a
   fallback.
+- T15 [domain, ADR-400] One validator, two doors: `clicue theme lint
+  <file|name>` runs the exact `from_toml` + `validate` path the loader
+  runs — a path lints the author's file (installed or not), a bare name
+  lints what the loader would actually serve. It reports the effective
+  font tier and exits nonzero on any problem, so a theme author can
+  check legality without installing, and the linter can never drift
+  from what the daemon accepts.

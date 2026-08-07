@@ -1,0 +1,39 @@
+# clicue theme "petscii" — regenerated from the built-in when this file
+# is missing, so DELETING it restores the default. Edits apply live.
+# Partial files are legal: absent keys fall back to the base theme.
+# Commodore 64 boot screen: quadrant-block frame (the h-bottom key
+# exists exactly so ▀ tops and ▄ bottoms can meet their corners), light
+# blue on blue, all from universally-present block characters.
+
+requires = "unicode"
+
+[glyphs]
+tl = "▛"
+tr = "▜"
+bl = "▙"
+br = "▟"
+jl = "▌"
+jr = "▐"
+v = "░"
+h = "▀"
+h-bottom = "▄"
+sel = "▶"
+nosel = " "
+k_alias = "="
+k_function = "f"
+k_builtin = "◆"
+k_system = "▪"
+k_flag = "·"
+k_sub = "›"
+k_none = " "
+
+[palette]
+border = "fg=#887ecb"
+accent = "fg=#ffffff,bold"
+text = "fg=#887ecb"
+gloss = "fg=#6c5eb5"
+hint = "fg=#6c5eb5"
+ghost = "fg=#554494"
+selected = "fg=#40318d,bg=#887ecb"
+match = "fg=#ffffff,bold"
+panel = "bg=#40318d"
