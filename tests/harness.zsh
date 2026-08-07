@@ -53,7 +53,18 @@ TRAPEXIT() { pty_stop }
 
 t_fail() { print -u2 "FAIL: $1"; T_STATUS=1 }
 t_skip() { print "SKIP: $1"; pty_stop 2>/dev/null; exit 0 }
-t_done() { pty_stop 2>/dev/null; exit $T_STATUS }
+t_done() {
+  # A failing scenario on a machine you cannot poke (CI) is undebuggable
+  # without the daemon's own account — dump it before the sandbox dies.
+  if (( T_STATUS != 0 )) && [[ -n $T_SANDBOX ]]; then
+    print -u2 "── daemon.log (${T_SANDBOX}) ──"
+    tail -n 40 $T_SANDBOX/daemon.log 2>/dev/null >&2
+    print -u2 "── sandbox data ──"
+    ls -la $T_SANDBOX/data $T_SANDBOX/cache 2>/dev/null >&2
+  fi
+  pty_stop 2>/dev/null
+  exit $T_STATUS
+}
 
 # Sandbox + daemon + interactive zsh under zpty. $1 = profile (default plain).
 pty_start() {
