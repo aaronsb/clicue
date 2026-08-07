@@ -29,6 +29,9 @@ local -F per_key=$(( (last - t0) * 1000 / ${#text} ))
 local -F gate=${CLICUE_E2E_GATE_MS:-25}
 printf 'typed %d keys: %.1f ms/key (gate %.0f)\n' ${#text} $per_key $gate
 (( per_key < gate )) || t_fail "typing lag: ${per_key}ms/key (gate ${gate}ms)"
+# The latency measurement is done; the card may still be catching up on
+# a starved machine — give it a sentinel wait before asserting.
+pty_wait_for '*╭*' 5
 [[ $PTY_OUT == *'╭'* ]] || t_fail "no card ever painted during typing"
 
 t_done

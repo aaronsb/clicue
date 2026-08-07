@@ -135,6 +135,21 @@ pty_start() {
   PTY_OUT=''
 }
 
+# Drain until PTY_OUT matches the glob $1, or ${2:-8}s passes. Returns
+# whether it matched. Scenarios began life with fixed drains tuned to an
+# idle machine; on a starved CI VM the first Tab's compsys work blew
+# every one of them, while the sentinel-waiting scenario passed (PR #39).
+# Wait for the thing itself, not for an amount of time.
+pty_wait_for() {
+  local pat=$1
+  local -F wait_deadline=$(( EPOCHREALTIME + ${2:-8} ))
+  while (( EPOCHREALTIME < wait_deadline )); do
+    [[ $PTY_OUT == ${~pat} ]] && return 0
+    pty_drain 0.25
+  done
+  [[ $PTY_OUT == ${~pat} ]]
+}
+
 # Drain until $1 seconds of silence. Appends to PTY_OUT.
 pty_drain() {
   local -F quiet=$(( EPOCHREALTIME + $1 ))
