@@ -3,3 +3,4 @@ scratch/
 /target
 dist/
 experiments/*/target/
+__pycache__/
