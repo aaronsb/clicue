@@ -51,8 +51,21 @@ enum Command {
         #[command(subcommand)]
         cmd: Option<DataCmd>,
     },
-    /// Run the daemon (normally auto-spawned by the shim)
-    Daemon,
+    /// Run the daemon (normally auto-spawned by the shim), or manage it
+    Daemon {
+        #[command(subcommand)]
+        cmd: Option<DaemonCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Is a daemon running, and is its binary current?
+    Status,
+    /// Stop the running daemon (shells respawn one on the next keystroke)
+    Stop,
+    /// Stop any running daemon and start a fresh one from this binary
+    Restart,
 }
 
 #[derive(Subcommand)]
@@ -226,6 +239,58 @@ fn theme_cmd(cmd: Option<ThemeCmd>) -> Result<()> {
                     )
                 }
             }
+        }
+    }
+}
+
+/// Lifecycle verbs over the lockfile truth (spec §9b, ADR-300). Bare
+/// `clicue daemon` still RUNS the daemon — the shim's spawn line.
+fn daemon_cmd(cmd: Option<DaemonCmd>) -> Result<()> {
+    use clicue::daemon::{self, DaemonState};
+    let Some(cmd) = cmd else {
+        return daemon::run();
+    };
+    let (st, sock) = daemon::state()?;
+    match cmd {
+        DaemonCmd::Status => {
+            match st {
+                DaemonState::NotRunning => {
+                    println!(
+                        "daemon: not running — it auto-spawns on the next keystroke in a wired shell"
+                    );
+                }
+                DaemonState::Running { pid, exe_current } => {
+                    if exe_current {
+                        println!("daemon: running (pid {pid}, binary current)");
+                    } else {
+                        println!(
+                            "daemon: running (pid {pid}) — its binary was replaced since it \
+                             started; `clicue daemon restart` picks up v{}",
+                            env!("CARGO_PKG_VERSION")
+                        );
+                    }
+                }
+            }
+            println!("socket: {}", sock.display());
+            Ok(())
+        }
+        DaemonCmd::Stop => {
+            match daemon::stop(&sock)? {
+                Some(pid) => println!(
+                    "stopped (pid {pid}) — wired shells respawn a daemon on their next keystroke"
+                ),
+                None => println!("no daemon running"),
+            }
+            Ok(())
+        }
+        DaemonCmd::Restart => {
+            let was = daemon::stop(&sock)?;
+            let pid = daemon::start_detached(&sock)?;
+            match was {
+                Some(old) => println!("restarted: pid {pid} (was {old})"),
+                None => println!("started: pid {pid} (no daemon was running)"),
+            }
+            Ok(())
         }
     }
 }
@@ -447,6 +512,6 @@ fn main() -> Result<()> {
         }
         Command::Theme { cmd } => theme_cmd(cmd),
         Command::Data { cmd } => data(cmd),
-        Command::Daemon => clicue::daemon::run(),
+        Command::Daemon { cmd } => daemon_cmd(cmd),
     }
 }

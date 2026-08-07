@@ -22,6 +22,13 @@ _Architecture, data model, ranking and corpus semantics_
 |-----|-------|--------|
 | [ADR-100](./core/ADR-100-rebuild-as-a-rust-daemon-behind-a-generated-zsh-shim.md) | Rebuild as a Rust daemon behind a generated zsh shim | Accepted |
 
+## Protocol
+_Daemon IPC contract and lifecycle_
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [ADR-300](./protocol/ADR-300-daemon-lifecycle-controls-and-self-retirement-on-binary-replacement.md) | Daemon lifecycle: controls and self-retirement on binary replacement | Accepted |
+
 ## Tool
 _CLI tool surface — install, doctor, config, theme, data_
 

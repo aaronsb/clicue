@@ -4,10 +4,15 @@ post_install() {
 }
 
 post_upgrade() {
-  echo "Re-run 'clicue install' to update unedited theme files to this"
-  echo "version's templates (edited files are never touched) and to add"
-  echo "the command-v guard to a pre-guard rc line, then 'pkill -x clicue'"
-  echo "— the daemon respawns on the next keystroke."
+  # Daemons from 0.4.0 on retire themselves when their binary is
+  # replaced (spec §9a); this covers daemons started by OLDER versions.
+  # Root reaches every user's daemon; each wired shell respawns a fresh
+  # one on its next keystroke.
+  pkill -x clicue >/dev/null 2>&1 || :
+  echo "Running daemons were stopped; each shell respawns a fresh one on"
+  echo "its next keystroke. Re-run 'clicue install' to update unedited"
+  echo "theme files to this version's templates (edited files are never"
+  echo "touched)."
 }
 
 post_remove() {

@@ -6,6 +6,9 @@
 # editors: E0B6/E0B4 round caps, E0B0/E0B2 triangles, E0B1 chevron).
 # Requires a Nerd Font (or any powerline-patched font) — without one
 # the corners render as tofu, which `theme list` labels, not hides.
+# Degradation varies by terminal: some draw a one-cell box, but Konsole
+# draws missing PUA as multi-cell <hex> placeholders, which also breaks
+# row alignment [MEASURED 2026-08-06]. The requires line is load-bearing.
 
 glyph-set = "unicode-rounded"
 requires = "nerd-font"
