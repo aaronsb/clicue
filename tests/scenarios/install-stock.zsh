@@ -39,8 +39,16 @@ PTY_OUT=''
 
 pty_type 'tar -'
 pty_key $'\t'
-pty_drain 0.8
-pty_drain 0.4
+# Sentinel wait, not a fixed drain (same reason as the install above):
+# the harvest runs a compsys capture whose duration varies wildly with
+# the machine — a cold 2-core CI runner missed a 1.2s budget while the
+# card itself was already up [MEASURED: ubuntu-latest, PR #39].
+deadline=$(( EPOCHREALTIME + 8 ))
+while (( EPOCHREALTIME < deadline )); do
+  pty_drain 0.3
+  t_plain "$PTY_OUT"
+  [[ $REPLY == *'╭'* && $REPLY == *archive* ]] && break
+done
 t_plain "$PTY_OUT"
 [[ $REPLY == *'╭'* ]] || t_fail "no card after stock install"
 # tar's documented set proves the harvest crossed compsys — which only
