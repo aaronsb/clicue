@@ -311,7 +311,7 @@ fn data(cmd: Option<DataCmd>) -> Result<()> {
                 .iter()
                 .filter(|(k, _)| **k == cmd || k.starts_with(&prefix))
                 .collect();
-            invocations.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+            invocations.sort_by_key(|(_, s)| std::cmp::Reverse(s.count));
             if !invocations.is_empty() {
                 println!("  invocations:");
                 for (k, s) in invocations.iter().take(10) {

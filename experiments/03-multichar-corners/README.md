@@ -31,6 +31,13 @@ cargo run --quiet
 
 ## Results (2026-08-06, unicode-width 0.2.2) [MEASURED]
 
+- probe.zsh on the operator's terminal (TERM=xterm-256color,
+  2026-08-06): agreement with unicode-width on every shipped glyph —
+  🎃 🦇 👻 💀 ⚡ all 2 columns, ╭ 1, `🎃─` 3, `🦇🦇` 4. The VS16 pairs
+  also matched there (🕷 bare 1 / +VS16 2), which is exactly the
+  terminal-dependent behaviour that keeps them banned: this emulator
+  agrees, others don't.
+
 - Fully-qualified emoji — 🎃 U+1F383, 🦇 U+1F987, 👻 U+1F47B,
   💀 U+1F480, ⚡ U+26A1 — are 2 columns, and terminals broadly agree:
   these are emoji-presentation-by-default codepoints.
