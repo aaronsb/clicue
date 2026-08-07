@@ -17,7 +17,16 @@ while [[ $PTY_OUT != *RC=[0-9]* ]] && (( EPOCHREALTIME < deadline )); do
   pty_drain 0.3
 done
 t_plain "$PTY_OUT"
-[[ $REPLY == *'RC=0'* ]] || t_fail "clicue install failed"
+if [[ $REPLY != *'RC=0'* ]]; then
+  t_fail "clicue install failed"
+  # The reason lives in the sandboxed log — surface it or CI shows
+  # only this assert (first seen: ubuntu runner, review of PR #39).
+  PTY_OUT=''
+  pty_exec 'cat $HOME/install.log'
+  t_plain "$PTY_OUT"
+  print -u2 "── install.log ──"
+  print -u2 "$REPLY"
+fi
 PTY_OUT=''
 pty_exec 'print COUNT=$(grep -c "clicue init zsh" $ZDOTDIR/.zshrc)'
 t_plain "$PTY_OUT"

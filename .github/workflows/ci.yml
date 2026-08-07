@@ -21,6 +21,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install zsh (the shim unit tests exec it)
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - run: make check
 
   e2e:
