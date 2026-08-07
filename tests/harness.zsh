@@ -95,6 +95,29 @@ pty_start() {
     (( EPOCHREALTIME > deadline )) && { print -u2 "daemon never bound"; exit 2 }
     zselect -t 1 2>/dev/null   # 10ms; TRAPEXIT reaps on the failure path
   done
+  # The socket existing is NOT the daemon answering: it binds before the
+  # corpus build (a cold whatis sweep takes seconds on slow machines) and
+  # serves after. A scenario that types immediately lands every keystroke
+  # inside that window, each reply absent by the 25ms deadline, and fails
+  # having never seen a card [MEASURED: ubuntu-latest, PR #39]. Gate on a
+  # real answered request — the protocol's own minimal redraw frame.
+  zmodload zsh/net/socket zsh/system 2>/dev/null
+  local ready_req='{"v":1,"session":{"pid":'$$',"start":0},"event":{"kind":"redraw"},"buffer":"","cursor":0,"cols":80,"lines":24,"keymap":"main"}'
+  local ready_buf='' ready_chunk
+  local -i ready_fd
+  deadline=$(( EPOCHREALTIME + 20 ))
+  while [[ -z $ready_buf ]]; do
+    (( EPOCHREALTIME > deadline )) && { print -u2 "daemon bound but never answered"; exit 2 }
+    if zsocket $T_SANDBOX/run/clicue.sock 2>/dev/null; then
+      ready_fd=$REPLY
+      if syswrite -o $ready_fd "$ready_req"$'\n' 2>/dev/null; then
+        sysread -i $ready_fd -t 2 ready_chunk 2>/dev/null && ready_buf=$ready_chunk
+      fi
+      exec {ready_fd}>&- 2>/dev/null
+    else
+      zselect -t 20 2>/dev/null
+    fi
+  done
   # zpty inherits the exported sandbox; PATH keeps the build's binary first
   # so `clicue init zsh` in .zshrc emits the shim under test.
   export ZDOTDIR=$T_SANDBOX HOME=$T_SANDBOX HISTFILE=$T_SANDBOX/.zsh_history
