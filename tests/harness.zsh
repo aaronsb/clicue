@@ -39,6 +39,14 @@ typeset -gi T_DAEMON_PID=0
 # under test in every scenario until this bit) [MEASURED].
 typeset -g CLICUE_BIN=${${CLICUE_BIN:-$T_ROOT/../target/debug/clicue}:A}
 
+# Headless runners (CI, containers) hand us neither a terminal type nor
+# a locale; a developer shell supplies both invisibly. Without TERM zle
+# never paints POSTDISPLAY (no card, and the Tab harvest that rides the
+# card dies with it); without a UTF-8 locale every multibyte glyph
+# assertion fails [MEASURED: rust:bookworm, ubuntu-latest, PR #39].
+export TERM=${TERM:-xterm-256color}
+[[ $LANG == *(#i)utf-8* || $LC_ALL == *(#i)utf-8* ]] || export LANG=C.UTF-8
+
 # Cleanup runs on EVERY exit path — a failed pty_start or an aborted
 # scenario must not leak its daemon or sandbox.
 TRAPEXIT() { pty_stop }
