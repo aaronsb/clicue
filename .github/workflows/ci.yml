@@ -34,6 +34,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Probe timing (diagnosing the 10s doctor timeout on runners)
+        run: |
+          time zsh -ic 'print interactive-ok' </dev/null || true
+          time zsh -c 'print plain-ok' </dev/null || true
+          ls -la /etc/zsh/ || true
+          echo "TERM=$TERM LANG=$LANG SHELL=$SHELL"
       - run: make e2e
 
   adr-lint:
