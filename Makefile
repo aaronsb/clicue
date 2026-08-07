@@ -26,6 +26,12 @@ check: fmt clippy test ## Everything CI would run
 e2e: build ## Sandboxed pty scenarios: real shell, real daemon, real keys
 	zsh tests/run.zsh
 
+# CI runs this variant: a contended runner VM with a debug daemon misses
+# the shim's 25ms deadline and cards go absent BY DESIGN (spec §8) —
+# test the binary users actually run.
+e2e-release: release ## e2e against the release binary (what CI runs)
+	CLICUE_BIN=$(CURDIR)/target/release/clicue zsh tests/run.zsh
+
 demo: build ## Record docs/demo/clicue.cast (+ .gif when agg is installed)
 	asciinema rec --overwrite --window-size 100x26 -c "zsh docs/demo/record.zsh" docs/demo/clicue.cast
 	@command -v agg >/dev/null 2>&1 \

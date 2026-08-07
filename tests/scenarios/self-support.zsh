@@ -17,8 +17,7 @@ PTY_OUT=''
 # The FIRST Tab both harvests and renders the full card; later Tabs only
 # repaint the moved marker cells, so assertions belong on this window.
 pty_key $'\t'
-pty_drain 0.9
-pty_drain 0.4
+pty_wait_for '*Probe a live zsh*'
 
 t_plain "$PTY_OUT"
 [[ $REPLY == *'╭'* ]]      || t_fail "no card for clicue's own arguments"

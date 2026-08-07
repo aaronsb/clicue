@@ -1,0 +1,58 @@
+# CI mirrors `make check` and `make e2e` — the Makefile is the canonical
+# interface; these jobs only provide the machine that runs it on every PR.
+# The e2e job is separate so a pty flake never muddies the check signal.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt + clippy + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install zsh (the shim unit tests exec it)
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - run: make check
+
+  e2e:
+    name: sandboxed pty scenarios (advisory)
+    runs-on: ubuntu-latest
+    # Advisory, not gating: a trio of pty scenarios fails on GitHub's
+    # shared runners with symptoms no local environment reproduces —
+    # bookworm, 2-cpu-throttled, and act runner-image containers all
+    # pass 11/11. Investigation record: issue #43. Flip this off once
+    # the runner-only failure is caught.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      # Runner images ship group-writable zsh function dirs; compaudit
+      # then prompts inside the sandboxed shell, compinit never finishes,
+      # and every compsys harvest comes back empty. Repair the
+      # environment rather than teach the installer to skip the audit.
+      - name: Fix compaudit-insecure directories
+        run: sudo chmod -R g-w,o-w /usr/share/zsh /usr/local/share/zsh 2>/dev/null || true
+      # Release binary: a contended runner with a debug daemon misses the
+      # shim's 25ms deadline and cards go absent by design (spec §8).
+      - run: make e2e-release
+
+  adr-lint:
+    name: adr + doc structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docs/scripts/adr lint --check

@@ -99,15 +99,27 @@ print -r -- "zim=${+functions[zimfw]}"
 }
 
 /// Run the probe in a captive interactive zsh with a hard timeout — an rc
-/// file that blocks on input must not hang the doctor.
+/// file that blocks on input must not hang the doctor. Captive means NO
+/// controlling terminal (setsid), not just a null stdin: compinit's
+/// compaudit prompt and every "press any key" rc read go to /dev/tty
+/// directly, bypassing stdin — with no ctty they abort instantly instead
+/// of hanging the probe. [MEASURED: ubuntu-latest, whose global zsh rc
+/// runs compinit; under a pty its insecure-dirs prompt ate the whole 10s.]
 pub fn run_probe() -> Result<BTreeMap<String, String>> {
-    let mut child = Command::new("zsh")
-        .args(["-ic", &probe_script()])
+    let mut cmd = Command::new("zsh");
+    cmd.args(["-ic", &probe_script()])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("spawning zsh — is zsh installed?")?;
+        .stderr(Stdio::null());
+    // Safety: setsid is async-signal-safe; nothing else runs pre-exec.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().context("spawning zsh — is zsh installed?")?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match child.try_wait()? {

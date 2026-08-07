@@ -39,13 +39,43 @@ typeset -gi T_DAEMON_PID=0
 # under test in every scenario until this bit) [MEASURED].
 typeset -g CLICUE_BIN=${${CLICUE_BIN:-$T_ROOT/../target/debug/clicue}:A}
 
+# Headless runners (CI, containers) hand us neither a terminal type nor
+# a locale; a developer shell supplies both invisibly. Without TERM zle
+# never paints POSTDISPLAY (no card, and the Tab harvest that rides the
+# card dies with it); without a UTF-8 locale every multibyte glyph
+# assertion fails [MEASURED: rust:bookworm, ubuntu-latest, PR #39].
+export TERM=${TERM:-xterm-256color}
+[[ $LANG == *(#i)utf-8* || $LC_ALL == *(#i)utf-8* ]] || export LANG=C.UTF-8
+
 # Cleanup runs on EVERY exit path — a failed pty_start or an aborted
 # scenario must not leak its daemon or sandbox.
 TRAPEXIT() { pty_stop }
 
 t_fail() { print -u2 "FAIL: $1"; T_STATUS=1 }
 t_skip() { print "SKIP: $1"; pty_stop 2>/dev/null; exit 0 }
-t_done() { pty_stop 2>/dev/null; exit $T_STATUS }
+t_done() {
+  # A failing scenario on a machine you cannot poke (CI) is undebuggable
+  # without the daemon's and the SHIM's own accounts — dump both before
+  # the sandbox dies. The shim silences itself for the shell's lifetime
+  # on an error frame (spec §10); whether it did, and why, is the first
+  # question every no-card failure needs answered.
+  if (( T_STATUS != 0 )) && [[ -n $T_SANDBOX ]]; then
+    local tail_out=${PTY_OUT: -600}
+    PTY_OUT=''
+    zpty -w clicue_pty ' print "T-DEAD=$_clicue_dead T-ERR=$_clicue_err"' 2>/dev/null
+    pty_drain 0.6
+    print -u2 "── shim state ──"
+    t_plain "$PTY_OUT"
+    print -ru2 -- "$REPLY"
+    print -u2 "── last screen output ──"
+    t_plain "$tail_out"
+    print -ru2 -- "$REPLY"
+    print -u2 "── daemon.log (${T_SANDBOX}) ──"
+    tail -n 40 $T_SANDBOX/daemon.log 2>/dev/null >&2
+  fi
+  pty_stop 2>/dev/null
+  exit $T_STATUS
+}
 
 # Sandbox + daemon + interactive zsh under zpty. $1 = profile (default plain).
 pty_start() {
@@ -76,6 +106,26 @@ pty_start() {
     (( EPOCHREALTIME > deadline )) && { print -u2 "daemon never bound"; exit 2 }
     zselect -t 1 2>/dev/null   # 10ms; TRAPEXIT reaps on the failure path
   done
+  # The socket existing is NOT the daemon answering: it binds before the
+  # corpus build (a cold whatis sweep takes seconds on slow machines) and
+  # serves after. A scenario that types immediately lands every keystroke
+  # inside that window, each reply absent by the 25ms deadline, and fails
+  # having never seen a card [MEASURED: ubuntu-latest, PR #39]. Gate on a
+  # real answered request — the protocol's own minimal redraw frame — from
+  # a DISPOSABLE zsh: a probe crash or wedge then costs one retry, never
+  # the scenario shell.
+  local ready_req='{"v":1,"session":{"pid":'$$',"start":0},"event":{"kind":"redraw"},"buffer":"","cursor":0,"cols":80,"lines":24,"keymap":"main"}'
+  deadline=$(( EPOCHREALTIME + 20 ))
+  until zsh -fc '
+    zmodload zsh/net/socket zsh/system || exit 1
+    zsocket '$T_SANDBOX'/run/clicue.sock 2>/dev/null || exit 1
+    syswrite -o $REPLY -- ${1}$'\''\n'\'' 2>/dev/null || exit 1
+    local chunk
+    sysread -i $REPLY -t 2 chunk 2>/dev/null && [[ -n $chunk ]]
+  ' probe "$ready_req" 2>/dev/null; do
+    (( EPOCHREALTIME > deadline )) && { print -u2 "daemon bound but never answered"; exit 2 }
+    zselect -t 20 2>/dev/null
+  done
   # zpty inherits the exported sandbox; PATH keeps the build's binary first
   # so `clicue init zsh` in .zshrc emits the shim under test.
   export ZDOTDIR=$T_SANDBOX HOME=$T_SANDBOX HISTFILE=$T_SANDBOX/.zsh_history
@@ -94,6 +144,21 @@ pty_start() {
     exit 2
   fi
   PTY_OUT=''
+}
+
+# Drain until PTY_OUT matches the glob $1, or ${2:-8}s passes. Returns
+# whether it matched. Scenarios began life with fixed drains tuned to an
+# idle machine; on a starved CI VM the first Tab's compsys work blew
+# every one of them, while the sentinel-waiting scenario passed (PR #39).
+# Wait for the thing itself, not for an amount of time.
+pty_wait_for() {
+  local pat=$1
+  local -F wait_deadline=$(( EPOCHREALTIME + ${2:-8} ))
+  while (( EPOCHREALTIME < wait_deadline )); do
+    [[ $PTY_OUT == ${~pat} ]] && return 0
+    pty_drain 0.25
+  done
+  [[ $PTY_OUT == ${~pat} ]]
 }
 
 # Drain until $1 seconds of silence. Appends to PTY_OUT.
