@@ -55,12 +55,23 @@ t_fail() { print -u2 "FAIL: $1"; T_STATUS=1 }
 t_skip() { print "SKIP: $1"; pty_stop 2>/dev/null; exit 0 }
 t_done() {
   # A failing scenario on a machine you cannot poke (CI) is undebuggable
-  # without the daemon's own account — dump it before the sandbox dies.
+  # without the daemon's and the SHIM's own accounts — dump both before
+  # the sandbox dies. The shim silences itself for the shell's lifetime
+  # on an error frame (spec §10); whether it did, and why, is the first
+  # question every no-card failure needs answered.
   if (( T_STATUS != 0 )) && [[ -n $T_SANDBOX ]]; then
+    local tail_out=${PTY_OUT: -600}
+    PTY_OUT=''
+    zpty -w clicue_pty ' print "T-DEAD=$_clicue_dead T-ERR=$_clicue_err"' 2>/dev/null
+    pty_drain 0.6
+    print -u2 "── shim state ──"
+    t_plain "$PTY_OUT"
+    print -ru2 -- "$REPLY"
+    print -u2 "── last screen output ──"
+    t_plain "$tail_out"
+    print -ru2 -- "$REPLY"
     print -u2 "── daemon.log (${T_SANDBOX}) ──"
     tail -n 40 $T_SANDBOX/daemon.log 2>/dev/null >&2
-    print -u2 "── sandbox data ──"
-    ls -la $T_SANDBOX/data $T_SANDBOX/cache 2>/dev/null >&2
   fi
   pty_stop 2>/dev/null
   exit $T_STATUS
