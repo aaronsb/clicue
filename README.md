@@ -153,7 +153,8 @@ actual jack-o-lantern and bat corners, if your font has emoji.
 Corners can be multi-column "ramps" (`🎃▓▒░` greebles down into the border
 rule), the rule itself can be a repeating pattern, and
 `clicue theme lint my-theme.toml` checks any theme you write against the
-same validator the daemon runs.
+same validator the daemon runs. Authoring guide:
+[docs/how-to/write-your-own-theme.md](docs/how-to/write-your-own-theme.md).
 
 **Every theme is a file.** `clicue install` seeds each one as its own TOML in
 `~/.config/clicue/themes/`; edit any of them and the change applies live in
