@@ -1,15 +1,17 @@
 # Maintainer: Aaron Bockelie <aaronsb@gmail.com>
-# Source of truth lives in the clicue repo at packaging/aur/PKGBUILD;
-# `make publish` verifies pkgver against Cargo.toml, computes sha256sums,
-# regenerates .SRCINFO, and pushes to AUR. Edit there, not in the AUR
-# clone. sha256sums stays SKIP here BY DESIGN: this file ships inside the
-# tarball it would checksum, so a committed sum is circular — the real
-# sum lives in the published AUR copy, and the publish flow alarms if the
-# tarball for an ALREADY-PUBLISHED version ever changes underneath it.
-# Version bump: edit pkgver only. The publish flow's local makepkg cannot
-# catch a missing depends entry (everything is installed on the dev box) —
-# the real check before publishing a depends change is a clean-chroot
-# build (devtools' extra-x86_64-build) plus namcap on the package.
+#
+# aaronsb/arch-repo reads this file from the default branch, takes the version
+# and checksum from the newest published release, builds it in a clean
+# container, lints it, signs it, and pushes to the AUR and the [aaronsb] pacman
+# repository. See its docs/packaging-contract.md.
+#
+# pkgver, pkgrel and sha256sums below are placeholders, and correct as
+# placeholders — arch-repo overwrites all three. The sum used to be SKIP under
+# a comment calling a committed checksum circular, which was a correct reading
+# of a real problem: this file ships inside the tarball it would sum, so the
+# hash cannot exist until the tag does. arch-repo resolves it by taking the
+# recipe from the branch and the two moving values from the release, rather
+# than by leaving the sum out.
 pkgname=clicue
 pkgver=0.4.0
 pkgrel=1
@@ -25,7 +27,7 @@ install=clicue.install
 # makepkg's debug split would ship an empty -debug package — suppress it.
 options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
 
 prepare() {
   cd "$pkgname-$pkgver"

@@ -1,5 +1,5 @@
 ---
-status: Accepted
+status: Superseded
 date: 2026-08-06
 deciders:
   - aaronsb
@@ -9,6 +9,17 @@ related:
 ---
 
 # ADR-401: GitHub release as a pacman repository
+
+> **Superseded on 2026-08-16 by aaronsb/arch-repo's ADR-300.** The `[clicue]`
+> repository this describes has folded into `[aaronsb]`, which carries this
+> package alongside the rest, built in a clean container and signed with one
+> key. The reasoning below still holds for what it set out to solve — a pacman
+> channel with no AUR helper in the path — and the conclusion changed only
+> because that channel now exists for every package rather than for this one.
+>
+> `make repo` and `make repo-guard` are gone with it, along with
+> `packaging/publish-aur.zsh`: `arch-repo` is the only writer to the AUR now,
+> and two writers to one ref is how a PKGBUILD and its `.SRCINFO` drift apart.
 
 ## Context
 

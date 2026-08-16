@@ -7,7 +7,8 @@ CARGO ?= cargo
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 ARCH := $(shell uname -m)
 
-.PHONY: build release test check e2e demo fmt clippy proto-test install clean help package publish publish-guard repo repo-guard publish-aur
+.PHONY: build build-release test check e2e e2e-release demo fmt clippy proto-test \
+        install clean help dist package release release-guard version
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -15,7 +16,7 @@ help: ## List targets
 build: ## Debug build
 	$(CARGO) build
 
-release: ## Optimised build
+build-release: ## Optimised build
 	$(CARGO) build --release
 
 test: ## Rust tests
@@ -29,7 +30,7 @@ e2e: build ## Sandboxed pty scenarios: real shell, real daemon, real keys
 # CI runs this variant: a contended runner VM with a debug daemon misses
 # the shim's 25ms deadline and cards go absent BY DESIGN (spec §8) —
 # test the binary users actually run.
-e2e-release: release ## e2e against the release binary (what CI runs)
+e2e-release: build-release ## e2e against the release binary (what CI runs)
 	CLICUE_BIN=$(CURDIR)/target/release/clicue zsh tests/run.zsh
 
 demo: build ## Record docs/demo/clicue.cast (+ .gif when agg is installed)
@@ -50,13 +51,13 @@ proto-test: ## Run the frozen prototype's suite (the differential oracle)
 install: ## Install the binary from this tree
 	$(CARGO) install --path crates/clicue
 
-package: release ## Standalone tarball in dist/ (binary + license + readme, with sha256)
-	rm -rf dist/clicue-$(VERSION)-linux-$(ARCH)
+dist: build-release ## Standalone tarball in dist/ (binary + license + readme, with sha256)
+	rm -rf dist pkgbuild-check/clicue-$(VERSION)-linux-$(ARCH)
 	mkdir -p dist/clicue-$(VERSION)-linux-$(ARCH)
 	cp target/release/clicue LICENSE README.md dist/clicue-$(VERSION)-linux-$(ARCH)/
 	tar -C dist -czf dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz clicue-$(VERSION)-linux-$(ARCH)
 	cd dist && sha256sum clicue-$(VERSION)-linux-$(ARCH).tar.gz > clicue-$(VERSION)-linux-$(ARCH).tar.gz.sha256
-	rm -rf dist/clicue-$(VERSION)-linux-$(ARCH)
+	rm -rf dist pkgbuild-check/clicue-$(VERSION)-linux-$(ARCH)
 	@echo "dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz"
 
 # The gate runs BEFORE the release build (a dirty tree should fail in a
@@ -64,51 +65,55 @@ package: release ## Standalone tarball in dist/ (binary + license + readme, with
 # `git status --porcelain` catches staged and untracked changes that
 # `git diff --quiet` misses, and `describe --exact-match` is what makes
 # "this artifact is what v$(VERSION) builds" actually true.
-publish-guard:
+release-guard:
 	@test -z "$$(git status --porcelain)" || { echo "working tree dirty — commit first" >&2; exit 1; }
 	@test "$$(git describe --exact-match --tags HEAD 2>/dev/null)" = "v$(VERSION)" \
 	  || { echo "HEAD is not at v$(VERSION) — the artifact would not match the tag" >&2; exit 1; }
 
-publish: publish-guard package ## Upload artifacts to the GitHub release
-	# The release-asset PKGBUILD carries a REAL checksum — unlike the repo
-	# copy (SKIP by design), an asset is not inside the tarball it sums, so
-	# no circularity. `makepkg` against these two files is the no-AUR path.
-	cp packaging/aur/PKGBUILD packaging/aur/clicue.install dist/
-	cd dist && updpkgsums PKGBUILD
-	gh release upload v$(VERSION) dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz.sha256 dist/PKGBUILD dist/clicue.install $(if $(FORCE),--clobber,)
-
-# Unlike publish (which packages the working tree, hence the full guard),
-# repo builds from the TAG TARBALL makepkg downloads — HEAD may sit past
-# the tag; only the version bookkeeping has to agree (ADR-401).
-repo-guard:
-	@test "$$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)" = "$(VERSION)" \
-	  || { echo "PKGBUILD pkgver != Cargo.toml $(VERSION) — bump packaging/aur/PKGBUILD first" >&2; exit 1; }
-	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
-	  || { echo "tag v$(VERSION) does not exist — tag and push the release first" >&2; exit 1; }
-
-repo: repo-guard ## Build the pacman package + [clicue] repo db, upload to the GitHub release
-	# The GitHub release doubles as a pacman repository (ADR-401):
-	# Server = https://github.com/aaronsb/clicue/releases/latest/download/
-	# Each release ships a fresh single-package db, so `pacman -Syu`
-	# follows the latest release with no AUR in the path.
-	rm -rf dist/repo
-	mkdir -p dist/repo
-	cp packaging/aur/PKGBUILD packaging/aur/clicue.install dist/repo/
-	cd dist/repo && updpkgsums PKGBUILD && makepkg -f
-	cd dist/repo && repo-add clicue.db.tar.gz clicue-$(VERSION)-*-$(ARCH).pkg.tar.zst
-	# Release assets cannot be symlinks, and pacman fetches the BARE names
-	# (clicue.db) — replace repo-add's symlinks with real files.
-	cd dist/repo && rm -f clicue.db clicue.files \
-	  && cp clicue.db.tar.gz clicue.db && cp clicue.files.tar.gz clicue.files
+release: release-guard dist ## Cut the release arch-repo reads
+	# The standalone tarball stays: it is the no-pacman path for anyone who
+	# wants the binary without a repository. The PKGBUILD and clicue.install
+	# used to be uploaded alongside it as a makepkg-without-AUR route, and
+	# arch-repo is that route now — it publishes this recipe to the AUR and to
+	# [aaronsb] from the default branch.
 	gh release upload v$(VERSION) \
-	  dist/repo/clicue-$(VERSION)-*-$(ARCH).pkg.tar.zst \
-	  dist/repo/clicue.db dist/repo/clicue.db.tar.gz \
-	  dist/repo/clicue.files dist/repo/clicue.files.tar.gz \
-	  $(if $(FORCE),--clobber,)
+	  dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz \
+	  dist/clicue-$(VERSION)-linux-$(ARCH).tar.gz.sha256 $(if $(FORCE),--clobber,)
+	@echo "arch-repo picks this up on its next run"
 
-publish-aur: ## Push the PKGBUILD to AUR (independent channel; its script self-guards)
-	zsh packaging/publish-aur.zsh
+version: ## Report the version this repository would release
+	@test -n "$(VERSION)" || { echo "no version in Cargo.toml" >&2; exit 1; }
+	@if git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null; then \
+	    echo "clicue $(VERSION) — v$(VERSION) is already tagged"; \
+	else \
+	    echo "clicue $(VERSION) — not yet tagged; this is what the next release will be"; \
+	fi
+
+package: version ## Build ./PKGBUILD in a clean chroot and namcap it
+	@command -v extra-x86_64-build >/dev/null || { echo "needs devtools" >&2; exit 1; }
+	@command -v namcap >/dev/null            || { echo "needs namcap" >&2; exit 1; }
+	rm -rf pkgbuild-check && mkdir -p pkgbuild-check
+	# The tarball the release would carry, built from HEAD and named exactly
+	# what source= resolves to, so makepkg uses it instead of fetching
+	# archive/v$$pkgver.tar.gz — which GitHub does not generate until the tag
+	# exists. HEAD, not the working tree: a release ships a commit.
+	git archive --format=tar.gz --prefix=clicue-$(VERSION)/ \
+	    -o pkgbuild-check/clicue-$(VERSION).tar.gz HEAD
+	cp PKGBUILD clicue.install pkgbuild-check/
+	# Slot one only, the entry that moves with the version and the one
+	# arch-repo writes. The sums array is the only quoted 64-hex in a recipe.
+	cd pkgbuild-check \
+	  && sed -i 's/^pkgver=.*/pkgver=$(VERSION)/' PKGBUILD \
+	  && sum=$$(sha256sum clicue-$(VERSION).tar.gz | cut -d' ' -f1) \
+	  && sed -i "0,/'[0-9a-f]\{64\}'/s//'$$sum'/" PKGBUILD
+	cd pkgbuild-check && extra-x86_64-build
+	# namcap exits 0 whether or not it found errors, so its output decides —
+	# the same rule arch-repo's gate uses.
+	cd pkgbuild-check && namcap PKGBUILD $$(ls ./*.pkg.tar.zst | grep -v -- '-debug-') | tee namcap.txt
+	@cd pkgbuild-check && bad=$$(grep ' E: ' namcap.txt || true); \
+	  if [ -n "$$bad" ]; then echo "namcap errors:"; printf '%s\n' "$$bad"; exit 1; fi; \
+	  echo "namcap: no errors"
 
 clean:
 	$(CARGO) clean
-	rm -rf dist
+	rm -rf dist pkgbuild-check

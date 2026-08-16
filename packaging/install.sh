@@ -18,8 +18,8 @@
 # so verification proves integrity of the transfer, not authenticity
 # beyond what HTTPS to github.com already gives.
 #
-# Arch users wanting a real pacman package: see the PKGBUILD one-liner
-# in the README instead.
+# Arch users wanting a real pacman package: the [aaronsb] repo or the AUR,
+# both documented in the README.
 set -eu
 
 say() { printf '%s\n' "$*"; }
