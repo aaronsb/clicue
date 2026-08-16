@@ -4,3 +4,6 @@ scratch/
 dist/
 experiments/*/target/
 __pycache__/
+
+# make package dry run
+/pkgbuild-check/
